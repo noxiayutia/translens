@@ -61,6 +61,28 @@ describe('parseNumberedResponse', () => {
   it('单条时也能解析', () => {
     expect(parseNumberedResponse('<<<1>>>\n你好', 1)).toEqual(['你好']);
   });
+
+  it('分段内容为空抛 BAD_RESPONSE', () => {
+    let caught: unknown;
+    try {
+      parseNumberedResponse('<<<1>>><<<2>>>\n你好', 2);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(EngineError);
+    expect((caught as EngineError).code).toBe('BAD_RESPONSE');
+  });
+
+  it('分段只有空白也抛 BAD_RESPONSE', () => {
+    let caught: unknown;
+    try {
+      parseNumberedResponse('<<<1>>>\n   \n<<<2>>>\n你好', 2);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(EngineError);
+    expect((caught as EngineError).code).toBe('BAD_RESPONSE');
+  });
 });
 
 describe('openAiCompatEngine.translate', () => {
@@ -106,6 +128,11 @@ describe('openAiCompatEngine.translate', () => {
 
   it('响应缺少 content 抛 BAD_RESPONSE', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [] }), { status: 200 })));
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
+  });
+
+  it('响应体不是合法 JSON 时抛 BAD_RESPONSE', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>oops</html>', { status: 200 })));
     await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
 });

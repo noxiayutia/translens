@@ -103,4 +103,44 @@ describe('googleEngine.translate', () => {
       ),
     ).rejects.toMatchObject({ code: 'NETWORK' });
   });
+
+  it('响应体不是合法 JSON 时抛 BAD_RESPONSE', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>oops</html>', { status: 200 })));
+    await expect(
+      googleEngine.translate(
+        { texts: ['A'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
+  });
+
+  it('单个批次内部并发不超过 4', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const waiting: Array<() => void> = [];
+
+    // 让请求在「凑够 4 个同时在飞」之前不返回，从而真实观测到并发峰值。
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise<void>((resolve) => {
+        waiting.push(resolve);
+        if (waiting.length >= 4) waiting.splice(0).forEach((release) => release());
+      });
+      inFlight -= 1;
+      const query = new URL(String(input)).searchParams.get('q') ?? '';
+      return jsonResponse(googleBody([`译:${query}`]));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const texts = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'];
+    const out = await googleEngine.translate(
+      { texts, from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+      {},
+    );
+
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(out).toEqual(texts.map((text) => `译:${text}`));
+  });
 });

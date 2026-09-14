@@ -1033,7 +1033,6 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/engines/types.ts
-
 export interface Term {
   from: string;
   to: string;

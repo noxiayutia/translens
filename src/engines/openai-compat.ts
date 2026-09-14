@@ -28,7 +28,7 @@ export function buildMessages(texts: string[], to: string, glossary?: Term[], sy
   ];
 }
 
-/** 按编号标记切回逐条译文；数量或顺序不符一律抛 BAD_RESPONSE，由上层降级为逐条翻译。 */
+/** 按编号标记切回逐条译文；数量、顺序或分段内容为空一律抛 BAD_RESPONSE，由上层降级为逐条翻译。 */
 export function parseNumberedResponse(content: string, count: number): string[] {
   const matches = [...content.matchAll(/<<<(\d+)>>>/g)];
   if (matches.length !== count) {
@@ -41,7 +41,11 @@ export function parseNumberedResponse(content: string, count: number): string[] 
     }
     const start = (matches[i].index ?? 0) + matches[i][0].length;
     const end = i + 1 < matches.length ? (matches[i + 1].index ?? content.length) : content.length;
-    parts.push(content.slice(start, end).trim());
+    const text = content.slice(start, end).trim();
+    if (text.length === 0) {
+      throw new EngineError('BAD_RESPONSE', `模型返回的第 ${i + 1} 段为空`);
+    }
+    parts.push(text);
   }
   return parts;
 }
@@ -87,10 +91,14 @@ export const openAiCompatEngine: Translator = {
     if (response.status === 413) throw new EngineError('TOO_LONG', '文本过长');
     if (!response.ok) throw new EngineError('NETWORK', `接口 HTTP ${response.status}`);
 
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown } }>;
-    };
-    const content = data?.choices?.[0]?.message?.content;
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch (raw) {
+      throw new EngineError('BAD_RESPONSE', `接口返回的不是合法 JSON：${toEngineError(raw).message}`);
+    }
+    const payload = data as { choices?: Array<{ message?: { content?: unknown } }> };
+    const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || content.length === 0) {
       throw new EngineError('BAD_RESPONSE', '接口返回内容为空');
     }

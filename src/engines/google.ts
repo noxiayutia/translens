@@ -1,6 +1,14 @@
+import { runPool } from '../core/pool';
 import { EngineError, toEngineError, type EngineConfig, type TranslateRequest, type Translator } from './types';
 
 const ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
+
+/**
+ * 单个批次内部的并发上限。
+ * 免费接口对突发请求很敏感：一个批次最多 12 段文本、内容脚本又有 3 路并发，
+ * 无上限时最坏会同时打出 36 个请求，直接触发限流；429 又会让整批退避重试，反而打出更多请求。
+ */
+const MAX_CONCURRENCY = 4;
 
 /** Google 用 zh-CN / zh-TW，其余语言代码与 BCP-47 主标签一致。 */
 export function toGoogleLang(code: string): string {
@@ -46,7 +54,14 @@ export async function translateOne(text: string, to: string, signal: AbortSignal
   if (response.status === 413) throw new EngineError('TOO_LONG', '文本过长');
   if (!response.ok) throw new EngineError('NETWORK', `免费接口 HTTP ${response.status}`);
 
-  return parseGoogleResponse(await response.json());
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (raw) {
+    throw new EngineError('BAD_RESPONSE', `接口返回的不是合法 JSON：${toEngineError(raw).message}`);
+  }
+
+  return parseGoogleResponse(data);
 }
 
 export const googleEngine: Translator = {
@@ -55,7 +70,8 @@ export const googleEngine: Translator = {
   needsKey: false,
   supportsGlossary: false,
   async translate(request: TranslateRequest, _config: EngineConfig): Promise<string[]> {
-    // 免费接口不支持一次请求多条文本，逐条并发发出。
-    return Promise.all(request.texts.map((text) => translateOne(text, request.to, request.signal)));
+    // 免费接口不支持一次请求多条文本，只能逐条发出；用并发池限制突发。
+    const tasks = request.texts.map((text) => () => translateOne(text, request.to, request.signal));
+    return runPool(tasks, MAX_CONCURRENCY);
   },
 };
