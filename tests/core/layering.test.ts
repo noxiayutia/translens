@@ -7,8 +7,10 @@
  * 它一定会随着后续单元接线被逐渐侵蚀（「反正就一行 document.querySelector」），
  * 所以断言的是**源码文本本身**，而不是某次 import 的副作用。
  *
- * 匹配口径：按源码字面量匹配（**含注释**）。代价是偶发误报（改写一句注释即可），
- * 换来的是不漏报任何一处真实越界——注释里也就别写这些标识符了。
+ * 匹配口径：按源码字面量匹配（**含注释**），且按**裸标识符**匹配而不是 `document.` 这种带点形式。
+ * 带点匹配会漏掉 `const d = document` 与 `document['querySelector']` 这类真实越界；
+ * 裸标识符的代价是偶发误报（注释里提到这些名字就会命中），但改写注释即可，
+ * 属于"往严格一侧失败"，可以接受——注释里也就别写这些标识符了。
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,15 +54,15 @@ function offenders(pattern: RegExp): string[] {
   return hits;
 }
 
-/** 宿主全局：DOM、扩展 API、Node 运行时。`\b` 保证 `ArrayBuffer` 这类名字不会被误伤。 */
+/** 宿主全局：DOM、扩展 API、Node 运行时。`\b` 保证 `ArrayBuffer`、`documentElement` 这类名字不会被误伤。 */
 const FORBIDDEN_GLOBALS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['document.', /\bdocument\s*\./],
-  ['window.', /\bwindow\s*\./],
-  ['chrome.', /\bchrome\s*\./],
-  ['process.', /\bprocess\s*\./],
+  ['document', /\bdocument\b/],
+  ['window', /\bwindow\b/],
+  ['chrome', /\bchrome\b/],
+  ['process', /\bprocess\b/],
   ['Buffer', /\bBuffer\b/],
-  ['__dirname', /__dirname/],
-  ['navigator.', /\bnavigator\s*\./],
+  ['__dirname', /\b__dirname\b/],
+  ['navigator', /\bnavigator\b/],
 ];
 
 /** 纯函数层不得反向依赖任何宿主层。 */
