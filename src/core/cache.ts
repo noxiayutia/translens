@@ -3,8 +3,9 @@
 /**
  * 扩展存储区的可测试子集（与宿主存储 API 的结构保持一致）。
  *
- * `keys()` 是缓存自愈的前提：只有能枚举出真实存在的 key，才能把派生索引
- * 与真实数据对账（见 `TranslationCache.prune`），也才可能在索引损坏后恢复。
+ * `keys()` 是缓存自愈的前提：只有能枚举出真实存在的 key，才能拿真实条目去校正近似
+ * 的计数、清掉形状坏掉的残留（见 `TranslationCache.prune`），也才可能在外部把存储
+ * 改坏之后恢复。
  */
 export interface StorageArea {
   get(keys: string[]): Promise<Record<string, unknown>>;
@@ -14,10 +15,12 @@ export interface StorageArea {
   keys(): Promise<string[]>;
 }
 
+/** 条目键：`jt:<hash>` -> `{ v: 译文, t: 最后写入/命中时间 }`。 */
 const ENTRY_PREFIX = 'jt:';
-const INDEX_KEY = 'jt:index';
+/** 唯一的元数据键：`{ n: 近似条目数 }`。值只有一个数字，不构成"单条超限"的风险。 */
+const META_KEY = 'jt:meta';
 
-/** 同一存储区上所有队列按此间隔刷新一次命中时间，避免每次命中都写索引。 */
+/** 命中后按此间隔刷新一次条目的 `t`；间隔内的重复命中不再写存储。 */
 const REFRESH_INTERVAL_MS = 5000;
 
 interface CacheEntry {
@@ -25,29 +28,56 @@ interface CacheEntry {
   t: number;
 }
 
-interface IndexEntry {
-  hash: string;
-  /** 最后命中时间（读命中或写入），淘汰按它从小到大进行。 */
-  t: number;
+interface CacheMeta {
+  n: number;
 }
 
 /**
- * 每条译文独立存一个 key，另用一个索引 key 维护 LRU 顺序。
- * 这样淘汰时只需 remove 指定 key，不必整块重写。
+ * 模块级单调戳。`Date.now()` 在同一毫秒内的多次写入会拿到相同的 `t`，淘汰排序就
+ * 不确定了（排序退化成存储的枚举顺序）；这里保证后写入/刷新的 `t` 一定大于先前的。
+ */
+let lastStamp = 0;
+
+function nextStamp(now: () => number): number {
+  const t = now();
+  lastStamp = t > lastStamp ? t : lastStamp + 1;
+  return lastStamp;
+}
+
+/** 只认能读出译文的记录；时间戳缺失或坏掉不丢译文，当作最旧的一条。 */
+function readEntry(value: unknown): CacheEntry | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { v, t } = value as Partial<CacheEntry>;
+  if (typeof v !== 'string') return undefined;
+  return { v, t: typeof t === 'number' && Number.isFinite(t) ? t : -Infinity };
+}
+
+/** 淘汰排序用的时间戳；读不出条目（被外部改坏）就用 `-Infinity`，让它优先出局。 */
+function readStamp(value: unknown): number {
+  return readEntry(value)?.t ?? -Infinity;
+}
+
+/**
+ * 每条译文独立存一个 key：`jt:<hash>` -> `{ v, t }`，另有一个可选的元数据键
+ * `jt:meta` -> `{ n }`。淘汰靠按需全量扫描，**没有单独的索引键**。
+ *
+ * 索引里存的东西（hash + t）与每个条目里的 `t` 完全重复，却把"写一条"放大成"重写
+ * 整个索引"，还要求索引与条目双写一致——孤儿条目、幽灵条目、索引损坏后的自愈都由
+ * 此而来。顺序信息现在就在条目自己身上，扫描时现算。
  *
  * 三条必须成立的前提（都影响正确性，不只是性能）：
  *
- * 1. **一个 `StorageArea` 只能有一个实例在用**。`maxEntries` 是实例属性，而索引是
+ * 1. **一个 `StorageArea` 只能有一个实例在用**。`maxEntries` 是实例属性，而条目是
  *    存储区级的；同一个存储区上挂了两个不同上限的实例，较小的那个会不断剪掉较大的
  *    那个刚写进去的条目。
- * 2. **索引的所有改动都串行执行**。索引是读-改-写，存储区本身不提供比较并交换，
- *    两个并发的 `putMany` 会互相覆盖索引、留下永远淘汰不掉的孤儿条目。这里用
+ * 2. **缓存的读-改-写都串行执行**。计数与淘汰都是读-改-写，存储区本身不提供比较并
+ *    交换，两个并发的 `putMany` 会互相覆盖计数、留下来不及淘汰的条目。这里用
  *    `queue`（按存储区对象共享）串行化，任何直接调用 `area.set`/`area.remove`
  *    绕过队列的写法都会重新引入该缺陷。
  * 3. **写缓存失败不得让调用方失败**。存储写是本模块的职责，不是调用方的：
  *    `putMany` 不抛错，写不进去只意味着这次没缓存上。反过来，调用方（翻译批次）
- *    也不该把缓存写失败当成翻译失败上报。写失败只会留下"有条目、没索引"的孤儿，
- *    读时命中但 `count()` 暂时少算，`prune()` 会把它收编回索引。
+ *    也不该把缓存写失败当成翻译失败上报。计数因此允许漂移——它只决定"什么时候扫描
+ *    淘汰"，`count()` 走真实扫描，`prune()` 负责把计数校正回来。
  */
 export class TranslationCache {
   constructor(
@@ -60,6 +90,11 @@ export class TranslationCache {
     return ENTRY_PREFIX + hash;
   }
 
+  /** 存储区里全部条目键（`jt:meta` 是元数据，不是条目）。 */
+  private async entryKeys(): Promise<string[]> {
+    return (await this.area.keys()).filter((key) => key.startsWith(ENTRY_PREFIX) && key !== META_KEY);
+  }
+
   /** 上限随设置变化时调用；实际裁剪发生在下一次写入或 `prune()`。 */
   setMaxEntries(maxEntries: number): void {
     this.maxEntries = maxEntries;
@@ -70,7 +105,7 @@ export class TranslationCache {
     if (hashes.length === 0) return out;
 
     const entries = await this.readEntries(hashes);
-    for (const [hash, value] of entries) out.set(hash, value);
+    for (const [hash, entry] of entries) out.set(hash, entry.v);
 
     // 命中即刷新"最后命中时间"，否则淘汰退化成写入顺序（FIFO），热门段落会先于冷门
     // 段落被淘汰。刷新与写入共用同一个队列并且**在返回前落盘**：否则"读到命中"和
@@ -79,126 +114,131 @@ export class TranslationCache {
     return out;
   }
 
-  /** 刷新命中条目的"最后命中时间"并移到末尾；间隔内的重复命中只算一次。 */
-  private async refresh(entries: Map<string, string>): Promise<void> {
-    const index = await this.readIndex();
+  /**
+   * 只重写命中的那几条里 `t` 已经旧了的，刷新它们的最后命中时间。
+   *
+   * 刚刷新过的条目 `t` 已经变新，这里自然不会再写——不需要额外的内存节流表。
+   * 写回的是读到的整条条目（含 `v`），不像旧索引那样只写 `hash + t`：若一次并发的
+   * `putMany` 正好插在读与刷新之间写了同一个 hash，这次刷新会把 `v` 覆盖回旧值。
+   * 同一 hash 的译文是内容派生的、两次写入理应相同，换来的是命中热路径上少一次读取。
+   */
+  private async refresh(entries: Map<string, CacheEntry>): Promise<void> {
     const now = this.now();
-    const stale = new Set<string>();
-    for (const item of index) {
-      if (entries.has(item.hash) && (item.t > now || now - item.t >= REFRESH_INTERVAL_MS)) stale.add(item.hash);
+    const batch: Record<string, unknown> = {};
+    let touched = 0;
+    for (const [hash, entry] of entries) {
+      if (now - entry.t < REFRESH_INTERVAL_MS) continue;
+      batch[this.entryKey(hash)] = { v: entry.v, t: nextStamp(this.now) } satisfies CacheEntry;
+      touched += 1;
     }
-    if (stale.size === 0) return;
-
-    const kept = index.filter((item) => !stale.has(item.hash));
-    const touched = index.filter((item) => stale.has(item.hash)).map((item) => ({ hash: item.hash, t: now }));
-    await this.writeIndex([...kept, ...touched]);
+    if (touched === 0) return;
+    await this.area.set(batch);
   }
 
   async putMany(items: Map<string, string>): Promise<void> {
     if (items.size === 0) return;
     await this.queue(async () => {
       const batch: Record<string, unknown> = {};
-      const hashes: string[] = [];
       for (const [hash, value] of items) {
-        batch[this.entryKey(hash)] = { v: value, t: this.now() } satisfies CacheEntry;
-        hashes.push(hash);
+        batch[this.entryKey(hash)] = { v: value, t: nextStamp(this.now) } satisfies CacheEntry;
       }
 
       try {
         await this.area.set(batch);
       } catch {
-        // 条目没写进去就不动索引：索引是真实内容的投影，不能替不存在的条目占位。
+        // 写不进去只意味着这次没缓存上，不抛给调用方；写失败最常见的成因是存储满了，
+        // 顺手做一次扫描淘汰腾地方。
+        await this.scanAndEvict();
         return;
       }
-      await this.evict(this.mergeIndex(await this.readIndex(), hashes));
+
+      // 计数只增不减地记一个近似值；它写不进去也只影响扫描时机：`count()` 走真实
+      // 扫描，`prune()` 会把计数校正回来，条目本身已经落盘、读得出来。
+      const count = (await this.readMeta()) + items.size;
+      await this.writeMeta(count);
+      if (count > this.maxEntries) await this.scanAndEvict();
     });
   }
 
   /**
-   * 按存储区里真实存在的条目重建索引：清掉空指针、把漏登记的孤儿收编进来，再按上限裁剪。
-   * 索引损坏或并发写失败之后，这是唯一的自愈入口（service worker 启动时调用一次即可）。
+   * 全量对账：删掉形状坏掉的条目（连译文都读不出来的记录），把近似计数校正为真实
+   * 条目数，再按上限裁剪。存储被外部改坏、或计数漂移之后，这是唯一的自愈入口
+   * （service worker 启动时调用一次即可）。
    */
   async prune(): Promise<void> {
     await this.queue(async () => {
-      const keys = await this.area.keys();
-      const actual = new Set<string>();
-      for (const key of keys) {
-        if (key.startsWith(ENTRY_PREFIX) && key !== INDEX_KEY) actual.add(key.slice(ENTRY_PREFIX.length));
+      const keys = await this.entryKeys();
+      if (keys.length > 0) {
+        const raw = await this.area.get(keys);
+        const broken = keys.filter((key) => readEntry(raw[key]) === undefined);
+        if (broken.length > 0) await this.area.remove(broken);
       }
-      const index = await this.readIndex();
-      // 先按真实条目过滤（去掉空指针、保住原有顺序与命中时间），再收编孤儿。
-      const kept = index.filter((item) => actual.has(item.hash));
-      await this.evict(this.mergeIndex(kept, actual));
+      await this.scanAndEvict();
     });
   }
 
+  /**
+   * 真实扫描出的**精确**条目数（形状坏掉的记录不算条目，它们由 `prune()` 清掉）。
+   * 只给设置页用、频率极低，所以可以真的把值读出来核一遍形状。
+   */
   async count(): Promise<number> {
-    return (await this.readIndex()).length;
+    const keys = await this.entryKeys();
+    if (keys.length === 0) return 0;
+    const raw = await this.area.get(keys);
+    return keys.filter((key) => readEntry(raw[key]) !== undefined).length;
   }
 
-  /** 索引是实际内容的投影，清空时按索引删除即可；`prune()` 负责兜住索引过期的残留。 */
+  /** 删掉全部 `jt:` 前缀的键：条目、元数据，以及旧版本可能留下的别的 `jt:` 键。 */
   async clear(): Promise<void> {
     await this.queue(async () => {
-      const keys = await this.area.keys();
-      const entryKeys = keys.filter((key) => key.startsWith(ENTRY_PREFIX) && key !== INDEX_KEY);
-      if (entryKeys.length > 0) await this.area.remove(entryKeys);
-      await this.area.remove([INDEX_KEY]);
+      const keys = (await this.area.keys()).filter((key) => key.startsWith(ENTRY_PREFIX));
+      if (keys.length > 0) await this.area.remove(keys);
     });
   }
 
-  private async readEntries(hashes: string[]): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
+  /** 全量扫描 → 按 `t` 从小到大裁剪超限条目 → 把计数校正为真实值。 */
+  private async scanAndEvict(): Promise<void> {
+    const keys = await this.entryKeys();
+    if (keys.length === 0) {
+      await this.writeMeta(0);
+      return;
+    }
+    const raw = await this.area.get(keys);
+    const sorted = keys
+      .map((key) => ({ key, t: readStamp(raw[key]) }))
+      .sort((a, b) => a.t - b.t);
+    const overflow = sorted.length - this.maxEntries;
+    if (overflow > 0) await this.area.remove(sorted.slice(0, overflow).map((item) => item.key));
+    await this.writeMeta(Math.min(sorted.length, Math.max(0, this.maxEntries)));
+  }
+
+  private async readEntries(hashes: string[]): Promise<Map<string, CacheEntry>> {
+    const out = new Map<string, CacheEntry>();
     if (hashes.length === 0) return out;
     const keys = hashes.map((hash) => this.entryKey(hash));
     const raw = await this.area.get(keys);
     hashes.forEach((hash, index) => {
-      const entry = raw[keys[index]] as CacheEntry | undefined;
       // 存储里的内容可能被外部改坏，只认形状正确的条目。
-      if (entry && typeof entry === 'object' && typeof entry.v === 'string') out.set(hash, entry.v);
+      const entry = readEntry(raw[keys[index]]);
+      if (entry) out.set(hash, entry);
     });
     return out;
   }
 
-  /** 索引本身也可能被改坏，任何非数组/非对象元素一律丢弃而不是整体失效。 */
-  private async readIndex(): Promise<IndexEntry[]> {
-    const raw = await this.area.get([INDEX_KEY]);
-    const stored = raw[INDEX_KEY];
-    if (!Array.isArray(stored)) return [];
-    const out: IndexEntry[] = [];
-    for (const item of stored) {
-      if (!item || typeof item !== 'object') continue;
-      const { hash, t } = item as Partial<IndexEntry>;
-      if (typeof hash !== 'string' || typeof t !== 'number' || !Number.isFinite(t)) continue;
-      out.push({ hash, t });
-    }
-    return out;
+  /**
+   * 近似条目数；计数键缺失或被改坏都当作 0——它只影响"什么时候扫描淘汰"，
+   * 不影响任何正确性。
+   */
+  private async readMeta(): Promise<number> {
+    const raw = await this.area.get([META_KEY]);
+    const meta = raw[META_KEY] as Partial<CacheMeta> | undefined;
+    if (!meta || typeof meta !== 'object') return 0;
+    const n = meta.n;
+    return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
   }
 
-  private async writeIndex(index: IndexEntry[]): Promise<void> {
-    await this.area.set({ [INDEX_KEY]: index });
-  }
-
-  /** 合并"已有顺序 + 新出现的 hash"：重写不重复占位，新条目追加到最热一端。 */
-  private mergeIndex(existing: IndexEntry[], hashes: Iterable<string>): IndexEntry[] {
-    const now = this.now();
-    const fresh = new Set(hashes);
-    const merged: IndexEntry[] = [];
-    for (const item of existing) {
-      if (!fresh.has(item.hash)) merged.push(item);
-      else merged.push({ hash: item.hash, t: now });
-    }
-    const known = new Set(merged.map((item) => item.hash));
-    for (const hash of fresh) if (!known.has(hash)) merged.push({ hash, t: now });
-    return merged;
-  }
-
-  /** 从最旧一端裁剪并删除超出上限的条目；整批超过上限时保留最新写入的那几条。 */
-  private async evict(index: IndexEntry[]): Promise<void> {
-    const overflow = index.length - this.maxEntries;
-    const kept = overflow > 0 ? index.slice(overflow) : index;
-    const removed = overflow > 0 ? index.slice(0, overflow) : [];
-    for (const item of removed) await this.area.remove([this.entryKey(item.hash)]);
-    await this.writeIndex(kept);
+  private async writeMeta(n: number): Promise<void> {
+    await this.area.set({ [META_KEY]: { n } satisfies CacheMeta });
   }
 
   /** 把任务挂到该存储区的串行队列上，返回它的结果；失败不打断队列、也不抛给调用方。 */
