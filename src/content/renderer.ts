@@ -114,11 +114,16 @@ export class DomRenderer {
     }
   }
 
-  fail(segmentId: string, message: string): void {
+  /**
+   * `canRetry === false` 用于**重试多少次都是同一个结果**的错误（缺 API Key、Key 无效）：
+   * 只标注原因、不挂重试按钮。一个 200 段的页面否则会变成 200 个点了也没用的按钮，
+   * 而用户真正该做的是去设置页填 Key（规格 §8：不重试，改为页面 toast + 弹窗红点）。
+   */
+  fail(segmentId: string, message: string, canRetry = true): void {
     const host = this.hosts.get(segmentId);
     // 替换模式下失败必须保持原文，否则用户会看到一片空白。
     if (!host) return;
-    this.setContent(host, 'error', message);
+    this.setContent(host, 'error', message, canRetry);
   }
 
   /**
@@ -174,7 +179,7 @@ export class DomRenderer {
   }
 
   /** 一律用 textContent 写入，杜绝引擎返回内容被当成 HTML 执行。 */
-  private setContent(host: HTMLElement, state: RenderState, text?: string): void {
+  private setContent(host: HTMLElement, state: RenderState, text?: string, canRetry = true): void {
     const body = host.shadowRoot?.querySelector('.jy-body');
     if (!body) return;
 
@@ -188,6 +193,7 @@ export class DomRenderer {
     if (state === 'error') {
       body.classList.add('jy-error');
       body.textContent = text ?? '翻译失败';
+      if (!canRetry) return;
       const button = this.document.createElement('button');
       button.className = 'jy-retry';
       button.type = 'button';

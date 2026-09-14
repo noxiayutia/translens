@@ -10,7 +10,9 @@
  * - `storage.local` / `storage.session`：两块**互相独立**的内存存储（真机上 session 是
  *   另一块只在会话内保留的区域，service worker 属于受信上下文，可以直接用）；
  * - `runtime.onInstalled` / `runtime.onMessage`、`commands.onCommand`、
- *   `contextMenus.*`、`tabs.query` / `tabs.sendMessage`：可注册、可手动触发。
+ *   `contextMenus.*`、`tabs.query` / `tabs.sendMessage`：可注册、可手动触发；
+ * - `runtime.sendMessage`：**内容脚本侧**的发送端，把消息交给已注册的 `onMessage`
+ *   监听器并把响应回给调用方（见 {@link StubRuntime.sendMessage}）。
  *
  * 存储 API 只覆盖 `core/cache.ts` 与 `shared/settings.ts` 用到的取法
  * （`null` / 字符串 / 字符串数组）；真机还接受对象形式的默认值，这里**不支持**，
@@ -183,6 +185,24 @@ export interface StubRuntime {
    * （"The message port closed before a response was received."）。
    */
   failSendResponse: boolean;
+  /**
+   * 内容脚本侧的 `chrome.runtime.sendMessage`：把消息交给已注册的 `onMessage`
+   * 监听器（真机上就是 service worker 注册的那个），并按真机规则收响应——
+   *
+   * - 第一个同步调用 `sendResponse` 的监听器给出结果；
+   * - 返回 `true` 的监听器表示"响应稍后到"，替身等它调用 `sendResponse`，超时则拒绝
+   *   （真机同场景抛 "message channel closed"，测试里不该静默挂起）；
+   * - **没有监听器**时按真机拒绝（"Receiving end does not exist"），也就是
+   *   service worker 被回收、扩展刚更新过的那种失败。
+   *
+   * 监听器是在**调用时**同步触发的（promise 已经开始执行），所以调用方一 `await`
+   * 就能拿到同步响应的结果，不必额外让出微任务。
+   */
+  sendMessage(message: unknown): Promise<unknown>;
+  /** 置为 true 后 `sendMessage` 拒绝，模拟没有接收方（SW 未注册监听器） */
+  noReceiver: boolean;
+  /** 每次 `sendMessage` 送出的消息，按调用顺序 */
+  sentMessages: unknown[];
   /** 触发 `onInstalled`（模拟安装 / 更新） */
   install(): void;
   /** 派发一条消息给全部 `onMessage` 监听器 */
@@ -211,54 +231,85 @@ export const DEFAULT_ACTIVE_TAB: StubTab = { id: 7, active: true, currentWindow:
 function createRuntime(): StubRuntime {
   const onInstalled = createEvent<() => void>();
   const onMessage = createEvent<StubMessageListener>();
+
+  /** `onMessage` 监听器的收发状态机；`dispatchMessage` 与 `sendMessage` 共用一份口径。 */
+  function deliver(message: unknown, sender: unknown, failSendResponse: boolean): MessageDispatch {
+    let responded = false;
+    let value: unknown;
+    let settle: ((response: unknown) => void) | undefined;
+    const respondedPromise = new Promise<unknown>((resolve) => {
+      settle = resolve;
+    });
+    const sendResponse = (response?: unknown): void => {
+      // 真机上第二个 sendResponse 是空操作，这里也忽略后到的那个。
+      if (responded) return;
+      // 抛在置位之前：端口已经关了，这次响应根本没有送达。
+      if (failSendResponse) {
+        throw new Error('The message port closed before a response was received.');
+      }
+      responded = true;
+      value = response;
+      settle?.(response);
+    };
+
+    const returns = onMessage.emit(message, sender, sendResponse);
+    return {
+      returns,
+      keepChannelOpen: returns.some((result) => result === true),
+      get responded() {
+        return responded;
+      },
+      get value() {
+        return value;
+      },
+      response(timeoutMs = 1000) {
+        if (responded) return Promise.resolve(value);
+        return new Promise<unknown>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`sendResponse 在 ${timeoutMs}ms 内没有被调用`)),
+            timeoutMs,
+          );
+          void respondedPromise.then((response) => {
+            clearTimeout(timer);
+            resolve(response);
+          });
+        });
+      },
+    };
+  }
+
   const runtime: StubRuntime = {
     onInstalled,
     onMessage,
     failSendResponse: false,
+    noReceiver: false,
+    sentMessages: [],
     install: () => void onInstalled.emit(),
-    dispatchMessage(message, sender = {}) {
-      let responded = false;
-      let value: unknown;
-      let settle: ((response: unknown) => void) | undefined;
-      const respondedPromise = new Promise<unknown>((resolve) => {
-        settle = resolve;
-      });
-      const sendResponse = (response?: unknown): void => {
-        // 真机上第二个 sendResponse 是空操作，这里也忽略后到的那个。
-        if (responded) return;
-        // 抛在置位之前：端口已经关了，这次响应根本没有送达。
-        if (runtime.failSendResponse) {
-          throw new Error('The message port closed before a response was received.');
-        }
-        responded = true;
-        value = response;
-        settle?.(response);
-      };
+    dispatchMessage: (message, sender = {}) => deliver(message, sender, runtime.failSendResponse),
+    sendMessage(message) {
+      runtime.sentMessages.push(message);
+      // 消息**同步**送达监听器（真机上也是同步进 service worker 的事件循环），
+      // 所以下面构造 promise 时就已经把监听器跑过一遍了。
+      const dispatch = runtime.noReceiver
+        ? undefined
+        : deliver(message, { id: 'jinyi-test' }, runtime.failSendResponse);
 
-      const returns = onMessage.emit(message, sender, sendResponse);
-      return {
-        returns,
-        keepChannelOpen: returns.some((result) => result === true),
-        get responded() {
-          return responded;
-        },
-        get value() {
-          return value;
-        },
-        response(timeoutMs = 1000) {
-          if (responded) return Promise.resolve(value);
-          return new Promise<unknown>((resolve, reject) => {
-            const timer = setTimeout(
-              () => reject(new Error(`sendResponse 在 ${timeoutMs}ms 内没有被调用`)),
-              timeoutMs,
-            );
-            void respondedPromise.then((response) => {
-              clearTimeout(timer);
-              resolve(response);
-            });
-          });
-        },
-      };
+      return new Promise<unknown>((resolve, reject) => {
+        if (dispatch === undefined) {
+          // 真机在没有接收方时的拒绝文案。
+          reject(new Error('Could not establish connection. Receiving end does not exist.'));
+          return;
+        }
+        if (dispatch.responded) {
+          resolve(dispatch.value);
+          return;
+        }
+        if (!dispatch.keepChannelOpen) {
+          reject(new Error('The message port closed before a response was received.'));
+          return;
+        }
+        void dispatch.response().then(resolve, reject);
+      });
     },
   };
   return runtime;
@@ -334,6 +385,8 @@ export function createChromeStub(): ChromeStub {
       tabs.sent = [];
       tabs.rejectSendMessage = false;
       stub.runtime.failSendResponse = false;
+      stub.runtime.noReceiver = false;
+      stub.runtime.sentMessages = [];
     },
   };
   return stub;
