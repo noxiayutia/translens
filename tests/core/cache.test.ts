@@ -377,6 +377,28 @@ describe('TranslationCache', () => {
     expect(storage.has('jt:c')).toBe(true);
   });
 
+  it('存储写满但条目数还没到上限时，写失败仍要强制腾空间，否则缓存永久停摆', async () => {
+    const storage = new MemoryStorage();
+    // 上限 100 远大于实际条数：按上限算没有任何溢出，靠 overflow 一条也淘汰不掉。
+    const cache = new TranslationCache(storage, 100, () => 1_700_000_000_000);
+    const value = 'x'.repeat(60);
+
+    for (const hash of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']) {
+      await cache.putMany(new Map([[hash, value]]));
+    }
+    expect(await cache.count()).toBe(10);
+
+    // 存储区此刻刚好装满。
+    storage.maxTotalBytes = storage.bytesUsed();
+
+    await expect(cache.putMany(new Map([['k', value]]))).resolves.toBeUndefined();
+    expect(storage.rejectedWrites).toBe(1); // 确实被配额挡回来过一次
+    expect(storage.has('jt:a')).toBe(false); // 强制淘汰了最旧的，而不是一条不删
+
+    await cache.putMany(new Map([['k', value]])); // 腾出空间后写入成功
+    expect((await cache.getMany(['k'])).get('k')).toBe(value);
+  });
+
   it('prune 清掉形状坏掉的条目并给出正确计数', async () => {
     const storage = new MemoryStorage();
     const cache = new TranslationCache(storage, 10);

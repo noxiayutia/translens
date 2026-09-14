@@ -23,6 +23,9 @@ const META_KEY = 'jt:meta';
 /** 命中后按此间隔刷新一次条目的 `t`；间隔内的重复命中不再写存储。 */
 const REFRESH_INTERVAL_MS = 5000;
 
+/** 存储写失败（多半是配额满）时，按这个比例强制淘汰最旧的条目来腾空间。 */
+const QUOTA_EVICT_RATIO = 0.1;
+
 interface CacheEntry {
   v: string;
   t: number;
@@ -33,15 +36,20 @@ interface CacheMeta {
 }
 
 /**
- * 模块级单调戳。`Date.now()` 在同一毫秒内的多次写入会拿到相同的 `t`，淘汰排序就
- * 不确定了（排序退化成存储的枚举顺序）；这里保证后写入/刷新的 `t` 一定大于先前的。
+ * 按存储区隔离的单调戳。`Date.now()` 在同一毫秒内的多次写入会拿到相同的 `t`，淘汰排序
+ * 就不确定了（排序退化成存储的枚举顺序）；这里保证后写入/刷新的 `t` 一定大于先前的。
+ *
+ * 戳记挂在存储区上而不是模块上：模块级状态会让两个互不相干的存储区互相推高时钟，
+ * 一个注入了"未来时间"的测试会永久污染后续所有按真实时钟写入的条目。
  */
-let lastStamp = 0;
+const stamps = new WeakMap<StorageArea, number>();
 
-function nextStamp(now: () => number): number {
+function nextStamp(area: StorageArea, now: () => number): number {
+  const previous = stamps.get(area) ?? 0;
   const t = now();
-  lastStamp = t > lastStamp ? t : lastStamp + 1;
-  return lastStamp;
+  const stamp = t > previous ? t : previous + 1;
+  stamps.set(area, stamp);
+  return stamp;
 }
 
 /** 只认能读出译文的记录；时间戳缺失或坏掉不丢译文，当作最旧的一条。 */
@@ -108,8 +116,12 @@ export class TranslationCache {
     for (const [hash, entry] of entries) out.set(hash, entry.v);
 
     // 命中即刷新"最后命中时间"，否则淘汰退化成写入顺序（FIFO），热门段落会先于冷门
-    // 段落被淘汰。刷新与写入共用同一个队列并且**在返回前落盘**：否则"读到命中"和
-    // "被淘汰"之间会插进一次并发写入，刚命中的条目照样可能被删掉。
+    // 段落被淘汰。刷新写是在写入队列里落盘的，所以刷新本身不会与 putMany / 淘汰并发。
+    //
+    // 已知窗口：读发生在进队列之前，"读到命中 → 该条目被并发淘汰 → 刷新把它写回"这条
+    // 交错是可达的，表现为条目数短暂超过上限、刚淘汰的那条又活过来。影响有界：下一次
+    // 写入触发扫描时就会收敛，且译文内容仍然正确（同一 hash 的译文是内容派生的）。
+    // 把读也塞进队列能关掉这个窗口，代价是每次缓存读都要排在一次待写批次后面。
     if (entries.size > 0) await this.queue(() => this.refresh(entries));
     return out;
   }
@@ -128,7 +140,7 @@ export class TranslationCache {
     let touched = 0;
     for (const [hash, entry] of entries) {
       if (now - entry.t < REFRESH_INTERVAL_MS) continue;
-      batch[this.entryKey(hash)] = { v: entry.v, t: nextStamp(this.now) } satisfies CacheEntry;
+      batch[this.entryKey(hash)] = { v: entry.v, t: nextStamp(this.area, this.now) } satisfies CacheEntry;
       touched += 1;
     }
     if (touched === 0) return;
@@ -140,15 +152,16 @@ export class TranslationCache {
     await this.queue(async () => {
       const batch: Record<string, unknown> = {};
       for (const [hash, value] of items) {
-        batch[this.entryKey(hash)] = { v: value, t: nextStamp(this.now) } satisfies CacheEntry;
+        batch[this.entryKey(hash)] = { v: value, t: nextStamp(this.area, this.now) } satisfies CacheEntry;
       }
 
       try {
         await this.area.set(batch);
       } catch {
         // 写不进去只意味着这次没缓存上，不抛给调用方；写失败最常见的成因是存储满了，
-        // 顺手做一次扫描淘汰腾地方。
-        await this.scanAndEvict();
+        // 顺手按比例淘汰腾地方——注意此时条目数往往还没到上限，靠 `overflow` 是腾不出
+        // 任何空间的，新条目会永久写不进去。
+        await this.scanAndEvict(QUOTA_EVICT_RATIO);
         return;
       }
 
@@ -196,8 +209,14 @@ export class TranslationCache {
     });
   }
 
-  /** 全量扫描 → 按 `t` 从小到大裁剪超限条目 → 把计数校正为真实值。 */
-  private async scanAndEvict(): Promise<void> {
+  /**
+   * 全量扫描 → 按 `t` 从小到大裁剪超限条目 → 把计数校正为真实值。
+   *
+   * `forceEvictRatio > 0` 用于"存储已经写满、但条目数还没到上限"的场景：此时按上限算
+   * 没有任何溢出，一条都不删的话新条目永远写不进去，缓存会永久停摆。所以写失败时按比例
+   * 多腾一些名额（至少一条），避免每写一条就再扫描一次。
+   */
+  private async scanAndEvict(forceEvictRatio = 0): Promise<void> {
     const keys = await this.entryKeys();
     if (keys.length === 0) {
       await this.writeMeta(0);
@@ -208,8 +227,10 @@ export class TranslationCache {
       .map((key) => ({ key, t: readStamp(raw[key]) }))
       .sort((a, b) => a.t - b.t);
     const overflow = sorted.length - this.maxEntries;
-    if (overflow > 0) await this.area.remove(sorted.slice(0, overflow).map((item) => item.key));
-    await this.writeMeta(Math.min(sorted.length, Math.max(0, this.maxEntries)));
+    const forced = forceEvictRatio > 0 ? Math.max(1, Math.floor(sorted.length * forceEvictRatio)) : 0;
+    const target = Math.min(Math.max(overflow, forced), sorted.length);
+    if (target > 0) await this.area.remove(sorted.slice(0, target).map((item) => item.key));
+    await this.writeMeta(Math.min(sorted.length - target, Math.max(0, this.maxEntries)));
   }
 
   private async readEntries(hashes: string[]): Promise<Map<string, CacheEntry>> {
