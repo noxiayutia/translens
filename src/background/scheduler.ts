@@ -2,9 +2,9 @@ import { buildCacheKey, hashString } from '../core/hash';
 import { joinPieces, splitBySentence } from '../core/segmenter';
 import {
   EngineError,
+  RETRYABLE_CODES,
   toEngineError,
   type EngineConfig,
-  type EngineErrorCode,
   type Term,
   type Translator,
 } from '../engines/types';
@@ -28,19 +28,17 @@ export interface BatchDeps {
   glossary?: Term[];
   systemPrompt?: string;
   cache: CacheLike;
+  /**
+   * 外部取消信号。调度器自己不设超时（超时归 content script，见 `callEngine`），
+   * 但必须留一个能把取消注入引擎的入口：一旦它 abort，引擎收到的 signal 也跟着 abort。
+   */
+  signal?: AbortSignal;
   /** 测试可注入假定时器；默认真实等待 */
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** 退避预算（规格 §8）：网络错误 / 超时退避 500ms → 1500ms 两次。 */
 const BACKOFF_MS = [500, 1500];
-
-/**
- * 值得退避重试的错误：规格 §8 只给「网络错误 / 超时」发退避预算。
- *
- * 不能直接用 `EngineError.retryable`：那里面还含 `TOO_LONG`，但文本过长是确定性失败，
- * 拿同一段文本重问一次必然还是过长，只白烧两次请求；它该走的是切分降级。
- */
-const TRANSIENT_CODES: ReadonlySet<EngineErrorCode> = new Set<EngineErrorCode>(['NETWORK', 'RATE_LIMIT']);
 
 /** 二次切分的阈值下限：切点只允许落在句子边界，见 `splitBySentence`。 */
 const SPLIT_MIN_LEN = 200;
@@ -49,10 +47,12 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
 
 async function callEngine(texts: string[], deps: BatchDeps): Promise<string[]> {
   // signal 是 TranslateRequest 的必填字段，两个引擎都真的用了它（fetch 的 signal、
-  // 以及拿到响应后再查一次 aborted），但这个 controller 永远不会 abort——调度器
-  // 不设请求超时：设计规格把超时归给 content script（§8「content script 侧对请求加
-  // 超时」），那个超时由 WU7 落地。这里给一个假超时反而会掐掉合法的大批次。
+  // 以及拿到响应后再查一次 aborted）。外部取消经 deps.signal 注入；调度器自身不设超时：
+  // 设计规格把超时归给 content script（§8「content script 侧对请求加超时」），
+  // 那个超时由 WU7 落地。这里给一个假超时反而会掐掉合法的大批次。
   const controller = new AbortController();
+  if (deps.signal?.aborted) controller.abort();
+  else deps.signal?.addEventListener('abort', () => controller.abort(), { once: true });
   const translations = await deps.engine.translate(
     {
       texts,
@@ -85,8 +85,10 @@ async function callEngine(texts: string[], deps: BatchDeps): Promise<string[]> {
  * 降级路径（切分、逐条）也必须走这里。它们把一次请求摊成 N 次，撞上瞬时抖动的概率
  * 本就比整批请求高；少了这层重试，第 11 次调用的一次抖动会让整批 12 条一起报错。
  *
- * 只重试瞬时错误（见 `TRANSIENT_CODES`）：`BAD_RESPONSE` 重试同一个输入没有意义，
+ * 只重试瞬时错误（见 `RETRYABLE_CODES`）：`BAD_RESPONSE` 重试同一个输入没有意义，
  * 它是调用方决定降级还是上报的依据；`TOO_LONG` 该降到切分路径，重问一次必然还是过长。
+ * 判据只有 `RETRYABLE_CODES` 一份（`engines/types`），调度器不再自带一套集合——
+ * 两处各写一份时「`TOO_LONG` 算不算可重试」会随改动漂移。
  */
 async function callEngineWithRetry(texts: string[], deps: BatchDeps): Promise<string[]> {
   const sleep = deps.sleep ?? defaultSleep;
@@ -99,7 +101,7 @@ async function callEngineWithRetry(texts: string[], deps: BatchDeps): Promise<st
       const error = toEngineError(raw);
       last = error;
 
-      if (!TRANSIENT_CODES.has(error.code)) throw error;
+      if (!RETRYABLE_CODES.has(error.code)) throw error;
 
       if (attempt < BACKOFF_MS.length) await sleep(BACKOFF_MS[attempt]);
     }
@@ -207,9 +209,10 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   const missing: number[] = [];
   items.forEach((item, index) => {
     // 空文本不进引擎也不进缓存：'' 写进缓存与"翻成了空"无法区分，发给引擎也只是
-    // 白发一次请求。
+    // 白发一次请求。但空白条目要原样返回：把 '  \n ' 改写成 '' 会让内容脚本清空一个
+    // 只含空白的节点，双语模式下的行内排版会跟着变，而这里本来"没什么可翻"。
     if (item.text.trim() === '') {
-      results[index] = { id: item.id, text: '' };
+      results[index] = { id: item.id, text: item.text };
       return;
     }
     const hit = cached.get(keys[index]);

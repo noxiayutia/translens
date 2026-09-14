@@ -27,10 +27,16 @@ export type EngineErrorCode =
   | 'ABORTED'
   | 'UNKNOWN';
 
-const RETRYABLE: ReadonlySet<EngineErrorCode> = new Set<EngineErrorCode>([
+/**
+ * 可退避重试的错误码：网络抖动与限流重发还有机会成功。
+ *
+ * 有意不含 `TOO_LONG`：文本过长是确定性失败，拿同一段文本原样重发必然还是过长，
+ * 它该走的是调用方的切分降级。这是全仓唯一一份判据，调度器直接复用它
+ * （见 `background/scheduler.ts`），避免两处集合各说各话。
+ */
+export const RETRYABLE_CODES: ReadonlySet<EngineErrorCode> = new Set<EngineErrorCode>([
   'NETWORK',
   'RATE_LIMIT',
-  'TOO_LONG',
 ]);
 
 export class EngineError extends Error {
@@ -41,7 +47,7 @@ export class EngineError extends Error {
     super(message, options);
     this.name = 'EngineError';
     this.code = code;
-    this.retryable = RETRYABLE.has(code);
+    this.retryable = RETRYABLE_CODES.has(code);
   }
 }
 

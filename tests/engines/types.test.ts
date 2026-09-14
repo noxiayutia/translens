@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EngineError, toEngineError } from '../../src/engines/types';
+import { EngineError, RETRYABLE_CODES, toEngineError } from '../../src/engines/types';
 
 describe('EngineError', () => {
   it('网络错误与限流可重试', () => {
@@ -7,9 +7,23 @@ describe('EngineError', () => {
     expect(new EngineError('RATE_LIMIT', 'x').retryable).toBe(true);
   });
 
+  it('文本过长不可重试：超长要靠切分而不是原样重发', () => {
+    // 文本过长是确定性失败，拿同一段文本重问一次必然还是过长，只白烧两次请求；
+    // 它该走的是调度器的切分降级。判据与调度器共用 RETRYABLE_CODES，不能各写一份。
+    expect(RETRYABLE_CODES.has('TOO_LONG')).toBe(false);
+    expect(new EngineError('TOO_LONG', 'x').retryable).toBe(false);
+  });
+
   it('鉴权失败与格式错误不可重试', () => {
     expect(new EngineError('AUTH', 'x').retryable).toBe(false);
     expect(new EngineError('BAD_RESPONSE', 'x').retryable).toBe(false);
+  });
+
+  it('retryable 只由导出的 RETRYABLE_CODES 决定', () => {
+    expect([...RETRYABLE_CODES].sort()).toEqual(['NETWORK', 'RATE_LIMIT']);
+    for (const code of ['NETWORK', 'RATE_LIMIT', 'AUTH', 'TOO_LONG', 'BAD_RESPONSE', 'ABORTED', 'UNKNOWN'] as const) {
+      expect(new EngineError(code, 'x').retryable).toBe(RETRYABLE_CODES.has(code));
+    }
   });
 
   it('保留错误码与消息', () => {

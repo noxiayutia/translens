@@ -314,6 +314,89 @@ describe('translateBatch', () => {
     await expect(cache.count()).resolves.toBe(1);
   });
 
+  it('外部 signal 已取消时，引擎收到的是已取消的 signal 且不重试', async () => {
+    // 调度器自己不设超时，但取消必须能从 deps.signal 注入：否则后续单元做超时/取消
+    // 时只能改 translate 的签名，波及所有调用点。
+    const external = new AbortController();
+    external.abort();
+    const seen: boolean[] = [];
+    let calls = 0;
+    const engine: Translator = {
+      id: 'fake',
+      name: 'Fake',
+      needsKey: false,
+      supportsGlossary: false,
+      async translate(request: TranslateRequest): Promise<string[]> {
+        calls += 1;
+        seen.push(request.signal.aborted);
+        throw new EngineError('ABORTED', '请求已取消');
+      },
+    };
+
+    const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine, { signal: external.signal }));
+
+    expect(seen).toEqual([true]);
+    // ABORTED 不在退避预算里：取消后再重发两次毫无意义。
+    expect(calls).toBe(1);
+    expect(out[0]).toMatchObject({ id: 'a', text: null, code: 'ABORTED' });
+  });
+
+  it('外部 signal 在调用途中取消时会转发给引擎', async () => {
+    const external = new AbortController();
+    let abortedDuringCall = false;
+    const engine: Translator = {
+      id: 'fake',
+      name: 'Fake',
+      needsKey: false,
+      supportsGlossary: false,
+      async translate(request: TranslateRequest): Promise<string[]> {
+        return await new Promise<string[]>((_resolve, reject) => {
+          if (request.signal.aborted) {
+            abortedDuringCall = true;
+            reject(new EngineError('ABORTED', '请求已取消'));
+            return;
+          }
+          request.signal.addEventListener(
+            'abort',
+            () => {
+              abortedDuringCall = true;
+              reject(new EngineError('ABORTED', '请求已取消'));
+            },
+            { once: true },
+          );
+          // 请求已经在飞的时候外部才取消。
+          external.abort();
+        });
+      },
+    };
+
+    const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine, { signal: external.signal }));
+
+    expect(abortedDuringCall).toBe(true);
+    expect(out[0]).toMatchObject({ id: 'a', text: null, code: 'ABORTED' });
+  });
+
+  it('纯空白条目原样返回，不被改写成空串', async () => {
+    // 内容脚本会把结果写回节点：把 '  \n ' 改成 '' 会清空一个只含空白的节点，
+    // 双语模式下的行内排版会跟着变。语义是"没什么可翻，原样保留"。
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['你好']]);
+    const out = await translateBatch(
+      [
+        { id: 'a', text: '  \n ' },
+        { id: 'b', text: 'Hello' },
+      ],
+      deps(engine, { cache }),
+    );
+
+    expect(out).toEqual([
+      { id: 'a', text: '  \n ' },
+      { id: 'b', text: '你好' },
+    ]);
+    expect(calls).toEqual([['Hello']]);
+    await expect(cache.count()).resolves.toBe(1);
+  });
+
   it('空文本不进引擎也不写缓存', async () => {
     const cache = new TranslationCache(new MemoryStorage());
     const { engine, calls } = fakeEngine([['你好']]);
