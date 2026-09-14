@@ -3,7 +3,7 @@ import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
-import { loadSettings, type Settings } from '../shared/settings';
+import { loadUiSettings, type UiSettings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
 import { DomRenderer } from './renderer';
 import { toast } from './toast';
@@ -270,7 +270,11 @@ async function translatePage(): Promise<void> {
   const mine = ++generation;
   running = true;
 
-  const settings: Settings = await loadSettings();
+  // **用投影**（`loadUiSettings`），不是完整设置：内容脚本跑在网页进程里，读完整设置会把
+  // API Key 反序列化进网页进程的堆内存（规格 §7.3）。`UiSettings` 里根本没有 `apiKey`
+  // 字段，本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
+  // maxSegmentsPerBatch 全在投影里——这一层由 `tests/content/privacy-guard.test.ts` 守着。
+  const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
 
@@ -372,7 +376,8 @@ async function retrySegment(segmentId: string): Promise<void> {
   const segment = segments.find((s) => s.id === segmentId);
   if (!segment) return;
   // 重试要按**当前**设置走：用户点了重试按钮，往往正是刚去设置页填完 API Key 回来。
-  const settings = await loadSettings();
+  // 同样是投影（见 translatePage）：重试路径也不该把密钥读进网页进程。
+  const settings = await loadUiSettings();
 
   failedIds.delete(segmentId);
   renderer?.mount(segment, 'pending');
