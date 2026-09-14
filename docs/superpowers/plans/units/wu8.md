@@ -51,8 +51,9 @@ export function toast(message: string): void {
 // src/content/index.ts
 import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
+import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
-import { loadSettings, type Settings } from '../shared/settings';
+import { loadUiSettings, type UiSettings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
 import { DomRenderer } from './renderer';
 import { toast } from './toast';
@@ -89,8 +90,66 @@ function currentState(): PageState {
   };
 }
 
+/**
+ * 内容脚本 → 后台单次请求的超时。
+ *
+ * MV3 的 service worker 空闲约 30 秒就会被浏览器回收。翻译中途被回收时
+ * `chrome.runtime.sendMessage` 的 promise **可能永不兑现**：端口既不关闭也不报错，
+ * 于是这一批永远停在「翻译中…」——`runPool` 永不 settle、`running` 永不释放，
+ * 页面卡死且连重试按钮都出不来（规格 §8：绝不静默失败）。
+ *
+ * 取 60 秒：默认批次（12 段 / 1000 字符）正常几秒内就回来；这个上限要容得下调度器
+ * 一次退避重试（500ms + 1500ms）与慢接口的往返，又不至于让用户对着一个死页面干等。
+ * 超时归这一层——调度器自身不设超时（见 `background/scheduler.ts` 的 `callEngine`）。
+ */
+const BACKGROUND_TIMEOUT_MS = 60_000;
+
+/**
+ * 后台在超时预算内一次都没响应。文案自带完整语义，所以不再套「无法连接后台」的壳：
+ * 用户看到的应该是「后台没响应」，而不是一句会被理解成"网络不通"的通用错误。
+ */
+class BackgroundTimeoutError extends Error {
+  constructor() {
+    super(
+      `后台 ${Math.round(BACKGROUND_TIMEOUT_MS / 1000)} 秒没有响应（翻译服务可能已被浏览器回收），请重试`,
+    );
+    this.name = 'BackgroundTimeoutError';
+  }
+}
+
+/**
+ * 发一条消息给后台，**最多等 `BACKGROUND_TIMEOUT_MS`**。
+ *
+ * 超时与消息本身的成败都收敛成同一个 promise 的两种结局，调用方（批任务 / 单条重试）
+ * 原有的 try/catch 照旧兜住——失败走已有的 `failBatch` 路径进失败态并可重试，
+ * 不会让整个 `runPool` 挂起。
+ *
+ * 定时器在两种收尾里都会清掉：内容脚本活在页面进程里，一个永不清除的定时器会被页面
+ * 一直持有（页面上有几百个批次时就是几百个悬挂的定时器）。
+ */
 function sendToBackground(message: unknown): Promise<TranslateTextsResponse> {
-  return chrome.runtime.sendMessage(message) as Promise<TranslateTextsResponse>;
+  return new Promise<TranslateTextsResponse>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new BackgroundTimeoutError()), BACKGROUND_TIMEOUT_MS);
+    const settle = (run: () => void): void => {
+      clearTimeout(timer);
+      run();
+    };
+    try {
+      (chrome.runtime.sendMessage(message) as Promise<TranslateTextsResponse>).then(
+        (response) => settle(() => resolve(response)),
+        (error: unknown) => settle(() => reject(error)),
+      );
+    } catch (raw) {
+      // `sendMessage` 自己抛（极端情况下扩展上下文已失效）：与异步失败同一条路。
+      settle(() => reject(raw));
+    }
+  });
+}
+
+/** 传输层失败的条目文案：超时自带完整语义，其余套「无法连接后台」的壳。 */
+function describeTransportError(raw: unknown): string {
+  if (raw instanceof BackgroundTimeoutError) return raw.message;
+  return `无法连接后台：${raw instanceof Error ? raw.message : String(raw)}`;
 }
 
 /** 页面级失败的文案（`ok: false`：设置读不出来这类"连请求都没发出去"的错）。 */
@@ -101,11 +160,18 @@ function describeError(response: { code: string; message: string }): string {
 }
 
 /**
- * 鉴权失败这类"重试多少次都是同一个结果"的条目级错误不挂重试按钮：
- * 一个 200 段的页面会变成 200 个点了也没用的按钮（规格 §8：不重试，改为页面 toast）。
+ * 条目级失败要不要挂重试按钮，判据是 `engines/types.ts` 的 `RETRYABLE_CODES` 那一份，
+ * 本层不再自带一套集合——两处各写一份时「哪个码算可重试」会随改动漂移。
+ *
+ * - 可重试：`NETWORK`（抖动）、`RATE_LIMIT`（限流），重发还有机会成功。
+ * - 不可重试：`AUTH` 重试多少次都是同一个结果（规格 §8：不重试，改为页面 toast）；
+ *   `TOO_LONG` 该走切分降级、`BAD_RESPONSE` 重试同一个输入没有意义——给它们挂上按钮，
+ *   用户只会对着注定失败的段落反复点（一个 200 段的页面就是 200 个没用的按钮）。
+ * - `code === undefined` 仍算可重试：没有错误码的失败（响应形状不符、后台漏了这条）
+ *   是「这次没拿到结果」，不是「这段翻不了」。
  */
 function isRetryable(code: TranslateItemResult['code']): boolean {
-  return code !== 'AUTH';
+  return code === undefined || RETRYABLE_CODES.has(code);
 }
 
 /**
@@ -159,8 +225,8 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
 /**
  * 落地一批条目级结果。
  *
- * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——重试多少次都是同一个结果
- * （`AUTH`）时不挂按钮，否则用户会拿到一排点了也没用的按钮。
+ * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——只有 `RETRYABLE_CODES`
+ * 里那两类（网络抖动、限流）才挂按钮，其余错误挂上去也只是让用户白点。
  * 整个响应**全部失败且错误码相同**时，逐条标注之外再加一句整批提示，由调用方选时机弹。
  * 返回该提示（不需要时返回 null）。
  *
@@ -254,7 +320,11 @@ async function translatePage(): Promise<void> {
   const mine = ++generation;
   running = true;
 
-  const settings: Settings = await loadSettings();
+  // **用投影**（`loadUiSettings`），不是完整设置：内容脚本跑在网页进程里，读完整设置会把
+  // API Key 反序列化进网页进程的堆内存（规格 §7.3）。`UiSettings` 里根本没有 `apiKey`
+  // 字段，本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
+  // maxSegmentsPerBatch 全在投影里——这一层由 `tests/content/privacy-guard.test.ts` 守着。
+  const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
 
@@ -305,12 +375,12 @@ async function translatePage(): Promise<void> {
               },
             });
           } catch (raw) {
-            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）。
+            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
+            // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
             // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
             if (mine !== generation) return;
-            const detail = raw instanceof Error ? raw.message : String(raw);
-            failBatch(batch, `无法连接后台：${detail}`);
+            failBatch(batch, describeTransportError(raw));
             return;
           }
 
@@ -356,7 +426,8 @@ async function retrySegment(segmentId: string): Promise<void> {
   const segment = segments.find((s) => s.id === segmentId);
   if (!segment) return;
   // 重试要按**当前**设置走：用户点了重试按钮，往往正是刚去设置页填完 API Key 回来。
-  const settings = await loadSettings();
+  // 同样是投影（见 translatePage）：重试路径也不该把密钥读进网页进程。
+  const settings = await loadUiSettings();
 
   failedIds.delete(segmentId);
   renderer?.mount(segment, 'pending');
@@ -368,9 +439,9 @@ async function retrySegment(segmentId: string): Promise<void> {
       payload: { items: [{ id: segment.id, text: segment.text }], targetLang: settings.targetLang },
     });
   } catch (raw) {
-    const detail = raw instanceof Error ? raw.message : String(raw);
     failedIds.add(segmentId);
-    renderer?.fail(segment.id, `无法连接后台：${detail}`);
+    // 超时可能发生在用户点击重试之后：同样如实说明，而不是把页面吊在「翻译中…」。
+    renderer?.fail(segment.id, describeTransportError(raw));
     return;
   }
 

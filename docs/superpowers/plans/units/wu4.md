@@ -1193,7 +1193,13 @@ function pickBoolean(value: unknown, fallback: boolean): boolean {
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
-function isAllowedBaseUrl(value: string): boolean {
+/**
+ * 接口地址是否合法：只接受 https（本机回环地址放行 http，Ollama 等本地服务默认就是 http）。
+ *
+ * 导出是给**设置页**用的：它必须在保存按钮里给出与这里**同一套判据**的提示，否则会出现
+ * 「设置页说保存成功、存储层把地址悄悄退回默认值」这种用户永远查不出来的分歧。
+ */
+export function isAllowedBaseUrl(value: string): boolean {
   let url: URL;
   try {
     url = new URL(value);
@@ -1306,9 +1312,12 @@ function resolveArea(area?: StorageArea): StorageArea {
 }
 
 /**
- * 读取完整设置（**含 API Key**）：只允许 service worker 与设置页调用。
- * 内容脚本等不需要密钥的地方一律用 `loadUiSettings()`，从结构上拿不到密钥。
- * 密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
+ * 读取完整设置（**含 API Key**）。
+ *
+ * 调用方是**扩展自身的受信页面与后台**：service worker、设置页、弹窗——三者同源
+ * （`chrome-extension://`），谁也拿不到对方拿不到的东西，所以弹窗读完整设置不是越权。
+ * 真正需要结构上隔离的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
+ * 那个类型里根本没有 `apiKey` 字段。密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
  *
  * 这里也是**迁移入口**（规格 §7.3）：版本号必须从存储里真实读出来，否则将来
  * 无从判断该按哪一版语义解释老数据。当前只有 v1，所以 v1 数据只需逐字段补齐；
@@ -1327,7 +1336,7 @@ export async function loadSettings(area?: StorageArea): Promise<Settings> {
   return mergeSettings(stored, CURRENT_VERSION);
 }
 
-/** 不带 API Key 的设置投影，供内容脚本、弹窗等非可信上下文使用。 */
+/** 不带 API Key 的设置投影，供**内容脚本**使用（它跑在网页进程里）。 */
 export type UiEngineConfig = Omit<EngineConfigSettings, 'apiKey'>;
 
 export type UiSettings = Omit<Settings, 'engineConfig'> & { engineConfig: UiEngineConfig };
@@ -1341,6 +1350,13 @@ export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
  * 保存前先归一化（`mergeSettings`），UI 不可能把脏数据写进存储。
  * 存储里的版本号高于本代码时拒绝写入：继续写就等于用旧 schema 覆盖新数据
  * （弹窗每次改动开关都会保存一次），会把新版字段悄悄丢掉。
+ *
+ * 注意这是**整份覆盖**：调用方必须持有完整设置（弹窗就是 `loadSettings` 读来的那一份，
+ * 它只改 targetLang / engineId，其余字段原样写回）。因此设置页实装后**不能**和弹窗
+ * 各持一份快照同时写——两边各自读一次、各改一个字段，后写的那次会把对方刚改的字段
+ * 抹回自己的旧值。到那时这里要加一个存储侧的局部写入 API（只写指定字段），
+ * 而不是让两个页面继续整份回写。今天设置页还是占位实现（src/options/options.ts），
+ * 弹窗是唯一的写入方，所以这条约束尚未被触发。
  */
 export async function saveSettings(settings: Settings, area?: StorageArea): Promise<void> {
   const target = resolveArea(area);

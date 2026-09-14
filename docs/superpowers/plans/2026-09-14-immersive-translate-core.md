@@ -360,6 +360,7 @@ describe('buildCacheKey', () => {
   const base = {
     engineId: 'google',
     configHash: 'cfg-openai-gpt-4o-mini',
+    sourceLang: 'auto',
     targetLang: 'zh-Hans',
     glossaryHash: '',
     promptHash: '',
@@ -378,6 +379,19 @@ describe('buildCacheKey', () => {
     expect(buildCacheKey({ ...base, glossaryHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, promptHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, configHash: 'cfg-openai-gpt-4o' })).not.toBe(key);
+  });
+
+  /**
+   * 源语言是设置项、会一路传到 `TranslateRequest.from`，不参与 key 就会命中按另一种
+   * 源语言语义翻出来的旧译文（今天两个引擎都还没读 `from`，所以这条是防御性的：
+   * 等接上就用错语义，而且事后无法自愈）。
+   */
+  it('源语言变化会改变 key', () => {
+    const key = buildCacheKey(base);
+    expect(buildCacheKey({ ...base, sourceLang: 'en' })).not.toBe(key);
+    expect(buildCacheKey({ ...base, sourceLang: 'ja' })).not.toBe(key);
+    // 'auto' 与具体语言是两种语义，不能共用 key。
+    expect(buildCacheKey({ ...base, sourceLang: 'zh-Hans' })).not.toBe(key);
   });
 });
 ```
@@ -418,6 +432,14 @@ export interface CacheKeyParts {
    * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
    */
   configHash: string;
+  /**
+   * 源语言。`sourceLang` 是设置项，会一路传到 `TranslateRequest.from`；它不参与 key 时，
+   * 用户把「自动检测」改成某个具体源语言（或反过来）之后，同一个引擎、同一段文本、同一个
+   * 目标语言会命中**按另一种源语言语义**翻出来的旧译文，而且事后无法自愈。
+   * 今天两个引擎都还没真的读 `from`（Google 把 `sl=auto` 硬编码），所以这条还没有可观察
+   * 的错误；等接上就用错语义——key 必须在那之前就带上它。
+   */
+  sourceLang: string;
   targetLang: string;
   glossaryHash: string;
   promptHash: string;
@@ -427,7 +449,15 @@ export interface CacheKeyParts {
 /** 用 \u0000 分隔，避免字段拼接产生歧义（如 ("ab","c") 与 ("a","bc")）。 */
 export function buildCacheKey(parts: CacheKeyParts): string {
   return hashString(
-    [parts.engineId, parts.configHash, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
+    [
+      parts.engineId,
+      parts.configHash,
+      parts.sourceLang,
+      parts.targetLang,
+      parts.glossaryHash,
+      parts.promptHash,
+      parts.text,
+    ].join('\u0000'),
   );
 }
 ```
@@ -1947,6 +1977,56 @@ describe('openAiCompatEngine.translate', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>oops</html>', { status: 200 })));
     await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
+
+  it('接口地址不是合法 URL 时抛 AUTH 并说明地址有问题', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      openAiCompatEngine.translate(request(['A']), { ...CONFIG, baseUrl: 'api.example.com/v1' }),
+    ).rejects.toMatchObject({ code: 'AUTH', message: expect.stringContaining('不是合法的 URL') });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * manifest 只声明了 `optional_host_permissions`，而 Chrome 要求可选权限在用户手势里申请。
+   * 没授权就发请求时浏览器会把它拦下，而我们拿到的只是一个失败的 fetch——错误会伪装成
+   * `NETWORK`（"断网"），用户查不出原因也找不到该去哪儿点。所以发请求**之前**先查一次权限。
+   */
+  it('未授权该 origin 时抛 AUTH 并指路设置页，且一个请求都不发', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const contains = vi.fn().mockResolvedValue(false);
+    vi.stubGlobal('chrome', { permissions: { contains } });
+
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({
+      code: 'AUTH',
+      message: expect.stringContaining('未授权访问该接口地址，请到设置页保存一次以授权'),
+    });
+
+    // 查的是这个端点自己的 origin 模式，不是别的什么串。
+    expect(contains).toHaveBeenCalledWith({ origins: ['https://api.example.com/*'] });
+    // 关键：拦在 fetch 之前——被浏览器拦下就只剩一个伪装成 NETWORK 的失败。
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('已授权该 origin 时照常发请求', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('chrome', { permissions: { contains: vi.fn().mockResolvedValue(true) } });
+
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).resolves.toEqual(['你好']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('没有权限 API 的环境（纯 Node 单测）不做权限判断', async () => {
+    // `vi.stubGlobal('chrome', …)` 一次都不调：`typeof chrome === 'undefined'` 这条路
+    // 就是引擎能在纯 Node 里被单测的前提，上面所有既有用例其实都在走它。
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).resolves.toEqual(['你好']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 ```
 
@@ -1960,6 +2040,7 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/engines/openai-compat.ts
+import { hasHostPermission, originPattern } from '../shared/host-permission';
 import { EngineError, toEngineError, type EngineConfig, type Term, type TranslateRequest, type Translator } from './types';
 
 export interface ChatMessage {
@@ -2032,6 +2113,25 @@ export const openAiCompatEngine: Translator = {
       temperature: 0,
       messages: buildMessages(request.texts, request.to, request.glossary, request.systemPrompt),
     };
+
+    /**
+     * 发请求**之前**确认这个 origin 已经被用户授权。
+     *
+     * manifest 只声明了 `optional_host_permissions`，而 Chrome 要求可选权限在用户手势里
+     * 申请（设置页的「保存」按钮做这件事）。没申请就发请求时浏览器会把它拦下，而我们拿到的
+     * 只是一个失败的 fetch——错误会伪装成 `NETWORK`（"断网"），用户查不出真正的原因，
+     * 也找不到该去哪儿点。
+     *
+     * 没有权限 API 的环境（纯 Node 单测）里 `hasHostPermission` 恒为 true：
+     * 引擎必须保持可独立单测。
+     */
+    const pattern = originPattern(baseUrl);
+    if (pattern === undefined) {
+      throw new EngineError('AUTH', `接口地址不是合法的 URL：${baseUrl}，请在设置中修正`);
+    }
+    if (!(await hasHostPermission(pattern))) {
+      throw new EngineError('AUTH', '未授权访问该接口地址，请到设置页保存一次以授权');
+    }
 
     let response: Response;
     try {
@@ -3351,7 +3451,13 @@ function pickBoolean(value: unknown, fallback: boolean): boolean {
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
-function isAllowedBaseUrl(value: string): boolean {
+/**
+ * 接口地址是否合法：只接受 https（本机回环地址放行 http，Ollama 等本地服务默认就是 http）。
+ *
+ * 导出是给**设置页**用的：它必须在保存按钮里给出与这里**同一套判据**的提示，否则会出现
+ * 「设置页说保存成功、存储层把地址悄悄退回默认值」这种用户永远查不出来的分歧。
+ */
+export function isAllowedBaseUrl(value: string): boolean {
   let url: URL;
   try {
     url = new URL(value);
@@ -3464,9 +3570,12 @@ function resolveArea(area?: StorageArea): StorageArea {
 }
 
 /**
- * 读取完整设置（**含 API Key**）：只允许 service worker 与设置页调用。
- * 内容脚本等不需要密钥的地方一律用 `loadUiSettings()`，从结构上拿不到密钥。
- * 密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
+ * 读取完整设置（**含 API Key**）。
+ *
+ * 调用方是**扩展自身的受信页面与后台**：service worker、设置页、弹窗——三者同源
+ * （`chrome-extension://`），谁也拿不到对方拿不到的东西，所以弹窗读完整设置不是越权。
+ * 真正需要结构上隔离的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
+ * 那个类型里根本没有 `apiKey` 字段。密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
  *
  * 这里也是**迁移入口**（规格 §7.3）：版本号必须从存储里真实读出来，否则将来
  * 无从判断该按哪一版语义解释老数据。当前只有 v1，所以 v1 数据只需逐字段补齐；
@@ -3485,7 +3594,7 @@ export async function loadSettings(area?: StorageArea): Promise<Settings> {
   return mergeSettings(stored, CURRENT_VERSION);
 }
 
-/** 不带 API Key 的设置投影，供内容脚本、弹窗等非可信上下文使用。 */
+/** 不带 API Key 的设置投影，供**内容脚本**使用（它跑在网页进程里）。 */
 export type UiEngineConfig = Omit<EngineConfigSettings, 'apiKey'>;
 
 export type UiSettings = Omit<Settings, 'engineConfig'> & { engineConfig: UiEngineConfig };
@@ -3499,6 +3608,13 @@ export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
  * 保存前先归一化（`mergeSettings`），UI 不可能把脏数据写进存储。
  * 存储里的版本号高于本代码时拒绝写入：继续写就等于用旧 schema 覆盖新数据
  * （弹窗每次改动开关都会保存一次），会把新版字段悄悄丢掉。
+ *
+ * 注意这是**整份覆盖**：调用方必须持有完整设置（弹窗就是 `loadSettings` 读来的那一份，
+ * 它只改 targetLang / engineId，其余字段原样写回）。因此设置页实装后**不能**和弹窗
+ * 各持一份快照同时写——两边各自读一次、各改一个字段，后写的那次会把对方刚改的字段
+ * 抹回自己的旧值。到那时这里要加一个存储侧的局部写入 API（只写指定字段），
+ * 而不是让两个页面继续整份回写。今天设置页还是占位实现（src/options/options.ts），
+ * 弹窗是唯一的写入方，所以这条约束尚未被触发。
  */
 export async function saveSettings(settings: Settings, area?: StorageArea): Promise<void> {
   const target = resolveArea(area);
@@ -3808,6 +3924,85 @@ describe('translateBatch', () => {
       { id: 'a', text: '甲' },
       { id: 'b', text: '乙' },
     ]);
+  });
+
+  /**
+   * 同一批里字面完全相同的文本只翻一次。真实网页的导航、「Read more」、表头、免责声明
+   * 能占 20-40% 的段落数，而 Google 引擎不支持批量（一条文本一个请求），逐条发等于把
+   * 免费额度白烧在重复段上，正文反而会因 429 失败（审查实测：60 个相同段落打出 36 次 fetch）。
+   */
+  it('同一批里字面相同的文本只送一次引擎，结果摊回每一条且都进缓存', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['重复段译文', '独有段译文']]);
+    const items = [
+      { id: 'a', text: 'Read more' },
+      { id: 'b', text: 'Unique sentence here' },
+      { id: 'c', text: 'Read more' },
+      { id: 'd', text: 'Read more' },
+    ];
+
+    const out = await translateBatch(items, deps(engine, { cache }));
+
+    // 3 个相同 + 1 个不同 → 引擎只收到 2 条文本。
+    expect(calls).toEqual([['Read more', 'Unique sentence here']]);
+    // 4 条结果都正确：重复的那 3 条拿到同一份译文，顺序与输入一致。
+    expect(out).toEqual([
+      { id: 'a', text: '重复段译文' },
+      { id: 'b', text: '独有段译文' },
+      { id: 'c', text: '重复段译文' },
+      { id: 'd', text: '重复段译文' },
+    ]);
+    // 都进缓存：缓存 key 由文本派生，重复的那 3 条共用同一个 key，所以真实条目数是 2。
+    expect(await cache.count()).toBe(2);
+
+    // 同一批再来一次：一条都不该再打给引擎（重复段命中的是同一个 key）。
+    const again = await translateBatch(items, deps(engine, { cache }));
+    expect(calls).toHaveLength(1);
+    expect(again).toEqual(out);
+  });
+
+  it('命中的与未命中的一起折叠：只有未命中的唯一文本进引擎', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['重复段译文'], ['独有段译文']]);
+    const shared = deps(engine, { cache });
+
+    // 先单独翻一次，让 'Read more' 进缓存。
+    await translateBatch([{ id: 'seed', text: 'Read more' }], shared);
+    expect(calls).toHaveLength(1);
+
+    // 这一批里两条命中、两条未命中同一段文本（都未命中缓存的那条只该送一次）。
+    const out = await translateBatch(
+      [
+        { id: 'a', text: 'Read more' },
+        { id: 'b', text: 'Unique sentence here' },
+        { id: 'c', text: 'Unique sentence here' },
+        { id: 'd', text: 'Read more' },
+      ],
+      shared,
+    );
+
+    expect(calls).toEqual([['Read more'], ['Unique sentence here']]);
+    expect(out).toEqual([
+      { id: 'a', text: '重复段译文' },
+      { id: 'b', text: '独有段译文' },
+      { id: 'c', text: '独有段译文' },
+      { id: 'd', text: '重复段译文' },
+    ]);
+  });
+
+  it('源语言变化时缓存不命中：key 里带了 sourceLang', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['自动检测的译文'], ['按英文源的译文']]);
+
+    await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'auto' }));
+    const second = await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'en' }));
+
+    // 换了源语言语义就必须重新问引擎；共用 key 会命中按 auto 翻出来的那一份。
+    expect(calls).toHaveLength(2);
+    expect(second[0].text).toBe('按英文源的译文');
+    // 反过来：同样的源语言仍然命中缓存。
+    await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'en' }));
+    expect(calls).toHaveLength(2);
   });
 
   it('鉴权失败不重试', async () => {
@@ -4340,7 +4535,8 @@ async function translateWithFallback(
 }
 
 /**
- * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求。
+ * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求——其中**字面相同的文本
+ * 只翻一次**（见下方 `uniqueTexts`），结果再按条目摊回。
  * 任何失败都转成携带错误码的结果项，绝不抛错——内容脚本据此渲染"重试"按钮。
  * 缓存读写失败不在此列：那不是"这次翻译失败"，降级即可（读当未命中、写当没缓存上）。
  */
@@ -4357,6 +4553,9 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
     buildCacheKey({
       engineId: deps.engine.id,
       configHash,
+      // 源语言也进 key：`sourceLang` 是设置项、会一路传到 `TranslateRequest.from`，
+      // 它不参与 key 时，改了源语言就会命中按另一种语义翻出来的旧译文（见 core/hash.ts）。
+      sourceLang: deps.sourceLang,
       targetLang: deps.targetLang,
       glossaryHash,
       promptHash,
@@ -4387,6 +4586,26 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   });
   if (missing.length === 0) return results;
 
+  /**
+   * 同一批里**字面完全相同**的文本只翻一次。
+   *
+   * 真实网页里重复文本很常见：导航、「Read more」、表头、免责声明能占 20-40% 的段落数。
+   * 而 Google 引擎不支持一次请求多条文本（一条文本一个请求），逐条发等于把免费额度
+   * 白烧在重复段上——正文反而会因 429 失败。缓存 key 是按文本算的，所以重复文本只会
+   * 一起命中或一起未命中，折叠不会改变任何一条的结果。
+   */
+  const uniqueTexts: string[] = [];
+  const indexesByText = new Map<string, number[]>();
+  for (const index of missing) {
+    const group = indexesByText.get(items[index].text);
+    if (group === undefined) {
+      indexesByText.set(items[index].text, [index]);
+      uniqueTexts.push(items[index].text);
+    } else {
+      group.push(index);
+    }
+  }
+
   // 待写缓存的条目：声明在 try 之外，因为写入发生在 try/catch 之后（见下方注释）。
   const toCache = new Map<string, string>();
   /**
@@ -4411,13 +4630,15 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   };
 
   try {
-    const translations = await translateWithFallback(
-      missing.map((index) => items[index].text),
-      deps,
-    );
+    const translations = await translateWithFallback(uniqueTexts, deps);
     // 逐条降级的半成品：逐条上报，别把已经翻好的条目一起丢掉，也别给它们安上
     // 邻居的错误码。成功的那几条照常进缓存，用户点重试时只需再翻失败的那几条。
-    missing.forEach((index, offset) => void settle(index, translations[offset]));
+    // 去重后的结果按**下标组**摊回每一条：同一文本的 N 个条目拿到同一份译文，
+    // 各自的缓存 key 也各自写上（key 由文本派生，这里其实是同一个 key）。
+    uniqueTexts.forEach((text, offset) => {
+      const translation = translations[offset];
+      for (const index of indexesByText.get(text) ?? []) settle(index, translation);
+    });
   } catch (raw) {
     const error = toEngineError(raw);
     for (const index of missing) settle(index, error);
@@ -5050,6 +5271,46 @@ describe('collectSegments', () => {
     expect(segments.map((s) => s.text)).toEqual(['Visible text here', 'Another sentence here']);
   });
 
+  /**
+   * 用户**正在写、还没保存**的内容（邮件草稿、笔记、评论框）属于隐私：它确实在网页里可见，
+   * 但它是用户的半成品，不是网页的内容。README 的隐私一节承诺过它不会被翻译。
+   */
+  it('contenteditable 容器里的草稿不产出段落', () => {
+    const root = mount(
+      '<div contenteditable="true">My private unfinished English draft</div>' +
+        '<p>Published paragraph text</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Published paragraph text']);
+  });
+
+  it('可编辑性会继承给后代：contenteditable 里的块级子元素同样不产出', () => {
+    const root = mount(
+      '<div contenteditable="true"><p>Draft inside a paragraph</p><p>Another draft line</p></div>' +
+        '<p>Published paragraph text</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Published paragraph text']);
+  });
+
+  it('行内的 contenteditable 草稿不并入父段', () => {
+    const root = mount(
+      '<p>Visible <span contenteditable="true">private draft</span> text here</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Visible text here']);
+  });
+
+  it('contenteditable="false" 只是显式关掉可编辑：它的文本照常翻译', () => {
+    // 所见即所得编辑器用 false 嵌只读片段，那不是"用户没写完的草稿"，不该被跳过。
+    const root = mount(
+      '<div contenteditable="false">Read only published text</div>' +
+        '<div contenteditable="true"><span contenteditable="false">nested read only text</span></div>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Read only published text']);
+  });
+
   it('重扫时容器里新追加的内容会被采到，已处理的段落不重复产出', () => {
     const root = mount('<div id="feed"><p>First post text</p></div>');
     const feed = document.getElementById('feed') as HTMLElement;
@@ -5294,7 +5555,30 @@ function isHidden(element: Element, styleOf: (element: Element) => ElementStyle)
  * 免得「这里跳过、那里不跳过」两处规则漂移。
  */
 function isSkippedForText(element: Element): boolean {
-  return SKIP_TAGS.has(element.tagName) || element.closest('[data-jy-root]') !== null;
+  return SKIP_TAGS.has(element.tagName) || isEditable(element) || element.closest('[data-jy-root]') !== null;
+}
+
+/**
+ * 可编辑区域（`contenteditable`）里的文本一律不采集。
+ *
+ * 用户**正在写、还没保存**的内容——邮件草稿、笔记、评论框——是隐私：它确实"在网页里可见"，
+ * 但它是用户的半成品，不是网页的内容，不该被送去外部接口（README 的隐私承诺）。
+ *
+ * 两层判定：
+ * 1. `element.isContentEditable` 是标准做法，浏览器把可编辑性**继承**给后代
+ *    （`<div contenteditable="true"><p>草稿</p></div>` 里的 `p` 也是可编辑的）；
+ * 2. 宿主没实现该属性时（老引擎、测试环境）退回按最近的 `[contenteditable]` 祖先判定，
+ *    显式的 `contenteditable="false"` 会把它自己与子树重新变回不可编辑（所见即所得编辑器
+ *    用它嵌只读片段），`inherit` 则继续往上找。
+ */
+function isEditable(element: Element): boolean {
+  if ((element as HTMLElement).isContentEditable === true) return true;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const value = node.getAttribute('contenteditable');
+    if (value === null || value === 'inherit') continue;
+    return value !== 'false';
+  }
+  return false;
 }
 
 /**
@@ -5389,6 +5673,8 @@ function inlineText(element: Element, styleOf: (element: Element) => ElementStyl
 
 function isSkippable(element: Element): boolean {
   if (SKIP_TAGS.has(element.tagName)) return true;
+  // 可编辑区域整棵子树都不采：用户没写完的草稿不上传到外部翻译接口（见 isEditable）。
+  if (isEditable(element)) return true;
   if (element.hasAttribute('data-jy-translated')) return true;
   // 插件自己注入的译文宿主，避免二次翻译。
   if (element.closest('[data-jy-root]')) return true;
@@ -6365,8 +6651,9 @@ export function toast(message: string): void {
 // src/content/index.ts
 import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
+import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
-import { loadSettings, type Settings } from '../shared/settings';
+import { loadUiSettings, type UiSettings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
 import { DomRenderer } from './renderer';
 import { toast } from './toast';
@@ -6403,8 +6690,66 @@ function currentState(): PageState {
   };
 }
 
+/**
+ * 内容脚本 → 后台单次请求的超时。
+ *
+ * MV3 的 service worker 空闲约 30 秒就会被浏览器回收。翻译中途被回收时
+ * `chrome.runtime.sendMessage` 的 promise **可能永不兑现**：端口既不关闭也不报错，
+ * 于是这一批永远停在「翻译中…」——`runPool` 永不 settle、`running` 永不释放，
+ * 页面卡死且连重试按钮都出不来（规格 §8：绝不静默失败）。
+ *
+ * 取 60 秒：默认批次（12 段 / 1000 字符）正常几秒内就回来；这个上限要容得下调度器
+ * 一次退避重试（500ms + 1500ms）与慢接口的往返，又不至于让用户对着一个死页面干等。
+ * 超时归这一层——调度器自身不设超时（见 `background/scheduler.ts` 的 `callEngine`）。
+ */
+const BACKGROUND_TIMEOUT_MS = 60_000;
+
+/**
+ * 后台在超时预算内一次都没响应。文案自带完整语义，所以不再套「无法连接后台」的壳：
+ * 用户看到的应该是「后台没响应」，而不是一句会被理解成"网络不通"的通用错误。
+ */
+class BackgroundTimeoutError extends Error {
+  constructor() {
+    super(
+      `后台 ${Math.round(BACKGROUND_TIMEOUT_MS / 1000)} 秒没有响应（翻译服务可能已被浏览器回收），请重试`,
+    );
+    this.name = 'BackgroundTimeoutError';
+  }
+}
+
+/**
+ * 发一条消息给后台，**最多等 `BACKGROUND_TIMEOUT_MS`**。
+ *
+ * 超时与消息本身的成败都收敛成同一个 promise 的两种结局，调用方（批任务 / 单条重试）
+ * 原有的 try/catch 照旧兜住——失败走已有的 `failBatch` 路径进失败态并可重试，
+ * 不会让整个 `runPool` 挂起。
+ *
+ * 定时器在两种收尾里都会清掉：内容脚本活在页面进程里，一个永不清除的定时器会被页面
+ * 一直持有（页面上有几百个批次时就是几百个悬挂的定时器）。
+ */
 function sendToBackground(message: unknown): Promise<TranslateTextsResponse> {
-  return chrome.runtime.sendMessage(message) as Promise<TranslateTextsResponse>;
+  return new Promise<TranslateTextsResponse>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new BackgroundTimeoutError()), BACKGROUND_TIMEOUT_MS);
+    const settle = (run: () => void): void => {
+      clearTimeout(timer);
+      run();
+    };
+    try {
+      (chrome.runtime.sendMessage(message) as Promise<TranslateTextsResponse>).then(
+        (response) => settle(() => resolve(response)),
+        (error: unknown) => settle(() => reject(error)),
+      );
+    } catch (raw) {
+      // `sendMessage` 自己抛（极端情况下扩展上下文已失效）：与异步失败同一条路。
+      settle(() => reject(raw));
+    }
+  });
+}
+
+/** 传输层失败的条目文案：超时自带完整语义，其余套「无法连接后台」的壳。 */
+function describeTransportError(raw: unknown): string {
+  if (raw instanceof BackgroundTimeoutError) return raw.message;
+  return `无法连接后台：${raw instanceof Error ? raw.message : String(raw)}`;
 }
 
 /** 页面级失败的文案（`ok: false`：设置读不出来这类"连请求都没发出去"的错）。 */
@@ -6415,11 +6760,18 @@ function describeError(response: { code: string; message: string }): string {
 }
 
 /**
- * 鉴权失败这类"重试多少次都是同一个结果"的条目级错误不挂重试按钮：
- * 一个 200 段的页面会变成 200 个点了也没用的按钮（规格 §8：不重试，改为页面 toast）。
+ * 条目级失败要不要挂重试按钮，判据是 `engines/types.ts` 的 `RETRYABLE_CODES` 那一份，
+ * 本层不再自带一套集合——两处各写一份时「哪个码算可重试」会随改动漂移。
+ *
+ * - 可重试：`NETWORK`（抖动）、`RATE_LIMIT`（限流），重发还有机会成功。
+ * - 不可重试：`AUTH` 重试多少次都是同一个结果（规格 §8：不重试，改为页面 toast）；
+ *   `TOO_LONG` 该走切分降级、`BAD_RESPONSE` 重试同一个输入没有意义——给它们挂上按钮，
+ *   用户只会对着注定失败的段落反复点（一个 200 段的页面就是 200 个没用的按钮）。
+ * - `code === undefined` 仍算可重试：没有错误码的失败（响应形状不符、后台漏了这条）
+ *   是「这次没拿到结果」，不是「这段翻不了」。
  */
 function isRetryable(code: TranslateItemResult['code']): boolean {
-  return code !== 'AUTH';
+  return code === undefined || RETRYABLE_CODES.has(code);
 }
 
 /**
@@ -6473,8 +6825,8 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
 /**
  * 落地一批条目级结果。
  *
- * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——重试多少次都是同一个结果
- * （`AUTH`）时不挂按钮，否则用户会拿到一排点了也没用的按钮。
+ * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——只有 `RETRYABLE_CODES`
+ * 里那两类（网络抖动、限流）才挂按钮，其余错误挂上去也只是让用户白点。
  * 整个响应**全部失败且错误码相同**时，逐条标注之外再加一句整批提示，由调用方选时机弹。
  * 返回该提示（不需要时返回 null）。
  *
@@ -6568,7 +6920,11 @@ async function translatePage(): Promise<void> {
   const mine = ++generation;
   running = true;
 
-  const settings: Settings = await loadSettings();
+  // **用投影**（`loadUiSettings`），不是完整设置：内容脚本跑在网页进程里，读完整设置会把
+  // API Key 反序列化进网页进程的堆内存（规格 §7.3）。`UiSettings` 里根本没有 `apiKey`
+  // 字段，本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
+  // maxSegmentsPerBatch 全在投影里——这一层由 `tests/content/privacy-guard.test.ts` 守着。
+  const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
 
@@ -6619,12 +6975,12 @@ async function translatePage(): Promise<void> {
               },
             });
           } catch (raw) {
-            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）。
+            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
+            // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
             // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
             if (mine !== generation) return;
-            const detail = raw instanceof Error ? raw.message : String(raw);
-            failBatch(batch, `无法连接后台：${detail}`);
+            failBatch(batch, describeTransportError(raw));
             return;
           }
 
@@ -6670,7 +7026,8 @@ async function retrySegment(segmentId: string): Promise<void> {
   const segment = segments.find((s) => s.id === segmentId);
   if (!segment) return;
   // 重试要按**当前**设置走：用户点了重试按钮，往往正是刚去设置页填完 API Key 回来。
-  const settings = await loadSettings();
+  // 同样是投影（见 translatePage）：重试路径也不该把密钥读进网页进程。
+  const settings = await loadUiSettings();
 
   failedIds.delete(segmentId);
   renderer?.mount(segment, 'pending');
@@ -6682,9 +7039,9 @@ async function retrySegment(segmentId: string): Promise<void> {
       payload: { items: [{ id: segment.id, text: segment.text }], targetLang: settings.targetLang },
     });
   } catch (raw) {
-    const detail = raw instanceof Error ? raw.message : String(raw);
     failedIds.add(segmentId);
-    renderer?.fail(segment.id, `无法连接后台：${detail}`);
+    // 超时可能发生在用户点击重试之后：同样如实说明，而不是把页面吊在「翻译中…」。
+    renderer?.fail(segment.id, describeTransportError(raw));
     return;
   }
 

@@ -84,6 +84,85 @@ describe('translateBatch', () => {
     ]);
   });
 
+  /**
+   * 同一批里字面完全相同的文本只翻一次。真实网页的导航、「Read more」、表头、免责声明
+   * 能占 20-40% 的段落数，而 Google 引擎不支持批量（一条文本一个请求），逐条发等于把
+   * 免费额度白烧在重复段上，正文反而会因 429 失败（审查实测：60 个相同段落打出 36 次 fetch）。
+   */
+  it('同一批里字面相同的文本只送一次引擎，结果摊回每一条且都进缓存', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['重复段译文', '独有段译文']]);
+    const items = [
+      { id: 'a', text: 'Read more' },
+      { id: 'b', text: 'Unique sentence here' },
+      { id: 'c', text: 'Read more' },
+      { id: 'd', text: 'Read more' },
+    ];
+
+    const out = await translateBatch(items, deps(engine, { cache }));
+
+    // 3 个相同 + 1 个不同 → 引擎只收到 2 条文本。
+    expect(calls).toEqual([['Read more', 'Unique sentence here']]);
+    // 4 条结果都正确：重复的那 3 条拿到同一份译文，顺序与输入一致。
+    expect(out).toEqual([
+      { id: 'a', text: '重复段译文' },
+      { id: 'b', text: '独有段译文' },
+      { id: 'c', text: '重复段译文' },
+      { id: 'd', text: '重复段译文' },
+    ]);
+    // 都进缓存：缓存 key 由文本派生，重复的那 3 条共用同一个 key，所以真实条目数是 2。
+    expect(await cache.count()).toBe(2);
+
+    // 同一批再来一次：一条都不该再打给引擎（重复段命中的是同一个 key）。
+    const again = await translateBatch(items, deps(engine, { cache }));
+    expect(calls).toHaveLength(1);
+    expect(again).toEqual(out);
+  });
+
+  it('命中的与未命中的一起折叠：只有未命中的唯一文本进引擎', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['重复段译文'], ['独有段译文']]);
+    const shared = deps(engine, { cache });
+
+    // 先单独翻一次，让 'Read more' 进缓存。
+    await translateBatch([{ id: 'seed', text: 'Read more' }], shared);
+    expect(calls).toHaveLength(1);
+
+    // 这一批里两条命中、两条未命中同一段文本（都未命中缓存的那条只该送一次）。
+    const out = await translateBatch(
+      [
+        { id: 'a', text: 'Read more' },
+        { id: 'b', text: 'Unique sentence here' },
+        { id: 'c', text: 'Unique sentence here' },
+        { id: 'd', text: 'Read more' },
+      ],
+      shared,
+    );
+
+    expect(calls).toEqual([['Read more'], ['Unique sentence here']]);
+    expect(out).toEqual([
+      { id: 'a', text: '重复段译文' },
+      { id: 'b', text: '独有段译文' },
+      { id: 'c', text: '独有段译文' },
+      { id: 'd', text: '重复段译文' },
+    ]);
+  });
+
+  it('源语言变化时缓存不命中：key 里带了 sourceLang', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['自动检测的译文'], ['按英文源的译文']]);
+
+    await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'auto' }));
+    const second = await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'en' }));
+
+    // 换了源语言语义就必须重新问引擎；共用 key 会命中按 auto 翻出来的那一份。
+    expect(calls).toHaveLength(2);
+    expect(second[0].text).toBe('按英文源的译文');
+    // 反过来：同样的源语言仍然命中缓存。
+    await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'en' }));
+    expect(calls).toHaveLength(2);
+  });
+
   it('鉴权失败不重试', async () => {
     const { engine, calls } = fakeEngine([new EngineError('AUTH', 'Key 无效')]);
     const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));
@@ -614,7 +693,8 @@ async function translateWithFallback(
 }
 
 /**
- * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求。
+ * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求——其中**字面相同的文本
+ * 只翻一次**（见下方 `uniqueTexts`），结果再按条目摊回。
  * 任何失败都转成携带错误码的结果项，绝不抛错——内容脚本据此渲染"重试"按钮。
  * 缓存读写失败不在此列：那不是"这次翻译失败"，降级即可（读当未命中、写当没缓存上）。
  */
@@ -631,6 +711,9 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
     buildCacheKey({
       engineId: deps.engine.id,
       configHash,
+      // 源语言也进 key：`sourceLang` 是设置项、会一路传到 `TranslateRequest.from`，
+      // 它不参与 key 时，改了源语言就会命中按另一种语义翻出来的旧译文（见 core/hash.ts）。
+      sourceLang: deps.sourceLang,
       targetLang: deps.targetLang,
       glossaryHash,
       promptHash,
@@ -661,6 +744,26 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   });
   if (missing.length === 0) return results;
 
+  /**
+   * 同一批里**字面完全相同**的文本只翻一次。
+   *
+   * 真实网页里重复文本很常见：导航、「Read more」、表头、免责声明能占 20-40% 的段落数。
+   * 而 Google 引擎不支持一次请求多条文本（一条文本一个请求），逐条发等于把免费额度
+   * 白烧在重复段上——正文反而会因 429 失败。缓存 key 是按文本算的，所以重复文本只会
+   * 一起命中或一起未命中，折叠不会改变任何一条的结果。
+   */
+  const uniqueTexts: string[] = [];
+  const indexesByText = new Map<string, number[]>();
+  for (const index of missing) {
+    const group = indexesByText.get(items[index].text);
+    if (group === undefined) {
+      indexesByText.set(items[index].text, [index]);
+      uniqueTexts.push(items[index].text);
+    } else {
+      group.push(index);
+    }
+  }
+
   // 待写缓存的条目：声明在 try 之外，因为写入发生在 try/catch 之后（见下方注释）。
   const toCache = new Map<string, string>();
   /**
@@ -685,13 +788,15 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   };
 
   try {
-    const translations = await translateWithFallback(
-      missing.map((index) => items[index].text),
-      deps,
-    );
+    const translations = await translateWithFallback(uniqueTexts, deps);
     // 逐条降级的半成品：逐条上报，别把已经翻好的条目一起丢掉，也别给它们安上
     // 邻居的错误码。成功的那几条照常进缓存，用户点重试时只需再翻失败的那几条。
-    missing.forEach((index, offset) => void settle(index, translations[offset]));
+    // 去重后的结果按**下标组**摊回每一条：同一文本的 N 个条目拿到同一份译文，
+    // 各自的缓存 key 也各自写上（key 由文本派生，这里其实是同一个 key）。
+    uniqueTexts.forEach((text, offset) => {
+      const translation = translations[offset];
+      for (const index of indexesByText.get(text) ?? []) settle(index, translation);
+    });
   } catch (raw) {
     const error = toEngineError(raw);
     for (const index of missing) settle(index, error);

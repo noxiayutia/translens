@@ -34,6 +34,7 @@ describe('buildCacheKey', () => {
   const base = {
     engineId: 'google',
     configHash: 'cfg-openai-gpt-4o-mini',
+    sourceLang: 'auto',
     targetLang: 'zh-Hans',
     glossaryHash: '',
     promptHash: '',
@@ -52,6 +53,19 @@ describe('buildCacheKey', () => {
     expect(buildCacheKey({ ...base, glossaryHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, promptHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, configHash: 'cfg-openai-gpt-4o' })).not.toBe(key);
+  });
+
+  /**
+   * 源语言是设置项、会一路传到 `TranslateRequest.from`，不参与 key 就会命中按另一种
+   * 源语言语义翻出来的旧译文（今天两个引擎都还没读 `from`，所以这条是防御性的：
+   * 等接上就用错语义，而且事后无法自愈）。
+   */
+  it('源语言变化会改变 key', () => {
+    const key = buildCacheKey(base);
+    expect(buildCacheKey({ ...base, sourceLang: 'en' })).not.toBe(key);
+    expect(buildCacheKey({ ...base, sourceLang: 'ja' })).not.toBe(key);
+    // 'auto' 与具体语言是两种语义，不能共用 key。
+    expect(buildCacheKey({ ...base, sourceLang: 'zh-Hans' })).not.toBe(key);
   });
 });
 ```
@@ -92,6 +106,14 @@ export interface CacheKeyParts {
    * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
    */
   configHash: string;
+  /**
+   * 源语言。`sourceLang` 是设置项，会一路传到 `TranslateRequest.from`；它不参与 key 时，
+   * 用户把「自动检测」改成某个具体源语言（或反过来）之后，同一个引擎、同一段文本、同一个
+   * 目标语言会命中**按另一种源语言语义**翻出来的旧译文，而且事后无法自愈。
+   * 今天两个引擎都还没真的读 `from`（Google 把 `sl=auto` 硬编码），所以这条还没有可观察
+   * 的错误；等接上就用错语义——key 必须在那之前就带上它。
+   */
+  sourceLang: string;
   targetLang: string;
   glossaryHash: string;
   promptHash: string;
@@ -101,7 +123,15 @@ export interface CacheKeyParts {
 /** 用 \u0000 分隔，避免字段拼接产生歧义（如 ("ab","c") 与 ("a","bc")）。 */
 export function buildCacheKey(parts: CacheKeyParts): string {
   return hashString(
-    [parts.engineId, parts.configHash, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
+    [
+      parts.engineId,
+      parts.configHash,
+      parts.sourceLang,
+      parts.targetLang,
+      parts.glossaryHash,
+      parts.promptHash,
+      parts.text,
+    ].join('\u0000'),
   );
 }
 ```

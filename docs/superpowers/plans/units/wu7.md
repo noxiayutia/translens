@@ -432,6 +432,46 @@ describe('collectSegments', () => {
     expect(segments.map((s) => s.text)).toEqual(['Visible text here', 'Another sentence here']);
   });
 
+  /**
+   * 用户**正在写、还没保存**的内容（邮件草稿、笔记、评论框）属于隐私：它确实在网页里可见，
+   * 但它是用户的半成品，不是网页的内容。README 的隐私一节承诺过它不会被翻译。
+   */
+  it('contenteditable 容器里的草稿不产出段落', () => {
+    const root = mount(
+      '<div contenteditable="true">My private unfinished English draft</div>' +
+        '<p>Published paragraph text</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Published paragraph text']);
+  });
+
+  it('可编辑性会继承给后代：contenteditable 里的块级子元素同样不产出', () => {
+    const root = mount(
+      '<div contenteditable="true"><p>Draft inside a paragraph</p><p>Another draft line</p></div>' +
+        '<p>Published paragraph text</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Published paragraph text']);
+  });
+
+  it('行内的 contenteditable 草稿不并入父段', () => {
+    const root = mount(
+      '<p>Visible <span contenteditable="true">private draft</span> text here</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Visible text here']);
+  });
+
+  it('contenteditable="false" 只是显式关掉可编辑：它的文本照常翻译', () => {
+    // 所见即所得编辑器用 false 嵌只读片段，那不是"用户没写完的草稿"，不该被跳过。
+    const root = mount(
+      '<div contenteditable="false">Read only published text</div>' +
+        '<div contenteditable="true"><span contenteditable="false">nested read only text</span></div>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Read only published text']);
+  });
+
   it('重扫时容器里新追加的内容会被采到，已处理的段落不重复产出', () => {
     const root = mount('<div id="feed"><p>First post text</p></div>');
     const feed = document.getElementById('feed') as HTMLElement;
@@ -676,7 +716,30 @@ function isHidden(element: Element, styleOf: (element: Element) => ElementStyle)
  * 免得「这里跳过、那里不跳过」两处规则漂移。
  */
 function isSkippedForText(element: Element): boolean {
-  return SKIP_TAGS.has(element.tagName) || element.closest('[data-jy-root]') !== null;
+  return SKIP_TAGS.has(element.tagName) || isEditable(element) || element.closest('[data-jy-root]') !== null;
+}
+
+/**
+ * 可编辑区域（`contenteditable`）里的文本一律不采集。
+ *
+ * 用户**正在写、还没保存**的内容——邮件草稿、笔记、评论框——是隐私：它确实"在网页里可见"，
+ * 但它是用户的半成品，不是网页的内容，不该被送去外部接口（README 的隐私承诺）。
+ *
+ * 两层判定：
+ * 1. `element.isContentEditable` 是标准做法，浏览器把可编辑性**继承**给后代
+ *    （`<div contenteditable="true"><p>草稿</p></div>` 里的 `p` 也是可编辑的）；
+ * 2. 宿主没实现该属性时（老引擎、测试环境）退回按最近的 `[contenteditable]` 祖先判定，
+ *    显式的 `contenteditable="false"` 会把它自己与子树重新变回不可编辑（所见即所得编辑器
+ *    用它嵌只读片段），`inherit` 则继续往上找。
+ */
+function isEditable(element: Element): boolean {
+  if ((element as HTMLElement).isContentEditable === true) return true;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const value = node.getAttribute('contenteditable');
+    if (value === null || value === 'inherit') continue;
+    return value !== 'false';
+  }
+  return false;
 }
 
 /**
@@ -771,6 +834,8 @@ function inlineText(element: Element, styleOf: (element: Element) => ElementStyl
 
 function isSkippable(element: Element): boolean {
   if (SKIP_TAGS.has(element.tagName)) return true;
+  // 可编辑区域整棵子树都不采：用户没写完的草稿不上传到外部翻译接口（见 isEditable）。
+  if (isEditable(element)) return true;
   if (element.hasAttribute('data-jy-translated')) return true;
   // 插件自己注入的译文宿主，避免二次翻译。
   if (element.closest('[data-jy-root]')) return true;
