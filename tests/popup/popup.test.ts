@@ -4,18 +4,19 @@
  * 弹窗（WU9 / Task 18）的行为测试。
  *
  * 被测的 `src/popup/popup.ts` 在 **import 时**就跑 `init()`：模块顶层先按 id 取 DOM
- * 元素（所以 DOM 必须先就位），然后 `await loadSettings()`。于是每个用例的顺序固定为
- * 装替身 → 写存储 → 装 DOM → `import` → 等 `init()` 跑完。`vi.resetModules()` 保证
- * 每个用例拿到一份新的模块实例——弹窗里持有 `settings` 与若干闭包，共享实例会让用例互相串味。
+ * 元素（所以 DOM 必须先就位），`init()` 同步挂好监听器并置灰主按钮，然后才 `await
+ * loadSettings()`。于是每个用例的顺序固定为：装替身 → 写存储 → 装 DOM → `import` →
+ * 等 `init()` 那串 await 跑完。`vi.resetModules()` 保证每个用例拿到一份新的模块实例——
+ * 弹窗里持有 `settings` 与若干闭包，共享实例会让用例互相串味。
  *
  * DOM 用 `src/popup/popup.html` 的**真实内容**（`DOMParser` 解析后取 body），不手抄一份结构：
  * id 改名、控件漏写这类错误应当在测试里失败，而不是两边一起错。同理，下拉框的期望值来自
  * `core/lang` 与 `engines/registry`，不手抄语言表。
  *
  * 内容脚本在真机上是 `chrome.tabs.sendMessage` 的接收方，替身不注册它（见 `chrome-stub`
- * 的 `StubTabs.responder`），由用例扮演：**只回话、不断言**——弹窗把 sendMessage 的拒绝
- * 当作"受限页面"吞掉了，在 responder 里断言失败会被吞成一次静默降级。要断言的东西一律
- * 事后再查 `chromeStub.tabs.sent`。
+ * 的 `StubTabs.responder`），由用例扮演：**只回话、不断言**——responder 里断言失败会变成
+ * 一次普通的调用失败，被弹窗渲染成"无法与页面通信"，测试反而看不出真正的原因。
+ * 要断言的东西一律事后再查 `chromeStub.tabs.sent`。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,6 +32,13 @@ import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
  * Vite 的资源转换改写成 http 地址（jsdom 环境下 `fileURLToPath` 直接拒绝它）。
  */
 const POPUP_HTML_PATH = join(import.meta.dirname, '..', '..', 'src', 'popup', 'popup.html');
+
+/**
+ * 与 `popup.ts` 里的同名常量一致。不 import 它：静态 import 会在装 DOM 之前执行
+ * 弹窗模块的顶层 `init()`。超时时长是**用户看得见的**行为（文案里就写着秒数），
+ * 钉在这里是有意的。
+ */
+const TOGGLE_TIMEOUT_MS = 30_000;
 
 let chromeStub: ChromeStub;
 
@@ -110,8 +118,10 @@ function respondWithState(read: () => PageState): void {
   chromeStub.tabs.responder = (_tabId, message) => {
     const type = (message as { type?: string } | null)?.type;
     if (type === MSG.GET_PAGE_STATE || type === MSG.TOGGLE_PAGE) return read();
-    // 弹窗只会发这两条；真机上发别的也没人接，这里如实拒绝。
-    return Promise.reject(new Error(`内容脚本不处理 ${String(type)}`));
+    // 真机上内容脚本对不认得的消息是 `return false`（不响应），于是端口关闭、
+    // sendMessage 以 "port closed" 拒绝——不是 responder 主动抛错。这里如实返回
+    // undefined，免得有人照抄这个替身写出与真机不符的用例。
+    return undefined;
   };
 }
 
@@ -177,6 +187,35 @@ describe('弹窗初始化', () => {
     expect(toggle.dataset.active).toBe('true');
     expect(status.textContent).toBe('已翻译 3 / 5 段');
   });
+
+  it('设置还没读出来之前按钮是置灰的，不让出一段点了没反应的窗口期', async () => {
+    // 让读存储**停住**——这正是"第一个 await 还没回来"的那一刻，而不是靠微任务时序撞运气。
+    const realGet = chromeStub.storage.local.get.bind(chromeStub.storage.local);
+    let releaseStorage: (() => void) | undefined;
+    let storageCalls = 0;
+    chromeStub.storage.local.get = (keys) => {
+      storageCalls += 1;
+      if (storageCalls > 1) return realGet(keys);
+      return new Promise((resolve) => {
+        releaseStorage = () => void realGet(keys).then(resolve);
+      });
+    };
+    respondWithState(() => pageState());
+    mountPopupHtml();
+    await import('../../src/popup/popup');
+
+    const { toggle } = ui();
+    // `init()` 里那句同步的置灰：这会儿监听器已挂好但设置还没到，按钮必须是不可点的。
+    expect(toggle.disabled).toBe(true);
+    toggle.click();
+    await settle();
+    expect(sentTypes()).toEqual([]);
+
+    releaseStorage?.();
+    await waitFor(() => !toggle.disabled);
+    // 设置读完之后回到正常流程：初始化自己那条 GET_PAGE_STATE 才发出去。
+    expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE]);
+  });
 });
 
 describe('翻译开关', () => {
@@ -239,28 +278,98 @@ describe('受限页面', () => {
     const { toggle, status } = ui();
     expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE]);
     expect(toggle.disabled).toBe(true);
+    expect(toggle.dataset.active).toBeUndefined();
     expect(toggle.textContent).toBe('此页面不可用');
     expect(status.textContent).toContain('不支持翻译');
 
-    // 置灰的按钮点不动。拒绝已经被 `init` 吞掉（`void init()` 一旦 reject，
-    // vitest 会作为未处理的拒绝报出来），所以这里能跑到底本身就是"没抛错"的证据。
+    // 置灰的按钮点不动：这里是 jsdom 按规范抑制 disabled 元素上的 click（实测监听器
+    // 被调用 0 次），断言真实有效，与 init 有没有吞掉拒绝无关。
     toggle.click();
     await settle();
     expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE]);
   });
 
-  it('点击时接收方才消失：降级为不可用文案，不抛错', async () => {
-    respondWithState(() => pageState());
+  it('设置读不出来时不是死弹窗：说明原因，入口都还活着', async () => {
+    // 真实可达：用户装过新版扩展又回退，存储里的版本号高于本代码，loadSettings 明确拒绝。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1 } });
+
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      await loadPopup();
+      // 未处理的拒绝在真机上只出现在控制台；弹窗必须自己说出来。
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+
+    const { toggle, status, optionsButton } = ui();
+    expect(status.textContent).toContain('设置读取失败');
+    expect(status.textContent).toContain(String(CURRENT_VERSION + 1));
+    // 按钮可点（页面本身没坏，只是设置读不出来），点了不能是"毫无反应"：
+    // 这里替身没有接收方，`sendMessage` 兑现为 undefined，于是按"拿不到状态"如实渲染。
+    expect(toggle.disabled).toBe(false);
+    toggle.click();
+    await waitFor(() => toggle.textContent === '此页面不可用');
+    // 设置都没读出来，初始化那一步根本没走到发消息；这条 TOGGLE_PAGE 是点击发出的，
+    // 也就是说监听器确实在第一个 await 之前就挂好了。
+    expect(sentTypes()).toEqual([MSG.TOGGLE_PAGE]);
+
+    // 关键出路：监听器在第一个 await 之前就挂好了，齿轮还能打开设置页。
+    expect(chromeStub.runtime.openOptionsPageCalls).toBe(0);
+    optionsButton.click();
+    expect(chromeStub.runtime.openOptionsPageCalls).toBe(1);
+  });
+
+  it('点击时接收方才消失：如实说明通信失败并放开按钮，不冒充"此页面不可用"', async () => {
+    respondWithState(() => pageState({ translated: true, total: 3, done: 3 }));
+    await loadPopup();
+
+    const { toggle, status } = ui();
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.dataset.active).toBe('true');
+
+    chromeStub.tabs.rejectSendMessage = true;
+    toggle.click();
+    await waitFor(() => status.textContent.includes('无法与页面通信'));
+    expect(toggle.textContent).toBe('此页面不可用');
+    // 残留的"已翻译"配色会让深灰底挂在一句错误文案上，两个信号自相矛盾。
+    expect(toggle.dataset.active).toBeUndefined();
+    // 页面本身是可以翻译的，只是这一条消息没走通：再点一次是合理动作，不该被锁死。
+    expect(toggle.disabled).toBe(false);
+    expect(status.textContent).toContain('请重新加载页面后重试');
+    expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE, MSG.TOGGLE_PAGE]);
+  });
+
+  it('内容脚本整轮翻译期间不响应：超时后给出原因，不留下没有理由的置灰按钮', async () => {
+    chromeStub.tabs.responder = (_tabId, message) => {
+      const type = (message as { type?: string } | null)?.type;
+      if (type === MSG.GET_PAGE_STATE) return pageState();
+      // 真机上的对应场景：`translatePage()` 的 `if (running) return` 早返回，
+      // 没有任何人调用 sendResponse——这一条 TOGGLE_PAGE 会永远挂着。
+      return new Promise<never>(() => {});
+    };
     await loadPopup();
 
     const { toggle, status } = ui();
     expect(toggle.disabled).toBe(false);
 
-    chromeStub.tabs.rejectSendMessage = true;
-    toggle.click();
-    await waitFor(() => toggle.disabled);
+    vi.useFakeTimers();
+    try {
+      toggle.click();
+      await vi.advanceTimersByTimeAsync(TOGGLE_TIMEOUT_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(status.textContent).toBe('页面超过 30 秒没有响应，请重新加载页面后重试。');
     expect(toggle.textContent).toBe('此页面不可用');
-    expect(status.textContent).toContain('不支持翻译');
+    expect(toggle.dataset.active).toBeUndefined();
+    // 超时是"这一条消息没回来"，不是"这个页面不能翻译"：按钮要回到可点。
+    expect(toggle.disabled).toBe(false);
     expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE, MSG.TOGGLE_PAGE]);
   });
 });
@@ -282,7 +391,8 @@ describe('引擎提示区', () => {
 
     const { hint } = ui();
     expect(hint.classList.contains('warn')).toBe(false);
-    expect(hint.textContent).toBe('使用你自己配置的接口。');
+    // 文案必须与"警告分支"互为补集：这句只在 Key **确实填了**时成立。
+    expect(hint.textContent).toBe('已配置你自己的 API Key。');
   });
 
   it('零配置引擎不警告，并说明无需 Key', async () => {
@@ -339,6 +449,41 @@ describe('语言与引擎选择的持久化', () => {
     expect(stored.engineId).toBe('openai-compat');
     // 保存的是弹窗手里那份**完整**设置：Key 必须原样写回，不能被投影掉的字段覆盖成空。
     expect((stored.engineConfig as { apiKey?: string }).apiKey).toBe('sk-keep');
+  });
+
+  it('保存被拒绝时说明原因并回滚下拉，不留下"改了其实没生效"', async () => {
+    await seedSettings({ targetLang: 'zh-Hans', engineId: 'google' });
+    await loadPopup();
+
+    const { targetLang, status } = ui();
+    // 真实可达：存储里的版本高于本代码时 saveSettings 明确拒绝（用户回退过版本）。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1 } });
+
+    targetLang.value = 'fr';
+    targetLang.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('设置未能保存'));
+    // 下拉回到真正生效的那一项：让"没保存成功"这件事立刻可见，而不是下次打开才弹回去。
+    expect(targetLang.value).toBe('zh-Hans');
+    expect(status.textContent).toContain('已跳过保存');
+    // 存储里仍是那份更高版本的设置，没有被旧 schema 覆盖。
+    expect((await storedSettings()).version).toBe(CURRENT_VERSION + 1);
+  });
+
+  it('页面已翻译时改目标语言会提示"重新翻译此页生效"', async () => {
+    await seedSettings({ targetLang: 'zh-Hans' });
+    respondWithState(() => pageState({ translated: true, total: 2, done: 2 }));
+    await loadPopup();
+
+    const { targetLang, status } = ui();
+    expect(status.textContent).toBe('已翻译 2 / 2 段');
+
+    targetLang.value = 'fr';
+    targetLang.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('重新翻译此页生效'));
+    expect(status.textContent).toBe('目标语言已更新，重新翻译此页生效。');
+    expect((await storedSettings()).targetLang).toBe('fr');
   });
 });
 
