@@ -84,6 +84,22 @@ describe('googleEngine.translate', () => {
     ).rejects.toMatchObject({ code: 'RATE_LIMIT' });
   });
 
+  it('429 不做条目级重试，直接上抛交给调度器的批次退避', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}, 429));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      googleEngine.translate(
+        { texts: ['A', 'B'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'RATE_LIMIT' });
+
+    // 每条只发一次。若把 429 也算进条目级重试，这里会变成 6 次——
+    // 限流时每条文本各烧 3 次额度，只会把限额打得更狠。
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('403 抛 AUTH', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 403)));
     await expect(

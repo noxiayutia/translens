@@ -1559,6 +1559,22 @@ describe('googleEngine.translate', () => {
     ).rejects.toMatchObject({ code: 'RATE_LIMIT' });
   });
 
+  it('429 不做条目级重试，直接上抛交给调度器的批次退避', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}, 429));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      googleEngine.translate(
+        { texts: ['A', 'B'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'RATE_LIMIT' });
+
+    // 每条只发一次。若把 429 也算进条目级重试，这里会变成 6 次——
+    // 限流时每条文本各烧 3 次额度，只会把限额打得更狠。
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('403 抛 AUTH', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 403)));
     await expect(
@@ -1730,9 +1746,13 @@ const ITEM_RETRY_DELAYS_MS = [200, 600];
  * 条目级的抖动吸收：一次 `translate()` 内部摊成了 N 个独立 fetch，
  * 谁来重试必须按条目算，否则调度器只看得见「整批失败」，把已经成功的 N-1 条一起重发。
  *
- * 只重试瞬时错误（`NETWORK` / `RATE_LIMIT`）：鉴权失败、请求取消、文本过长
- * 重试多少次结果都一样，必须原样上抛——`TOO_LONG` 要靠调度器的切分降级，不能被这里吞掉。
+ * **只吸收网络抖动**。这不是把「瞬时错误」照抄一遍，而是有意收窄：
+ * - 429 限流需要的是长退避，200ms/600ms 的快速重试救不回来，每条文本还各烧 3 次额度，
+ *   反而把限额打得更狠。让它原样上抛，由调度器的批次级退避（500ms / 1500ms）统一处理。
+ * - 鉴权失败、请求取消、文本过长重试多少次结果都一样；`TOO_LONG` 必须上抛给切分降级。
  */
+const ITEM_RETRY_CODES: ReadonlySet<string> = new Set(['NETWORK']);
+
 async function translateOneWithRetry(text: string, to: string, signal: AbortSignal): Promise<string> {
   let last: unknown;
   for (let attempt = 0; attempt <= ITEM_RETRY_DELAYS_MS.length; attempt += 1) {
@@ -1741,8 +1761,7 @@ async function translateOneWithRetry(text: string, to: string, signal: AbortSign
     } catch (raw) {
       last = raw;
       const error = toEngineError(raw);
-      // 只重试瞬时错误：鉴权失败、请求取消、文本过长重试多少次都一样。
-      if (error.code !== 'NETWORK' && error.code !== 'RATE_LIMIT') throw error;
+      if (!ITEM_RETRY_CODES.has(error.code)) throw error;
       if (attempt < ITEM_RETRY_DELAYS_MS.length) {
         await new Promise((resolve) => setTimeout(resolve, ITEM_RETRY_DELAYS_MS[attempt]));
       }
