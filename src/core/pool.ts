@@ -1,8 +1,14 @@
 /**
  * 以最多 limit 个并发执行任务，返回结果数组，顺序与 tasks 一致。
  * 任务自身的异常会向上抛出（调用方负责在任务内部捕获）。
+ * limit 必须是「不小于 1 的有限数」：NaN 会算出 0 个 worker，
+ * 静默返回一个全是 undefined 的数组，所以入口直接报错。
  */
 export async function runPool<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+  if (!Number.isFinite(limit) || limit < 1) {
+    throw new RangeError(`runPool 的 limit 必须是不小于 1 的有限数，收到 ${String(limit)}`);
+  }
+
   const results: T[] = new Array(tasks.length);
   if (tasks.length === 0) return results;
 

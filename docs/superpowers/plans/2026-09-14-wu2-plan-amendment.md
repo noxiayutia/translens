@@ -304,3 +304,117 @@ npm run build       → exit 0，两个 vite 产物均生成
 
 未采纳的审查建议：#5「在 CI 里断言 `src/core/**` 出现 `import` 即失败」——仓库当前没有 CI 配置，
 这属于新增防线而不是本轮缺陷，按「只修审查指出的问题」留待单开一个单元时再加。
+
+---
+
+## 7. 第二轮修复（本轮审查意见 #1–#5）
+
+对应提交：`fix: 修复语种计分的碎片化漏翻与 zh-Hant 跳过判定等审查意见`（`git log --oneline` 可见）。
+代码改动：`src/core/lang.ts`、`src/core/pool.ts`、`src/core/segmenter.ts`（仅注释）、
+`tests/core/lang.test.ts`、`tests/core/pool.test.ts`；同步母本计划与本留档。
+
+### 7.1 意见 #1：按「连续片段」计分确实会漏翻，但审查给的验收断言自相矛盾
+
+**成立的部分（已改）：** 按片段计分让结论取决于标点怎么切——拉丁文天然被空格切成多段，
+中文一句话通常只有 1 段，于是同一段文本里中文按 1 段拿分、拉丁按好几段拿分。修复前实测：
+
+```
+detect=latin   skip(zh-Hans)=false skip(en)=true  skip(zh-Hant)=false zh=18 lat=10  这是一段很长的中文内容需要翻译成英文。Hello world
+```
+
+18 个汉字 vs 10 个字母却判成 `latin`；目标为英文时 `shouldSkip` 返回 `true`，整段跳过、汉字一个不翻。
+改成**按各字符集字符总数分档**（`1 + floor(log2(字数))`，同分先出现者优先）后：
+
+```
+detect=zh      skip(zh-Hans)=true  skip(en)=false skip(zh-Hant)=false zh=18 lat=10  这是一段很长的中文内容需要翻译成英文。Hello world
+detect=zh      skip(zh-Hans)=true  skip(en)=false skip(zh-Hant)=false zh=18 lat=10  这是一段很长的中文内容需要翻译成英文 Hello world
+```
+
+顺带消掉了「同一句用句号还是空格分隔」这层碎片化差异（上面两行结论一致），
+并补上缺的那一格测试：多段中文 + 多段拉丁 + 标点（`tests/core/lang.test.ts`）。
+
+**不成立、没有照做的部分（理由可复核）：**
+
+1. **审查指定的验收断言与它要求冻结的断言互斥。** 审查要求
+   `detectScript('中文。English words here') === 'zh'`、`detectScript('这是中文。Hello world foo bar baz qux.') === 'zh'`，
+   同时要求 `detectScript('中文 abcde') === 'latin'`、`detectScript('Hello world 世界') === 'latin'` 保持不变。
+   前两条与后两条不可能同时成立：`'中文 abcde'`（中文 2 字在下标 0、拉丁 5 字母在下标 4）
+   与 `'中文。English words here'`（中文 2 字在下标 0、拉丁 16 字母 3 段在下标 3）
+   在「谁先出现」上同型，后者对拉丁的证据只强不弱（字数 16 > 5、段数 3 > 1、中文占比 2/16 < 2/5）。
+   任何对「拉丁证据更多」单调的规则（计数、分档、占比、片段数都算），都不可能在前者判 `latin`、
+   在后者判 `zh`。所以本轮把这两条举例**按新口径固定为 `latin`**，写成带注释的边界用例，
+   而不是改实现去迁就（否则会打回 `'中文 abcde'` 与 `'Hello world 世界'` 两条冻结断言）。
+2. **审查给的两条修法都到不了它自己的目标。** 「按总字符数加权」在 `'中文。English words here'`
+   上是中文 2 字 vs 拉丁 16 字母，仍判 `latin`；「最短优势」（领先不足则不跳过）要同时满足
+   「保留 `shouldSkip('これはテストです', 'ja') === true`」（日文 7 字 vs 汉字 3 字：分档领先 1 档、
+   字数比 2.33）与「拦掉 latin 16 vs 中文 2」（分档领先 3 档、字数比 8）——
+   按档取阈值 ≤1 会放过后者、≥2 会打回前者；按比取阈值 ≤2.33 会放过后者、>8 才拦得住，同样无解。
+   本轮因此只采纳「消除碎片化」这一半，门限除既有的 `tied` 外不再加。
+3. **一处事实更正。** 审查自己的探针打印的就是 `skip(zh-Hans)=false`，即这类段落在中文目标下
+   **不会**被跳过；静默漏翻只发生在**拉丁目标**下（`skip(en)=true`）。方向仍是漏翻，
+   但不是审查正文写的「中文主导的段落被整段跳过」。
+
+**残留边界（记录在案，本轮不修）：** 中文占比很小的段落（如 `'中文。English words here'`，
+中文 2 字 / 拉丁 16 字母）仍判 `latin`，目标为英文时会被跳过、那 2 个汉字不翻。
+拦它只能靠「目标为拉丁字符集时，段落里出现中文段就不跳过」这类**调用方产品规则**，
+不属于检测口径；等 wu3/wu6 接线时按实际语义决定（`shouldSkip` 目前尚无生产调用点）。
+
+### 7.2 意见 #2：`zh-Hant` 目标不做跳过判定
+
+`ScriptLang` 只到字符集一级（`zh-Hant` 与 `zh-Hans` 都是 `'zh'`），分辨不了简繁：
+选繁體中文时简体段落被判成「已是目标语言」而整段跳过，简繁互转直接变成 no-op。
+`shouldSkip` 入口加 `/^zh-hant(?:-|$)/` 显式豁免（先小写化再匹配），这类目标一律不跳过。
+没有按审查的另一条建议从 `LANGUAGES` 里删掉 `zh-Hant`：`wu3.md` 的
+`toGoogleLang('zh-Hant') === 'zh-TW'` 已把它当正式选项，删它会连带改 wu3。
+`zh-Hans` 的快路径未动（`shouldSkip('这是一段中文', 'zh-Hans') === true` 仍是冻结断言）。
+
+### 7.3 意见 #3：`runPool` 的 `limit` 守卫
+
+`limit = NaN` 时 `Math.max(1, Math.min(NaN, n))` → `NaN` → `Array.from({length: NaN})` → 0 个 worker
+→ `Promise.all([])` 立即 resolve，返回一个**全是 `undefined`** 的数组且不报错。
+入口加 `if (!Number.isFinite(limit) || limit < 1) throw new RangeError(...)`，与 `splitBySentence` 同款。
+注意 `runPool` 是 `async`，抛出变成 **rejection**，所以测试用 `rejects.toThrow(RangeError)`。
+
+### 7.4 意见 #4：测试计数与分解式
+
+逐文件 `it()` 复核（`git show <rev>:<file>` 后按 `^\s*it\(` 计数）：
+
+```
+a549698^   6 + 17 + 4 + 14 + 7 = 48
+a549698    6 + 22 + 4 + 16 + 8 = 56     # 新增 8 条 = lang +5、segmenter +2、types +1
+本轮        6 + 29 + 5 + 16 + 8 = 64     # 新增 8 条 = lang +7、pool +1
+```
+
+文件顺序：`tests/core/hash.test.ts`、`tests/core/lang.test.ts`、`tests/core/pool.test.ts`、
+`tests/core/segmenter.test.ts`、`tests/engines/types.test.ts`。
+交接报告里的分解式 `17+14+7+6+4` 求和是 39，与该报告自己的总数 48 不符；
+第 6 节只写了总数 48→56（正确），上文是可用命令复核的分解式。
+
+### 7.5 意见 #5：`segmenter.ts` 的前向引用
+
+注释里的 `见 background/scheduler.ts` 改成 `见 units/wu3，待建的 src/background/scheduler.ts`，
+避免读成「文件丢了」。
+
+### 7.6 本轮未照做的意见
+
+- **意见 #6（`SCRIPT_RANGES` 只覆盖 BMP 常用块，CJK 扩展 B 与 `U+3000-303F` 落空）**：
+  审查自己写明「不建议现在动」，本轮不动；`unknown` 在 `shouldSkip` 一侧是不跳过（安全方向）。
+- **本轮审查的建议 #4（CI 断言 `src/core/**` 不得出现 `import`）与建议 #5（`pool.ts` 补写失败语义注释）**：
+  是「建议」不是「问题」，本轮范围限定为修审查列出的问题，未做。建议 #4 成本很低
+  （一个 vitest 断言文件即可），要加时单独提。
+  （注意与第 6 节末的「未采纳建议 #5」区分：那是**上一轮**审查的建议编号。）
+
+### 7.7 本轮同步与复核（真实输出）
+
+```
+npm test            → Test Files 5 passed (5) / Tests 64 passed (64)
+npm run typecheck   → exit 0
+npm run build       → exit 0（dist/background.js、dist/content.js、dist/manifest.json 等均生成）
+```
+
+任务书同步：把母本里 5 个代码块（`src/core/lang.ts`、`tests/core/lang.test.ts`、
+`src/core/segmenter.ts`、`src/core/pool.ts`、`tests/core/pool.test.ts`）重新对齐磁盘，
+再跑 `scripts/split-plan.mjs`——`wu1`、`wu3`–`wu10` 逐字节未变，只有 `wu2.md` 变化；
+Task 3 的「实现备注」也随口径改写（原文描述的正是被否掉的按片段计分）。
+复核 wu2 的 10 个代码块：**本轮改过的 5 块与磁盘逐字节一致**；
+`src/core/hash.ts`、`src/engines/types.ts` 两块围栏内首行多一个空行（本轮未动这两个块，属既有格式差异）。

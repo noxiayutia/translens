@@ -156,6 +156,28 @@ describe('detectScript', () => {
     expect(detectScript('你好 Hi')).toBe('zh');
   });
 
+  it('中文占多数时不因标点切碎而判成拉丁', () => {
+    expect(detectScript('这是一段很长的中文内容需要翻译成英文。Hello world')).toBe('zh');
+  });
+
+  it('同一句里用句号还是空格分隔，不改变判定', () => {
+    expect(detectScript('这是一段很长的中文内容需要翻译成英文 Hello world')).toBe(
+      detectScript('这是一段很长的中文内容需要翻译成英文。Hello world'),
+    );
+    expect(detectScript('这是一段很长的中文内容需要翻译成英文 Hello world')).toBe('zh');
+  });
+
+  it('多段中文与多段拉丁总字数同档时按先出现者判定', () => {
+    expect(detectScript('第一段中文。第二段中文。third party tools')).toBe('zh');
+    expect(detectScript('first party tools 第一段中文。第二段中文。')).toBe('latin');
+  });
+
+  it('拉丁字母明显多于中文时仍判 latin（计数口径的边界）', () => {
+    // 冻结断言 'Hello world 世界' → latin、'中文 abcde' → latin 已经钉死了这个方向：
+    // 「出现中文就算中文」的规则会把它们打回原样。理由见留档 amendment §7。
+    expect(detectScript('中文。English words here')).toBe('latin');
+  });
+
   it('没有字母时返回 unknown', () => {
     expect(detectScript('123 --- !!!')).toBe('unknown');
   });
@@ -225,6 +247,20 @@ describe('shouldSkip', () => {
   it('中文段明显占优时仍然跳过', () => {
     expect(shouldSkip('这是一段较长的中文内容，Hello', 'zh-Hans')).toBe(true);
   });
+
+  it('中文占多数被标点切碎的段落，目标为英文时不跳过', () => {
+    expect(shouldSkip('这是一段很长的中文内容需要翻译成英文。Hello world', 'en')).toBe(false);
+  });
+
+  it('多段中文与多段拉丁总字数同档时不跳过', () => {
+    expect(shouldSkip('第一段中文。第二段中文。third party tools', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('first party tools 第一段中文。第二段中文。', 'en')).toBe(false);
+  });
+
+  it('目标繁體中文时不跳过中文字段（简繁互转不走跳过快路径）', () => {
+    expect(shouldSkip('这是简体中文', 'zh-Hant')).toBe(false);
+    expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(false);
+  });
 });
 ```
 
@@ -238,7 +274,6 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/core/lang.ts
-
 export interface LanguageOption {
   code: string;
   label: string;
@@ -281,48 +316,45 @@ function scriptOf(codePoint: number): ScriptLang | undefined {
 }
 
 interface ScriptStat {
-  /** 该字符集全部连续片段的得分之和 */
-  score: number;
-  /** 该字符集第一个片段的起始下标 */
+  /** 该字符集的字符总数 */
+  chars: number;
+  /** 该字符集第一个字符的下标 */
   firstAt: number;
 }
 
 /**
- * 单遍扫描文本，统计每个字符集的连续片段及其得分。
- * 每个片段计 `1 + floor(log2(段长))`——段长每翻一倍多算一分，段数与段长同时参与。
- * 只数片段会丢掉长度信息：'aaaaa 你好' 是两个各 1 段的字符集，按段数打平后
- * 会误判成 zh（中文段落被整段跳过、5 个字母永远不翻）；加权后拉丁段跨两档，正确判为 latin。
- * 分档取 floor 而不是精确值，是为了让 4 与 5 个字符同分，保住
- * '你好世界 Hello'（中文 1 段 4 字 / 拉丁 1 段 5 字母）判为 zh 的既有断言。
+ * 单遍扫描文本，统计每个字符集的**字符总数**，而不是「连续片段」的得分。
+ * 按片段计分会让结论取决于标点与空格怎么切：拉丁文天然被空格切成多段
+ * （'Hello world' 就是 2 段），中文一句话通常只有 1 段，于是同一段文本里
+ * 中文按 1 段拿分、拉丁按好几段拿分。实测
+ * '这是一段很长的中文内容需要翻译成英文。Hello world'（中文 18 字 / 拉丁 10 字母）
+ * 被判成 latin，目标为英文时整段跳过，18 个汉字永远不翻。
+ * 改成按字符总数分档后，标点切不切碎片段不再影响分数，只影响同档时的先出现者判定。
  */
 function scoreScripts(text: string): Map<ScriptLang, ScriptStat> {
   const stats = new Map<ScriptLang, ScriptStat>();
-  let current: ScriptLang | undefined;
-  let runLength = 0;
-  let runStart = 0;
   let offset = 0;
-
-  const closeRun = () => {
-    if (current === undefined || runLength === 0) return;
-    const stat = stats.get(current) ?? { score: 0, firstAt: runStart };
-    stat.score += 1 + Math.floor(Math.log2(runLength));
-    stats.set(current, stat);
-  };
 
   for (const char of text) {
     const lang = scriptOf(char.codePointAt(0) ?? 0);
-    if (lang !== current) {
-      closeRun();
-      current = lang;
-      runLength = 0;
-      runStart = offset;
+    if (lang !== undefined) {
+      const stat = stats.get(lang);
+      if (stat === undefined) stats.set(lang, { chars: 1, firstAt: offset });
+      else stat.chars += 1;
     }
-    if (lang !== undefined) runLength += 1;
     offset += char.length;
   }
-  closeRun();
 
   return stats;
+}
+
+/**
+ * 字符数分档：每翻一倍才多一分（不取精确 log2）。
+ * 分档是为了让 4 与 5 个字符同档，保住 '你好世界 Hello'
+ * （中文 4 字 / 拉丁 5 字母）判为 zh 的既有断言。
+ */
+function bandOf(chars: number): number {
+  return 1 + Math.floor(Math.log2(chars));
 }
 
 interface ScriptPick {
@@ -342,13 +374,14 @@ function pickScript(text: string): ScriptPick {
   for (const [candidate] of SCRIPT_RANGES) {
     const stat = stats.get(candidate);
     if (stat === undefined) continue;
-    if (stat.score > score || (stat.score === score && stat.firstAt < firstAt)) {
+    const candidateScore = bandOf(stat.chars);
+    if (candidateScore > score || (candidateScore === score && stat.firstAt < firstAt)) {
       // 换人时若分数相同，被换下的那个仍然与新的最高分持平。
-      tied = stat.score === score;
+      tied = candidateScore === score;
       lang = candidate;
-      score = stat.score;
+      score = candidateScore;
       firstAt = stat.firstAt;
-    } else if (stat.score === score) {
+    } else if (candidateScore === score) {
       tied = true;
     }
   }
@@ -390,25 +423,40 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
 };
 
 /**
+ * 显式指定繁体（Hant）脚本的目标语言。
+ * ScriptLang 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），分辨不了简繁：
+ * 选繁體中文时简体段落会被判成「已是目标语言」而整段跳过，简繁互转直接变成 no-op。
+ * 这类目标一律不做跳过判定——跳过等于放弃翻译，宁可多翻一遍交给引擎转换。
+ */
+const HANT_TARGET = /^zh-hant(?:-|$)/;
+
+/**
  * 段落已经是指定目标语言时无需翻译。
  * 只有目标字符集严格领先才跳过：与其它字符集同分时宁可翻译——
  * 跳过等于放弃翻译，错一边就是漏翻（'Hi 你好' 这类极短混排任何多数决都不可靠）。
  */
 export function shouldSkip(text: string, targetLang: string): boolean {
-  const expected = TARGET_SCRIPT[baseLang(targetLang)];
+  const code = targetLang.toLowerCase();
+  if (HANT_TARGET.test(code)) return false;
+  const expected = TARGET_SCRIPT[baseLang(code)];
   if (!expected) return false;
   const pick = pickScript(text);
   return pick.lang === expected && !pick.tied;
 }
 ```
 
-> 实现备注（口径的由来与候选对比见 `docs/superpowers/plans/2026-09-14-wu2-plan-amendment.md`）：
-> `detectScript` 按各字符集**连续片段的得分**取最高者，每段计 `1 + floor(log2(段长))`，
-> 即段数与段长同时参与；同分时先出现者优先，不依赖 `SCRIPT_RANGES` 的表序。
-> 因此 `'你好世界 Hello'`（中文 1 段 4 字 / 拉丁 1 段 5 字母，同档同分）判为 `zh`，
-> 而 `'aaaaa 你好'`（拉丁段跨两档）正确判为 `latin`，不会把 5 个字母的混排段落整段跳过。
+> 实现备注（口径的由来、候选对比与被否掉的口径见 `docs/superpowers/plans/2026-09-14-wu2-plan-amendment.md` §5、§7）：
+> `detectScript` 按各字符集**字符总数**分档取最高者，档位是 `1 + floor(log2(字数))`，
+> 不是按「连续片段」计分：拉丁文天然被空格切成多段、中文一句话通常只有 1 段，
+> 按片段计分会让结论取决于标点怎么切。实测 `'这是一段很长的中文内容需要翻译成英文。Hello world'`
+> （中文 18 字 / 拉丁 10 字母）被判成 `latin`，目标为英文时整段跳过，18 个汉字一个不翻。
+> 同分时先出现者优先，不依赖 `SCRIPT_RANGES` 的表序。
+> 因此 `'你好世界 Hello'`（中文 4 字与拉丁 5 字母同档同分）判为 `zh`，
+> 而 `'aaaaa 你好'`（拉丁字数是中文的两倍以上，跨档）正确判为 `latin`。
 > `shouldSkip` 只在目标字符集**严格领先**时返回 `true`：与其它字符集同分的混排段落
 > （`'Hi 你好'`、`'你好 Hi'`）按低置信度处理，宁可不跳过——跳过等于放弃翻译，错一边就是漏翻。
+> 目标为 `zh-Hant` 时一律不跳过：`ScriptLang` 只到字符集一级、分辨不了简繁，
+> 否则简体段落会被判成「已是目标语言」，简繁互转静默失效。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -552,7 +600,6 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/core/segmenter.ts
-
 export interface TextSegment {
   id: string;
   text: string;
@@ -575,7 +622,8 @@ const PER_SEGMENT_OVERHEAD = 8;
 /**
  * 按 DOM 顺序把相邻段落合并成批次。
  * 单段自身超过 maxBatchChars 时独占一批——正常路径不做段内切分，
- * 段内切分只发生在引擎报"文本过长"的降级路径（见 background/scheduler.ts）。
+ * 段内切分只发生在引擎报"文本过长"的降级路径
+ * （见 units/wu3，待建的 src/background/scheduler.ts）。
  */
 export function planBatches(segments: TextSegment[], options: BatchOptions): TextSegment[][] {
   const batches: TextSegment[][] = [];
@@ -728,6 +776,13 @@ describe('runPool', () => {
     const tasks = [async () => 1, async () => 2];
     expect(await runPool(tasks, 10)).toEqual([1, 2]);
   });
+
+  it('limit 不是不小于 1 的有限数时报错而不是返回空洞结果', async () => {
+    const tasks = [async () => 'a'];
+    await expect(runPool(tasks, Number.NaN)).rejects.toThrow(RangeError);
+    await expect(runPool(tasks, 0)).rejects.toThrow(RangeError);
+    await expect(runPool(tasks, -1)).rejects.toThrow(RangeError);
+  });
 });
 ```
 
@@ -741,12 +796,17 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/core/pool.ts
-
 /**
  * 以最多 limit 个并发执行任务，返回结果数组，顺序与 tasks 一致。
  * 任务自身的异常会向上抛出（调用方负责在任务内部捕获）。
+ * limit 必须是「不小于 1 的有限数」：NaN 会算出 0 个 worker，
+ * 静默返回一个全是 undefined 的数组，所以入口直接报错。
  */
 export async function runPool<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+  if (!Number.isFinite(limit) || limit < 1) {
+    throw new RangeError(`runPool 的 limit 必须是不小于 1 的有限数，收到 ${String(limit)}`);
+  }
+
   const results: T[] = new Array(tasks.length);
   if (tasks.length === 0) return results;
 

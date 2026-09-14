@@ -20,7 +20,8 @@ const PER_SEGMENT_OVERHEAD = 8;
 /**
  * 按 DOM 顺序把相邻段落合并成批次。
  * 单段自身超过 maxBatchChars 时独占一批——正常路径不做段内切分，
- * 段内切分只发生在引擎报"文本过长"的降级路径（见 background/scheduler.ts）。
+ * 段内切分只发生在引擎报"文本过长"的降级路径
+ * （见 units/wu3，待建的 src/background/scheduler.ts）。
  */
 export function planBatches(segments: TextSegment[], options: BatchOptions): TextSegment[][] {
   const batches: TextSegment[][] = [];

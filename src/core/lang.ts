@@ -40,48 +40,45 @@ function scriptOf(codePoint: number): ScriptLang | undefined {
 }
 
 interface ScriptStat {
-  /** 该字符集全部连续片段的得分之和 */
-  score: number;
-  /** 该字符集第一个片段的起始下标 */
+  /** 该字符集的字符总数 */
+  chars: number;
+  /** 该字符集第一个字符的下标 */
   firstAt: number;
 }
 
 /**
- * 单遍扫描文本，统计每个字符集的连续片段及其得分。
- * 每个片段计 `1 + floor(log2(段长))`——段长每翻一倍多算一分，段数与段长同时参与。
- * 只数片段会丢掉长度信息：'aaaaa 你好' 是两个各 1 段的字符集，按段数打平后
- * 会误判成 zh（中文段落被整段跳过、5 个字母永远不翻）；加权后拉丁段跨两档，正确判为 latin。
- * 分档取 floor 而不是精确值，是为了让 4 与 5 个字符同分，保住
- * '你好世界 Hello'（中文 1 段 4 字 / 拉丁 1 段 5 字母）判为 zh 的既有断言。
+ * 单遍扫描文本，统计每个字符集的**字符总数**，而不是「连续片段」的得分。
+ * 按片段计分会让结论取决于标点与空格怎么切：拉丁文天然被空格切成多段
+ * （'Hello world' 就是 2 段），中文一句话通常只有 1 段，于是同一段文本里
+ * 中文按 1 段拿分、拉丁按好几段拿分。实测
+ * '这是一段很长的中文内容需要翻译成英文。Hello world'（中文 18 字 / 拉丁 10 字母）
+ * 被判成 latin，目标为英文时整段跳过，18 个汉字永远不翻。
+ * 改成按字符总数分档后，标点切不切碎片段不再影响分数，只影响同档时的先出现者判定。
  */
 function scoreScripts(text: string): Map<ScriptLang, ScriptStat> {
   const stats = new Map<ScriptLang, ScriptStat>();
-  let current: ScriptLang | undefined;
-  let runLength = 0;
-  let runStart = 0;
   let offset = 0;
-
-  const closeRun = () => {
-    if (current === undefined || runLength === 0) return;
-    const stat = stats.get(current) ?? { score: 0, firstAt: runStart };
-    stat.score += 1 + Math.floor(Math.log2(runLength));
-    stats.set(current, stat);
-  };
 
   for (const char of text) {
     const lang = scriptOf(char.codePointAt(0) ?? 0);
-    if (lang !== current) {
-      closeRun();
-      current = lang;
-      runLength = 0;
-      runStart = offset;
+    if (lang !== undefined) {
+      const stat = stats.get(lang);
+      if (stat === undefined) stats.set(lang, { chars: 1, firstAt: offset });
+      else stat.chars += 1;
     }
-    if (lang !== undefined) runLength += 1;
     offset += char.length;
   }
-  closeRun();
 
   return stats;
+}
+
+/**
+ * 字符数分档：每翻一倍才多一分（不取精确 log2）。
+ * 分档是为了让 4 与 5 个字符同档，保住 '你好世界 Hello'
+ * （中文 4 字 / 拉丁 5 字母）判为 zh 的既有断言。
+ */
+function bandOf(chars: number): number {
+  return 1 + Math.floor(Math.log2(chars));
 }
 
 interface ScriptPick {
@@ -101,13 +98,14 @@ function pickScript(text: string): ScriptPick {
   for (const [candidate] of SCRIPT_RANGES) {
     const stat = stats.get(candidate);
     if (stat === undefined) continue;
-    if (stat.score > score || (stat.score === score && stat.firstAt < firstAt)) {
+    const candidateScore = bandOf(stat.chars);
+    if (candidateScore > score || (candidateScore === score && stat.firstAt < firstAt)) {
       // 换人时若分数相同，被换下的那个仍然与新的最高分持平。
-      tied = stat.score === score;
+      tied = candidateScore === score;
       lang = candidate;
-      score = stat.score;
+      score = candidateScore;
       firstAt = stat.firstAt;
-    } else if (stat.score === score) {
+    } else if (candidateScore === score) {
       tied = true;
     }
   }
@@ -149,12 +147,22 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
 };
 
 /**
+ * 显式指定繁体（Hant）脚本的目标语言。
+ * ScriptLang 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），分辨不了简繁：
+ * 选繁體中文时简体段落会被判成「已是目标语言」而整段跳过，简繁互转直接变成 no-op。
+ * 这类目标一律不做跳过判定——跳过等于放弃翻译，宁可多翻一遍交给引擎转换。
+ */
+const HANT_TARGET = /^zh-hant(?:-|$)/;
+
+/**
  * 段落已经是指定目标语言时无需翻译。
  * 只有目标字符集严格领先才跳过：与其它字符集同分时宁可翻译——
  * 跳过等于放弃翻译，错一边就是漏翻（'Hi 你好' 这类极短混排任何多数决都不可靠）。
  */
 export function shouldSkip(text: string, targetLang: string): boolean {
-  const expected = TARGET_SCRIPT[baseLang(targetLang)];
+  const code = targetLang.toLowerCase();
+  if (HANT_TARGET.test(code)) return false;
+  const expected = TARGET_SCRIPT[baseLang(code)];
   if (!expected) return false;
   const pick = pickScript(text);
   return pick.lang === expected && !pick.tied;

@@ -33,6 +33,28 @@ describe('detectScript', () => {
     expect(detectScript('你好 Hi')).toBe('zh');
   });
 
+  it('中文占多数时不因标点切碎而判成拉丁', () => {
+    expect(detectScript('这是一段很长的中文内容需要翻译成英文。Hello world')).toBe('zh');
+  });
+
+  it('同一句里用句号还是空格分隔，不改变判定', () => {
+    expect(detectScript('这是一段很长的中文内容需要翻译成英文 Hello world')).toBe(
+      detectScript('这是一段很长的中文内容需要翻译成英文。Hello world'),
+    );
+    expect(detectScript('这是一段很长的中文内容需要翻译成英文 Hello world')).toBe('zh');
+  });
+
+  it('多段中文与多段拉丁总字数同档时按先出现者判定', () => {
+    expect(detectScript('第一段中文。第二段中文。third party tools')).toBe('zh');
+    expect(detectScript('first party tools 第一段中文。第二段中文。')).toBe('latin');
+  });
+
+  it('拉丁字母明显多于中文时仍判 latin（计数口径的边界）', () => {
+    // 冻结断言 'Hello world 世界' → latin、'中文 abcde' → latin 已经钉死了这个方向：
+    // 「出现中文就算中文」的规则会把它们打回原样。理由见留档 amendment §7。
+    expect(detectScript('中文。English words here')).toBe('latin');
+  });
+
   it('没有字母时返回 unknown', () => {
     expect(detectScript('123 --- !!!')).toBe('unknown');
   });
@@ -101,5 +123,19 @@ describe('shouldSkip', () => {
 
   it('中文段明显占优时仍然跳过', () => {
     expect(shouldSkip('这是一段较长的中文内容，Hello', 'zh-Hans')).toBe(true);
+  });
+
+  it('中文占多数被标点切碎的段落，目标为英文时不跳过', () => {
+    expect(shouldSkip('这是一段很长的中文内容需要翻译成英文。Hello world', 'en')).toBe(false);
+  });
+
+  it('多段中文与多段拉丁总字数同档时不跳过', () => {
+    expect(shouldSkip('第一段中文。第二段中文。third party tools', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('first party tools 第一段中文。第二段中文。', 'en')).toBe(false);
+  });
+
+  it('目标繁體中文时不跳过中文字段（简繁互转不走跳过快路径）', () => {
+    expect(shouldSkip('这是简体中文', 'zh-Hant')).toBe(false);
+    expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(false);
   });
 });

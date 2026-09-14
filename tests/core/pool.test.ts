@@ -45,4 +45,11 @@ describe('runPool', () => {
     const tasks = [async () => 1, async () => 2];
     expect(await runPool(tasks, 10)).toEqual([1, 2]);
   });
+
+  it('limit 不是不小于 1 的有限数时报错而不是返回空洞结果', async () => {
+    const tasks = [async () => 'a'];
+    await expect(runPool(tasks, Number.NaN)).rejects.toThrow(RangeError);
+    await expect(runPool(tasks, 0)).rejects.toThrow(RangeError);
+    await expect(runPool(tasks, -1)).rejects.toThrow(RangeError);
+  });
 });
