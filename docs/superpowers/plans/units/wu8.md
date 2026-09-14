@@ -216,6 +216,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 ```
 
+> **条目级 `AUTH` 与页面 toast 的口径（WU6 审查遗留的决定，必须照此实现）**：后台的
+> `translateBatch` 是**逐条**上报失败的，所以缺 API Key / Key 无效这类鉴权失败会表现为
+> `{ ok: true, results: [{ text: null, code: 'AUTH', … }, …] }`，而不是 `{ ok: false }`。
+> 上面 `if (!response.ok)` 那个分支因此**收不到鉴权失败**，`describeError` 的 `AUTH` /
+> `RATE_LIMIT` 两条也就永远不会被走到；一个 200 段的页面会变成 200 个"尚未填写 API Key"
+> 标签，而规格 §8 要求的是「不重试；页面 toast + 弹窗红点」。
+>
+> 采用条目级的响应形状作为契约（它更精确，WU5 的 22 条调度器用例也钉在它上面），缺口在
+> 展示侧补：**整批结果 `results.every((r) => r.code === 'AUTH')` 时，只 toast 一次
+> `results[0].message`，并且不给这些片段挂重试按钮**（重试多少次都是同一个结果）。
+> 其余错误码维持现状：条目级标注 + 重试按钮。
+
 - [ ] **Step 3: 运行类型检查**
 
 Run: `npm run typecheck`

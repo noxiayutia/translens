@@ -9,6 +9,7 @@
  * 引擎走的是真实现 + 假 `fetch`：免费接口一次请求一条文本，假响应把请求里的 `q`
  * 回显成 `【q】`，于是"发了几个请求、请求带什么参数、结果有没有落盘"都能直接断言。
  */
+import process from 'node:process';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TranslationCache } from '../../src/core/cache';
 import { chromeArea } from '../../src/shared/chrome-area';
@@ -20,7 +21,11 @@ const stub: ChromeStub = installChromeStub();
 
 beforeAll(async () => {
   // 只有副作用，没有导出可拿：监听器注册在替身上。
-  await import('../../src/background/service-worker');
+  const worker = await import('../../src/background/service-worker');
+  // 没有这个断言的话，"监听器没注册"只会表现为每个用例各超时 1000ms，看不出根因。
+  expect(stub.runtime.onMessage.listeners()).toHaveLength(1);
+  // 启动对账会写 `jt:meta`，跨用例漂着就会污染"存储里有什么"这类断言：先等它跑完。
+  await worker.cachesInitialized;
 });
 
 /** 让已经排队的微任务与 `await` 链全部走完（比数微任务次数稳）。 */
@@ -84,9 +89,10 @@ describe('runtime.onMessage 消息路由', () => {
     expect(dispatch.responded).toBe(false);
   });
 
-  it('形状不对的翻译消息也返回 false（只有类型没有 items）', () => {
+  it('形状不对的翻译消息也返回 false（只有类型没有 items），不占用消息通道', () => {
     const dispatch = stub.runtime.dispatchMessage({ type: MSG.TRANSLATE_TEXTS, payload: {} });
     expect(dispatch.returns).toEqual([false]);
+    expect(dispatch.keepChannelOpen).toBe(false);
     expect(dispatch.responded).toBe(false);
   });
 
@@ -154,8 +160,10 @@ describe('runtime.onMessage 消息路由', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('读设置就失败时返回 { ok: false, code, message }', async () => {
+  it('loadSettings 抛错时返回 { ok: false, code, message }', async () => {
     // 存储里的版本号高于本代码：`loadSettings` 拒读，异常在 handleTranslateTexts 里被收成响应。
+    // 注意这条走的是**读设置**这条路径；`:108-111` 那个 catch 是兜底，今天没有可达的引擎触发点
+    // ——引擎错误是条目级的（见下一条用例），不会从 translateBatch 里抛出来。
     await stub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1 } });
 
     await expect(translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response()).resolves.toEqual({
@@ -163,6 +171,30 @@ describe('runtime.onMessage 消息路由', () => {
       code: 'UNKNOWN',
       message: `设置版本 ${CURRENT_VERSION + 1} 高于当前支持的 ${CURRENT_VERSION}，请更新扩展`,
     });
+  });
+
+  it('端口已关闭（sendResponse 抛错）时静默丢弃，不留下未处理拒绝', async () => {
+    stubGoogleFetch(); // 引擎走真实现，给个假响应让批次真的跑完
+    stub.runtime.failSendResponse = true;
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    // 只监听、不拦截：vitest 自己的监听器照旧生效（未处理拒绝在真跑里会直接判失败）。
+    process.on('unhandledRejection', onRejection);
+
+    try {
+      const dispatch = translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] });
+      expect(dispatch.keepChannelOpen).toBe(true);
+      // 响应是异步的，所以"第一个 sendResponse 抛错"必然发生在下面这个 `await` 之前，
+      // 此后整条链都已定局：一个宏任务足够让未处理拒绝冒出来。
+      await flush();
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+
+    // 真正会漏的是第二个 sendResponse：`.catch` 里那个调用自己抛出的异常背后没有处理者。
+    expect(rejections).toEqual([]);
   });
 });
 
@@ -232,6 +264,9 @@ describe('快捷键与右键菜单', () => {
     stub.commands.run('toggle-translate');
     await flush();
     expect(stub.tabs.sent).toEqual([{ tabId: 7, message: { type: MSG.TOGGLE_PAGE } }]);
+    // 替身的 `query` 不按条件过滤，所以"活动标签页、当前窗口"只能靠条件本身断言：
+    // 少传 `currentWindow` 时用例仍然会绿，除非这一行在。
+    expect(stub.tabs.queries).toEqual([{ active: true, currentWindow: true }]);
 
     stub.tabs.activeTabs = []; // 没有任何活动标签页
     stub.commands.run('toggle-translate');

@@ -15,6 +15,11 @@
  * 存储 API 只覆盖 `core/cache.ts` 与 `shared/settings.ts` 用到的取法
  * （`null` / 字符串 / 字符串数组）；真机还接受对象形式的默认值，这里**不支持**，
  * 传进来会直接抛错而不是静默返回错结果。
+ *
+ * 与 `tests/helpers/memory-storage.ts` 的分工（两者不是重复实现）：那边的
+ * `MemoryStorage` 只做**配额**语义（单条/总量上限、写入字节数统计），且只实现
+ * `StorageArea`；这里做的是**命名空间**语义——两块互不相通的存储区、`chrome.*` 的
+ * 可注册事件、`tabs` / `contextMenus` 的调用记录，都是 `chrome` 这个门面才有的东西。
  */
 
 /** 事件替身：按注册顺序触发，并把每个监听器的返回值原样交回调用方（`onMessage` 要看它）。 */
@@ -110,9 +115,13 @@ export interface SentTabMessage {
 }
 
 export interface StubTabs {
-  /** 下一次 `query` 返回的标签页；默认是一个 `id: 7` 的活动标签 */
+  /** 下一次 `query` 返回的标签页，默认是一个 `id: 7` 的活动标签 */
   activeTabs: StubTab[];
-  /** `query` 收到的查询条件，按调用顺序 */
+  /**
+   * `query` 收到的查询条件，按调用顺序。
+   * `query` 不按条件过滤，只把 `activeTabs` 原样返回——"活动标签页"这个前提由
+   * `activeTabs` 本身表达，条件是否传对只能靠断言这里。
+   */
   queries: unknown[];
   /** 每次 `sendMessage` 的尝试（含下面被拒的那些），按调用顺序 */
   sent: SentTabMessage[];
@@ -168,6 +177,12 @@ export interface MessageDispatch {
 export interface StubRuntime {
   onInstalled: StubEvent<() => void>;
   onMessage: StubEvent<StubMessageListener>;
+  /**
+   * 置为 true 后 `sendResponse` 会抛错，模拟**消息端口已经关闭**：内容脚本自己的
+   * 超时、页面跳走、service worker 被回收，真机上都是这个异常
+   * （"The message port closed before a response was received."）。
+   */
+  failSendResponse: boolean;
   /** 触发 `onInstalled`（模拟安装 / 更新） */
   install(): void;
   /** 派发一条消息给全部 `onMessage` 监听器 */
@@ -196,10 +211,10 @@ export const DEFAULT_ACTIVE_TAB: StubTab = { id: 7, active: true, currentWindow:
 function createRuntime(): StubRuntime {
   const onInstalled = createEvent<() => void>();
   const onMessage = createEvent<StubMessageListener>();
-
-  return {
+  const runtime: StubRuntime = {
     onInstalled,
     onMessage,
+    failSendResponse: false,
     install: () => void onInstalled.emit(),
     dispatchMessage(message, sender = {}) {
       let responded = false;
@@ -211,6 +226,10 @@ function createRuntime(): StubRuntime {
       const sendResponse = (response?: unknown): void => {
         // 真机上第二个 sendResponse 是空操作，这里也忽略后到的那个。
         if (responded) return;
+        // 抛在置位之前：端口已经关了，这次响应根本没有送达。
+        if (runtime.failSendResponse) {
+          throw new Error('The message port closed before a response was received.');
+        }
         responded = true;
         value = response;
         settle?.(response);
@@ -242,6 +261,7 @@ function createRuntime(): StubRuntime {
       };
     },
   };
+  return runtime;
 }
 
 function createContextMenus(): StubContextMenus {
@@ -313,6 +333,7 @@ export function createChromeStub(): ChromeStub {
       tabs.queries = [];
       tabs.sent = [];
       tabs.rejectSendMessage = false;
+      stub.runtime.failSendResponse = false;
     },
   };
   return stub;
