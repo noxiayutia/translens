@@ -64,6 +64,34 @@ export async function translateOne(text: string, to: string, signal: AbortSignal
   return parseGoogleResponse(data);
 }
 
+/** 单条文本的瞬时失败重试次数与退避；批内一条抖动不该让整批重发。 */
+const ITEM_RETRY_DELAYS_MS = [200, 600];
+
+/**
+ * 条目级的抖动吸收：一次 `translate()` 内部摊成了 N 个独立 fetch，
+ * 谁来重试必须按条目算，否则调度器只看得见「整批失败」，把已经成功的 N-1 条一起重发。
+ *
+ * 只重试瞬时错误（`NETWORK` / `RATE_LIMIT`）：鉴权失败、请求取消、文本过长
+ * 重试多少次结果都一样，必须原样上抛——`TOO_LONG` 要靠调度器的切分降级，不能被这里吞掉。
+ */
+async function translateOneWithRetry(text: string, to: string, signal: AbortSignal): Promise<string> {
+  let last: unknown;
+  for (let attempt = 0; attempt <= ITEM_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await translateOne(text, to, signal);
+    } catch (raw) {
+      last = raw;
+      const error = toEngineError(raw);
+      // 只重试瞬时错误：鉴权失败、请求取消、文本过长重试多少次都一样。
+      if (error.code !== 'NETWORK' && error.code !== 'RATE_LIMIT') throw error;
+      if (attempt < ITEM_RETRY_DELAYS_MS.length) {
+        await new Promise((resolve) => setTimeout(resolve, ITEM_RETRY_DELAYS_MS[attempt]));
+      }
+    }
+  }
+  throw toEngineError(last);
+}
+
 export const googleEngine: Translator = {
   id: 'google',
   name: 'Google 免费接口',
@@ -71,7 +99,9 @@ export const googleEngine: Translator = {
   supportsGlossary: false,
   async translate(request: TranslateRequest, _config: EngineConfig): Promise<string[]> {
     // 免费接口不支持一次请求多条文本，只能逐条发出；用并发池限制突发。
-    const tasks = request.texts.map((text) => () => translateOne(text, request.to, request.signal));
+    const tasks = request.texts.map(
+      (text) => () => translateOneWithRetry(text, request.to, request.signal),
+    );
     return runPool(tasks, MAX_CONCURRENCY);
   },
 };

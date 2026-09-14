@@ -114,6 +114,32 @@ describe('googleEngine.translate', () => {
     ).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
 
+  it('批内单条瞬时抖动只重发该条，不重发整批', async () => {
+    // 12 条批次里第 11 条抖一次就不该实打实发出两倍的文本量：
+    // 条目级重试必须发生在引擎内部，调度器那边只看得见"整批失败"。
+    const texts = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'];
+    const attempts = new Map<string, number>();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const query = new URL(String(input)).searchParams.get('q') ?? '';
+      const seen = (attempts.get(query) ?? 0) + 1;
+      attempts.set(query, seen);
+      // 第 3 条第一次调用抖一次，第二次成功；其余全部一次成功。
+      if (query === 't3' && seen === 1) throw new TypeError('failed to fetch');
+      return jsonResponse(googleBody([`译:${query}`]));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await googleEngine.translate(
+      { texts, from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+      {},
+    );
+
+    expect(out).toEqual(texts.map((text) => `译:${text}`));
+    // 8 条文本 + 第 3 条的那一次重发 = 9；整批重发会是 16。
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    for (const text of texts) expect(attempts.get(text)).toBe(text === 't3' ? 2 : 1);
+  });
+
   it('单个批次内部并发不超过 4', async () => {
     let inFlight = 0;
     let peak = 0;
