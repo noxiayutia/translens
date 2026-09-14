@@ -166,6 +166,54 @@ describe('runtime.onMessage 消息路由', () => {
   });
 });
 
+describe('两层缓存的层次顺序', () => {
+  /**
+   * 接线方向是这一个调用决定的：`new TieredCache(sessionCache, persistentCache)`
+   * （`service-worker.ts:69`）。两个参数同型，调换顺序照样编译、照样"两层都写了"，
+   * 所以断言必须落在**方向**上：读会话层优先、持久层命中回填会话层。
+   */
+  it('两层都有同一个 key 时读会话层，持久层里被改坏的旧译文不会顶掉它', async () => {
+    const calls = stubGoogleFetch();
+
+    await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response();
+    expect(calls).toHaveLength(1);
+
+    // 同一个 key 在两层里放不同的译文：只有"先读会话层"的实现才拿得到会话层那份。
+    const keys = cacheEntries('session').map(([key]) => key);
+    expect(keys).toHaveLength(1);
+    expect(cacheEntries('local').map(([key]) => key)).toEqual(keys);
+    await stub.storage.local.set({ [keys[0]]: { v: '【持久层旧译文】', t: Date.now() } });
+
+    await expect(translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: true,
+      results: [{ id: 'item-1', text: '【Hello】' }],
+    });
+    expect(calls).toHaveLength(1); // 命中缓存就不再请求引擎
+  });
+
+  it('会话层没有时从持久层命中并回填会话层，且不打回引擎', async () => {
+    const calls = stubGoogleFetch();
+
+    await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response();
+    expect(calls).toHaveLength(1);
+
+    const [key] = cacheEntries('local').map(([entryKey]) => entryKey);
+    await stub.storage.session.remove(key); // 会话结束 / 被淘汰后的现场：只剩持久层
+    expect(cacheEntries('session')).toEqual([]);
+
+    await expect(translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: true,
+      results: [{ id: 'item-1', text: '【Hello】' }],
+    });
+    expect(calls).toHaveLength(1); // 持久层命中，没有再请求引擎
+
+    // 回填是"真的写进了会话层"，而不是只把值返回给调用方：下一次读要走快的那层。
+    const session = stub.storage.session.snapshot();
+    expect(session[key]).toEqual({ v: '【Hello】', t: expect.any(Number) });
+    expect(await new TranslationCache(chromeArea(chrome.storage.session)).count()).toBe(1);
+  });
+});
+
 describe('快捷键与右键菜单', () => {
   it('安装时先清空再注册两个右键菜单', () => {
     stub.runtime.install();
