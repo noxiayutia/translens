@@ -422,6 +422,46 @@ describe('collectSegments', () => {
     expect(segments.map((s) => s.text)).toEqual(['Visible text here', 'Another sentence here']);
   });
 
+  /**
+   * 用户**正在写、还没保存**的内容（邮件草稿、笔记、评论框）属于隐私：它确实在网页里可见，
+   * 但它是用户的半成品，不是网页的内容。README 的隐私一节承诺过它不会被翻译。
+   */
+  it('contenteditable 容器里的草稿不产出段落', () => {
+    const root = mount(
+      '<div contenteditable="true">My private unfinished English draft</div>' +
+        '<p>Published paragraph text</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Published paragraph text']);
+  });
+
+  it('可编辑性会继承给后代：contenteditable 里的块级子元素同样不产出', () => {
+    const root = mount(
+      '<div contenteditable="true"><p>Draft inside a paragraph</p><p>Another draft line</p></div>' +
+        '<p>Published paragraph text</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Published paragraph text']);
+  });
+
+  it('行内的 contenteditable 草稿不并入父段', () => {
+    const root = mount(
+      '<p>Visible <span contenteditable="true">private draft</span> text here</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Visible text here']);
+  });
+
+  it('contenteditable="false" 只是显式关掉可编辑：它的文本照常翻译', () => {
+    // 所见即所得编辑器用 false 嵌只读片段，那不是"用户没写完的草稿"，不该被跳过。
+    const root = mount(
+      '<div contenteditable="false">Read only published text</div>' +
+        '<div contenteditable="true"><span contenteditable="false">nested read only text</span></div>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Read only published text']);
+  });
+
   it('重扫时容器里新追加的内容会被采到，已处理的段落不重复产出', () => {
     const root = mount('<div id="feed"><p>First post text</p></div>');
     const feed = document.getElementById('feed') as HTMLElement;

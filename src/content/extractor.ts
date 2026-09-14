@@ -132,7 +132,30 @@ function isHidden(element: Element, styleOf: (element: Element) => ElementStyle)
  * 免得「这里跳过、那里不跳过」两处规则漂移。
  */
 function isSkippedForText(element: Element): boolean {
-  return SKIP_TAGS.has(element.tagName) || element.closest('[data-jy-root]') !== null;
+  return SKIP_TAGS.has(element.tagName) || isEditable(element) || element.closest('[data-jy-root]') !== null;
+}
+
+/**
+ * 可编辑区域（`contenteditable`）里的文本一律不采集。
+ *
+ * 用户**正在写、还没保存**的内容——邮件草稿、笔记、评论框——是隐私：它确实"在网页里可见"，
+ * 但它是用户的半成品，不是网页的内容，不该被送去外部接口（README 的隐私承诺）。
+ *
+ * 两层判定：
+ * 1. `element.isContentEditable` 是标准做法，浏览器把可编辑性**继承**给后代
+ *    （`<div contenteditable="true"><p>草稿</p></div>` 里的 `p` 也是可编辑的）；
+ * 2. 宿主没实现该属性时（老引擎、测试环境）退回按最近的 `[contenteditable]` 祖先判定，
+ *    显式的 `contenteditable="false"` 会把它自己与子树重新变回不可编辑（所见即所得编辑器
+ *    用它嵌只读片段），`inherit` 则继续往上找。
+ */
+function isEditable(element: Element): boolean {
+  if ((element as HTMLElement).isContentEditable === true) return true;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const value = node.getAttribute('contenteditable');
+    if (value === null || value === 'inherit') continue;
+    return value !== 'false';
+  }
+  return false;
 }
 
 /**
@@ -227,6 +250,8 @@ function inlineText(element: Element, styleOf: (element: Element) => ElementStyl
 
 function isSkippable(element: Element): boolean {
   if (SKIP_TAGS.has(element.tagName)) return true;
+  // 可编辑区域整棵子树都不采：用户没写完的草稿不上传到外部翻译接口（见 isEditable）。
+  if (isEditable(element)) return true;
   if (element.hasAttribute('data-jy-translated')) return true;
   // 插件自己注入的译文宿主，避免二次翻译。
   if (element.closest('[data-jy-root]')) return true;
