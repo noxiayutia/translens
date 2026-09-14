@@ -3,6 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DomRenderer } from '../../src/content/renderer';
+import { collectSegments } from '../../src/content/extractor';
 import type { ExtractedSegment } from '../../src/content/extractor';
 
 function paragraph(text: string): ExtractedSegment {
@@ -164,5 +165,140 @@ describe('DomRenderer 替换模式', () => {
     renderer.mount(segment, 'pending');
     renderer.fail(segment.id, '网络错误');
     expect(segment.element.textContent).toBe('Hello world');
+  });
+
+  it('段落里带行内元素时退回双语注入，绝不销毁行内标记', () => {
+    document.body.innerHTML = '<p id="p">Click <a href="/x">here</a> now</p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.element).toBe(p);
+
+    const renderer = new DomRenderer(document, 'replace');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '点击这里');
+
+    // 原文（含链接）原样保留，译文另起宿主。
+    expect(p.querySelector('a')).not.toBeNull();
+    expect(p.textContent).toBe('Click here now');
+    expect(document.querySelector('jy-translation')).not.toBeNull();
+
+    renderer.restore();
+    expect(p.querySelector('a')).not.toBeNull();
+    expect(p.innerHTML).toBe('Click <a href="/x">here</a> now');
+  });
+});
+
+describe('DomRenderer 文本段（混合内容里的直接文本）', () => {
+  it('锚点是容器时插进容器内部、在下一个块级子元素之前', () => {
+    document.body.innerHTML = '<div id="box">Intro sentence here<p id="body">Body paragraph text</p></div>';
+    const box = document.getElementById('box') as HTMLElement;
+    // 用真实抽取结果：锚点是容器本身（后面紧跟块级子元素）。
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.textRun).toBe(true);
+    expect(segment.element).toBe(box);
+
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+
+    const host = document.querySelector('jy-translation') as Element;
+    expect(host.parentElement).toBe(box);
+    expect(host.nextElementSibling).toBe(document.getElementById('body'));
+  });
+
+  it('锚点是段后面的块级子元素时插到它之前', () => {
+    document.body.innerHTML = '<div id="box"><p id="first">Block one text</p>stray text here<p id="second">Block two text</p></div>';
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const stray = segments.find((item) => item.text.includes('stray'));
+    expect(stray?.textRun).toBe(true);
+    expect(stray?.element).toBe(document.getElementById('second'));
+
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(stray as ExtractedSegment, 'pending');
+
+    const host = document.querySelector('jy-translation') as Element;
+    expect(host.parentElement).toBe(document.getElementById('box'));
+    expect(host.nextElementSibling).toBe(document.getElementById('second'));
+  });
+
+  it('容器里的文本段插在容器内部，不跑到容器外面去', () => {
+    document.body.innerHTML = '<div id="outer"><div id="box">Intro sentence here<p id="body">Body paragraph text</p></div></div>';
+    const outer = document.getElementById('outer') as HTMLElement;
+    const box = document.getElementById('box') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+
+    const host = document.querySelector('jy-translation') as Element;
+    expect(host.parentElement).toBe(box);
+    expect(outer.querySelectorAll(':scope > jy-translation')).toHaveLength(0);
+  });
+
+  it('混合内容全部渲染后再采集不会重复成段', () => {
+    document.body.innerHTML = '<div id="box">Intro sentence here<p id="body">Body paragraph text</p></div>';
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'bilingual');
+    for (const segment of segments) renderer.mount(segment, 'pending');
+
+    expect(document.querySelectorAll('jy-translation')).toHaveLength(2);
+    // 容器的直接文本段也渲染过之后，整棵子树都该被标记，再采集不能冒出新的段。
+    expect(collectSegments(document.body, { targetLang: 'zh-Hans' })).toHaveLength(0);
+  });
+
+  it('restore 后原文一字不差，标记清空', () => {
+    document.body.innerHTML = '<div id="box">Intro sentence here<p id="body">Body paragraph text</p></div>';
+    const before = document.body.innerHTML;
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'bilingual');
+    for (const segment of segments) renderer.mount(segment, 'pending');
+    renderer.restore();
+
+    expect(document.body.innerHTML).toBe(before);
+    expect(document.querySelector('[data-jy-id]')).toBeNull();
+    expect(document.querySelector('[data-jy-translated]')).toBeNull();
+  });
+});
+
+describe('DomRenderer 还原的边界', () => {
+  it('页面在翻译之后换掉节点，restore 也能把原文写回活着的那个', () => {
+    document.body.innerHTML = '<div id="box"><p id="p">Original english text</p></div>';
+    const box = document.getElementById('box') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'replace');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '替换后的译文');
+    expect(segment.element.textContent).toBe('替换后的译文');
+
+    // 框架重渲染：新节点继承了旧节点上的插件标记。
+    const replacement = document.createElement('p');
+    replacement.setAttribute('data-jy-id', segment.id);
+    replacement.setAttribute('data-jy-translated', '1');
+    replacement.textContent = '替换后的译文';
+    box.replaceChildren(replacement);
+
+    renderer.restore();
+
+    expect(replacement.textContent).toBe('Original english text');
+    expect(replacement.hasAttribute('data-jy-translated')).toBe(false);
+    expect(replacement.hasAttribute('data-jy-id')).toBe(false);
+  });
+
+  it('还原后重新采集仍是同样三段（标记不残留）', () => {
+    document.body.innerHTML = '<div id="box">Intro sentence here<p>Body paragraph text</p>Outro sentence here</div>';
+    const box = document.getElementById('box') as HTMLElement;
+    const renderer = new DomRenderer(document, 'bilingual');
+
+    const first = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(first.map((s) => s.text)).toEqual([
+      'Intro sentence here',
+      'Body paragraph text',
+      'Outro sentence here',
+    ]);
+    for (const segment of first) renderer.mount(segment, 'pending');
+    renderer.restore();
+
+    const second = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(second.map((s) => s.text)).toEqual(first.map((s) => s.text));
+    expect(box.querySelectorAll('jy-translation')).toHaveLength(0);
   });
 });
