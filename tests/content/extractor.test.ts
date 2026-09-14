@@ -67,6 +67,81 @@ function refTextOf(element: Element): string {
   return out.replace(/\s+/g, ' ').trim();
 }
 
+/** 参照实现里「块级」按标签名判定：与被测代码的 computed display 判定互相独立。 */
+const REF_BLOCK_TAGS = new Set([
+  'ADDRESS',
+  'ARTICLE',
+  'ASIDE',
+  'BLOCKQUOTE',
+  'DD',
+  'DETAILS',
+  'DIALOG',
+  'DIV',
+  'DL',
+  'DT',
+  'FIELDSET',
+  'FIGCAPTION',
+  'FIGURE',
+  'FOOTER',
+  'FORM',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'HEADER',
+  'HGROUP',
+  'HR',
+  'LI',
+  'MAIN',
+  'NAV',
+  'OL',
+  'P',
+  'PRE',
+  'SECTION',
+  'SUMMARY',
+  'TABLE',
+  'TBODY',
+  'TD',
+  'TFOOT',
+  'TH',
+  'THEAD',
+  'TR',
+  'UL',
+]);
+
+/**
+ * 参照实现：容器里的松散文本运行——以块级子元素为界切分，
+ * 每个运行给出「拼好的文本」与「这段文本之后的下一个兄弟节点」（容器末尾是 null）。
+ */
+function refLooseRuns(container: Element): Array<{ text: string; before: Node | null }> {
+  const nodes = Array.from(container.childNodes);
+  const runs: Array<{ text: string; before: Node | null }> = [];
+  let current: { text: string; before: Node | null } | null = null;
+
+  nodes.forEach((node, index) => {
+    if (node.nodeType === Node.ELEMENT_NODE && REF_BLOCK_TAGS.has((node as Element).tagName)) {
+      current = null;
+      return;
+    }
+    if (current === null) {
+      current = { text: '', before: null };
+      runs.push(current);
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      current.text = refJoin(current.text, (node.nodeValue ?? '').replace(/\s+/g, ' '));
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      current.text = refJoin(current.text, refTextOf(node as Element));
+    }
+    current.before = nodes[index + 1] ?? null;
+  });
+
+  return runs
+    .map((run) => ({ text: run.text.replace(/\s+/g, ' ').trim(), before: run.before }))
+    .filter((run) => run.text !== '');
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
 });
@@ -250,7 +325,7 @@ describe('collectSegments', () => {
     ]);
   });
 
-  it('混合内容的文本段锚在容器上，块级子元素之前的那段标出插入点', () => {
+  it('混合内容的文本段锚在容器上，落点显式指向容器里的位置', () => {
     const root = mount('<div>Intro sentence here<p>Body paragraph text</p>Outro sentence here</div>');
     const div = document.querySelector('div') as HTMLElement;
     const paragraph = document.querySelector('p') as HTMLElement;
@@ -258,13 +333,16 @@ describe('collectSegments', () => {
 
     expect(segments[0].textRun).toBe(true);
     expect(segments[0].element).toBe(div);
-    // 锚点是容器：译文留在容器内部（渲染器会插到第一个块级子元素之前）。
-    expect(segments[0].prepend).toBeUndefined();
+    // 容器开头那段：译文插到紧随其后的块级子元素之前，仍留在容器内部。
+    expect(segments[0].anchor).toEqual({ kind: 'before', node: paragraph });
     expect(segments[1].textRun).toBeUndefined();
     expect(segments[1].element).toBe(paragraph);
+    expect(segments[1].anchor).toEqual({ kind: 'auto' });
     expect(segments[2].textRun).toBe(true);
     expect(segments[2].element).toBe(div);
-    expect(segments[2].prepend).toBeUndefined();
+    // 段尾那段：后面再没有兄弟节点，追加到容器末尾。
+    // （旧实现恒取「容器里第一个块级子元素之前」，它的译文会跑到正文段落上面去。）
+    expect(segments[2].anchor).toEqual({ kind: 'before', node: null });
   });
 
   it('列表项里「标签文本 + 嵌套列表」两段都不丢', () => {
@@ -285,14 +363,16 @@ describe('collectSegments', () => {
     expect(segments.map((s) => s.text)).toEqual(['1 Main St', 'Springfield', 'IL 62704']);
   });
 
-  it('段落中段的直接文本锚到它后面的块级子元素上', () => {
+  it('段落中段的直接文本落点在容器里、它后面那个块级子元素之前', () => {
     const root = mount('<div><p>Block one text</p>stray inline text<p>Block two text</p></div>');
+    const div = document.querySelector('div') as HTMLElement;
+    const second = document.querySelectorAll('p')[1];
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
     expect(segments.map((s) => s.text)).toEqual(['Block one text', 'stray inline text', 'Block two text']);
     expect(segments[1].textRun).toBe(true);
-    // 锚点是后一个块级子元素：插到它前面就落在两段文本之间。
-    expect((segments[1].element as Element).textContent).toBe('Block two text');
-    expect(segments[1].prepend).toBe(true);
+    // 落点是容器（不再借用后一个块级子元素当锚点），位置显式指向那个兄弟节点。
+    expect(segments[1].element).toBe(div);
+    expect(segments[1].anchor).toEqual({ kind: 'before', node: second });
   });
 
   it('就地替换只留给「整块就是这一段文本」的元素', () => {
@@ -300,10 +380,10 @@ describe('collectSegments', () => {
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
     // 带行内标记的段落不能被 textContent 盖掉，标记成 textRun 让渲染器改走双语注入。
     expect(segments[0].textRun).toBe(true);
-    // 只有真的要插到锚点之前才带 prepend 标记。
-    expect(segments[0].prepend).toBeUndefined();
+    // 整元素段落一律走 auto 落点，由渲染器按布局规则决定插到哪。
+    expect(segments[0].anchor).toEqual({ kind: 'auto' });
     expect(segments[1].textRun).toBeUndefined();
-    expect(segments[1].prepend).toBeUndefined();
+    expect(segments[1].anchor).toEqual({ kind: 'auto' });
   });
 
   it('跳过隐藏元素自身，也跳过整个隐藏子树', () => {
@@ -316,6 +396,44 @@ describe('collectSegments', () => {
     );
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
     expect(segments.map((s) => s.text)).toEqual(['Visible sentence here']);
+  });
+
+  it('display:none 的容器：自己的直接文本与整棵子树都不产出', () => {
+    const root = mount('<div style="display:none">Hidden intro text<p>Hidden body text</p></div>');
+    expect(collectSegments(root, { targetLang: 'zh-Hans' })).toEqual([]);
+  });
+
+  it('aria-hidden="true" 的容器同样一个字符都不产出', () => {
+    const root = mount('<div aria-hidden="true">Hidden intro text<p>Hidden body text</p></div>');
+    expect(collectSegments(root, { targetLang: 'zh-Hans' })).toEqual([]);
+  });
+
+  it('hidden 属性的容器同样一个字符都不产出', () => {
+    const root = mount('<div hidden>Hidden intro text<p>Hidden body text</p></div>');
+    expect(collectSegments(root, { targetLang: 'zh-Hans' })).toEqual([]);
+  });
+
+  it('隐藏的行内子元素不并入父段', () => {
+    const root = mount(
+      '<p>Visible <span style="display:none">secret draft text</span> text here</p>' +
+        '<p>Another <span aria-hidden="true">hidden fragment</span> sentence here</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Visible text here', 'Another sentence here']);
+  });
+
+  it('重扫时容器里新追加的内容会被采到，已处理的段落不重复产出', () => {
+    const root = mount('<div id="feed"><p>First post text</p></div>');
+    const feed = document.getElementById('feed') as HTMLElement;
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['First post text']);
+
+    const added = document.createElement('p');
+    added.textContent = 'Second post text';
+    feed.append(added);
+
+    // 容器本身没被标记：整棵子树短路过一次，新内容就永远不翻了。
+    expect(feed.hasAttribute('data-jy-translated')).toBe(false);
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Second post text']);
   });
 
   it('同一元素只解析一次样式：样式查询次数不超过元素总数', () => {
@@ -372,11 +490,33 @@ describe('抽出文本的不变量', () => {
     const blocks = Array.from(document.querySelectorAll('section.page > p'));
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
 
-    // 每个文本块恰好一段、不多不少、顺序与文档一致。
+    // 每个文本块恰好一段、不多不少、顺序与文档一致，且整元素段落走 auto 落点。
     expect(segments).toHaveLength(blocks.length);
     segments.forEach((segment, index) => {
       expect(segment.element).toBe(blocks[index]);
+      expect(segment.anchor.kind).toBe('auto');
       expect(segment.text).toBe(refTextOf(blocks[index]));
     });
+  });
+
+  it('每一段松散文本的 text 与落点都等于独立重算的结果', () => {
+    const root = mount(
+      '<div id="box">' +
+        '<p>Block one text</p>' +
+        'stray text here<span> tail text</span>' +
+        '<p>Block two text</p>' +
+        'last words here' +
+        '</div>',
+    );
+    const box = document.getElementById('box') as HTMLElement;
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    const loose = segments.filter((segment) => segment.anchor.kind === 'before');
+    const expected = refLooseRuns(box);
+
+    expect(loose.map((segment) => segment.text)).toEqual(expected.map((run) => run.text));
+    // 落点必须正好是「这一段文本之后的下一个兄弟节点」，null = 容器末尾。
+    expect(
+      loose.map((segment) => (segment.anchor.kind === 'before' ? segment.anchor.node : undefined)),
+    ).toEqual(expected.map((run) => run.before));
   });
 });

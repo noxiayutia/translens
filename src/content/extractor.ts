@@ -1,22 +1,30 @@
 import { isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
 
+/** 译文宿主的落点。整元素段落交给渲染器按布局规则决定；松散文本段落必须显式给出位置。 */
+export type SegmentAnchor =
+  | { kind: 'auto' }
+  | { kind: 'before'; node: Node | null }; // null = 追加到 element 末尾
+
 export interface ExtractedSegment {
   id: string;
   text: string;
   order: number;
   /**
-   * 段落锚点。普通段落就是**承载整段文本的元素**；文本段（见下）则是**包裹这些直接文本节点的容器**——
-   * 因为文本节点本身没有属性可挂，也没有插入点语义。
+   * 段落锚点。整元素段落就是**承载整段文本的元素**；
+   * 松散文本段落（见 `textRun`）则是**包裹这些直接文本节点的容器**——
+   * 因为文本节点本身没有属性可挂，也没有插入点语义，落点改由 `anchor` 显式给出。
    */
   element: HTMLElement;
+  /** 译文宿主的落点；松散文本段落一定是 `before`，见 {@link SegmentAnchor}。 */
+  anchor: SegmentAnchor;
   /**
    * 该段只是锚点里的**一部分直接文本**，同容器里还有别的块级子元素（它们的文本各自成段）。
    * 渲染器必须把译文留在锚点**内部**，否则译文与对应原文会被块级子元素隔开。
    */
   textRun?: boolean;
   /**
-   * 译文宿主插到锚点**之前**。锚点正好是紧随其后的那个块级子元素时才有这个标记
-   * （没有它时锚点是容器本身，译文补在容器内部）。
+   * 旧字段，采集端在 Fix 4（显式落点）之后**不再产出**：落点一律由 `anchor` 给出，
+   * 这一项只是为了不动对外接口而保留声明（`resolveInsertion` 仍认识它）。
    */
   prepend?: boolean;
 }
@@ -232,17 +240,17 @@ function rootElements(root: ParentNode): Element[] {
 }
 
 /**
- * 段落识别的核心规则：一个元素若含有块级子元素就继续下钻，
+ * 段落识别的核心规则：一个元素若含有块级边界（见 {@link isBlockBoundary}）就继续下钻，
  * 否则它就是最内层的文本块，整块作为一段。
  * 这样 <p>Hello <b>world</b></p> 是一段，而 <div><p>a</p><p>b</p></div> 是两段。
  *
  * 混合内容是常态而不是特例（CMS 正文、带标签的 <li>、卡片），所以容器自己的直接文本
  * 也必须成段，且按文档顺序与块级子元素交错：
  * `<div>Intro<p>Body</p>Outro</div>` → Intro / Body / Outro 三段。
- * 同一容器的多个直接文本段共享容器锚点（`textRun`），锚点正好是紧随其后的那块时带 `prepend`。
+ * 同一容器的多个直接文本段共享容器锚点（`textRun`），落点由 `anchor` 显式给出。
  *
- * **副作用（调用方必须知道）**：会给每个成段元素打上 `data-jy-id`，
- * 给处理过的元素打上 `data-jy-translated`。因此**每次调用都会让上一轮的全部 id 失效**，
+ * **副作用（调用方必须知道）**：会给成段元素打上 `data-jy-id`，
+ * 给**真正产出过段落的最内层文本块**打上 `data-jy-translated`。因此**每次调用都会让上一轮的全部 id 失效**，
  * 调用方不能拿旧 id 去索引新结果，也不能预期 id 跨调用稳定；
  * 这两类标记由渲染器的 `restore()` 统一清除。
  */
@@ -257,17 +265,24 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     marked.add(element);
   };
 
-  const push = (element: Element, text: string, textRun: boolean, prepend: boolean): void => {
-    if (!isTranslatableText(text)) return;
-    if (options.shouldSkipText?.(text)) return;
-    if (shouldSkip(text, options.targetLang)) return;
+  /** 返回是否真的产出了一段：调用方靠它决定要不要把元素标记成「已处理」。 */
+  const push = (element: Element, text: string, anchor: SegmentAnchor, textRun: boolean): boolean => {
+    if (!isTranslatableText(text)) return false;
+    if (options.shouldSkipText?.(text)) return false;
+    if (shouldSkip(text, options.targetLang)) return false;
 
     const id = `jy-${segments.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
     element.setAttribute('data-jy-id', id);
-    const segment: ExtractedSegment = { id, text, order: segments.length, element: element as HTMLElement };
+    const segment: ExtractedSegment = {
+      id,
+      text,
+      order: segments.length,
+      element: element as HTMLElement,
+      anchor,
+    };
     if (textRun) segment.textRun = true;
-    if (prepend) segment.prepend = true;
     segments.push(segment);
+    return true;
   };
 
   /**
@@ -275,10 +290,15 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
    * 这样 `<div>Intro<p>Body</p>Outro</div>` 出来就是 Intro / Body / Outro 三段。
    * 块级子元素递归交给 visitBlock。
    */
-  const visitContent = (element: Element, hidden: boolean): void => {
+  const visitContent = (
+    element: Element,
+    hidden: boolean,
+    wholeElementEligible: boolean,
+    blockBoundaries: ReadonlySet<Element>,
+  ): void => {
     interface TextRun {
-      /** 译文宿主要贴着谁放：容器本身，或紧随其后的那个块级子元素。 */
-      anchor: Element;
+      /** 这段文本之后的下一个兄弟节点在 `element.childNodes` 里的下标（即本运行的结束位置）。 */
+      after: number;
       text: string;
     }
     const runs: TextRun[] = [];
@@ -286,53 +306,72 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     let run: TextRun | undefined;
     /** 强制下一个文本片段另起一段（`<br>` 这样的硬边界）。 */
     let breakRun = false;
-    /** 紧跟在某个块级子元素后面的这段文本；要锚到下一个块级子元素之前才能与原文同序。 */
-    let pendingBlock = false;
     let hasLineBreak = false;
 
-    /** 这段文本之后是否还有块级边界；有就锚到那一个之前，没有就锚到容器末尾。 */
-    const nextBlockAfter = (at: number): Element | undefined => {
+    /**
+     * 这一段文本之后的下一个兄弟节点；走到容器末尾就是 null（追加到末尾）。
+     * 跳过插件自己注入的 `[data-jy-root]`：译文宿主不该成为下一段译文的落点参照。
+     */
+    const anchorNodeAfter = (from: number): Node | null => {
       const nodes = element.childNodes;
-      for (let cursor = at; cursor < nodes.length; cursor += 1) {
+      for (let cursor = from; cursor < nodes.length; cursor += 1) {
         const node = nodes[cursor];
-        if (node === undefined || node.nodeType !== Node.ELEMENT_NODE) continue;
-        const candidate = node as Element;
-        if (isSkippedForText(candidate) || candidate.nodeName === 'BR') continue;
-        if (isBlockBoundary(candidate, styleOf, 0)) return candidate;
+        if (node === undefined) continue;
+        if (node.nodeType === Node.ELEMENT_NODE && (node as Element).hasAttribute('data-jy-root')) continue;
+        return node;
       }
-      return undefined;
+      return null;
     };
 
-    const appendText = (piece: string, at: number): void => {
+    const appendText = (piece: string, after: number): void => {
       if (piece === '') return;
       if (run === undefined || breakRun) {
         // 同一落点的相邻块合成一段（`Hello <b>bold</b> world` 仍是一段）；
-        // 落点不同（夹着块级子元素）或遇到硬边界就另起一段。
-        run = { anchor: (pendingBlock ? nextBlockAfter(at) : undefined) ?? element, text: '' };
+        // 落点不同（夹着块级边界）或遇到硬边界就另起一段。
+        run = { after, text: '' };
         breakRun = false;
         runs.push(run);
       }
+      run.after = after;
       // 分隔符只在拼接处补，而且只在两侧都是词字符时才补。
       run.text = needsSeparator(run.text, piece) ? `${run.text} ${piece}` : `${run.text}${piece}`;
     };
+
     const emit = (): void => {
-      for (const run of runs) {
+      if (hidden) {
+        // Fix 3：隐藏子树一个字符都不产出。这里必须兜住**所有** emit 路径，
+        // 不能只管段尾那一处——块级边界处的那次 emit 一样会把隐藏容器的直接文本送出去。
+        runs.length = 0;
+        run = undefined;
+        breakRun = false;
+        return;
+      }
+      // 整元素段落：这个元素就是最内层的文本块，而且这一段覆盖了它的全部内容。
+      const whole = wholeElementEligible && runs.length === 1 && !hasLineBreak;
+      let pushed = false;
+      for (const item of runs) {
         // 只折叠空白并去掉段首尾的空格：标记之间该不该有空格，拼接时已经判过了。
-        const text = normalizeText(run.text);
+        const text = normalizeText(item.text);
         if (text === '') continue;
-        if (run.anchor === element) {
+        if (whole) {
           // 只有「整个元素就是这一段文本」才可以就地替换：多一个块级子元素或 <br> 都不行。
-          const replaceable = runs.length === 1 && element.childElementCount === 0 && !hasLineBreak;
-          // 插到容器末尾，不带 prepend；若渲染器看不准容器内部该放哪，仍会退化成「第一个块级子元素之前」。
-          push(element, text, !replaceable, false);
+          const replaceable = element.childElementCount === 0;
+          pushed = push(element, text, { kind: 'auto' }, !replaceable) || pushed;
         } else {
-          // 锚点就是紧随其后的那块：这一段的译文插到锚点之前。
-          push(run.anchor, text, true, true);
+          // 松散文本段：落点显式给出，否则渲染器只能猜（恒取第一个块级子元素之前），
+          // `<div>Intro<p>Body</p>Outro</div>` 的 Outro 译文就会跑到 Body 原文上面去。
+          pushed = push(element, text, { kind: 'before', node: anchorNodeAfter(item.after) }, true) || pushed;
         }
       }
       runs.length = 0;
       run = undefined;
       breakRun = false;
+      /**
+       * Fix 5：只在**真产出过段落**的最内层文本块上标记「已处理」。
+       * 遍历过但没产出段落的容器一律不标——标了就会让它的块级子元素在重扫时被整棵短路，
+       * 「往容器里追加的新内容」就永远不再翻译（X/Twitter 这类 SPA 的增量翻译会整片失效）。
+       */
+      if (pushed && wholeElementEligible) markTranslated(element);
     };
 
     let index = 0;
@@ -343,7 +382,6 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
         const text = collapseSpaces(child.nodeValue ?? '');
         if (text === '') continue;
         appendText(text, index);
-        pendingBlock = false;
         continue;
       }
       if (child.nodeType !== Node.ELEMENT_NODE) continue;
@@ -351,49 +389,49 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
       if (isSkippedForText(childElement)) continue;
       if (childElement.nodeName === 'BR') {
         // 硬换行：不跨段，否则 "1 Main St<br>Springfield" 会被粘成一个非词。
+        // `index` 已经越过它，所以上一段的落点就是它本身——译文留在本行末尾。
         hasLineBreak = true;
         breakRun = true;
         run = undefined;
-        pendingBlock = false;
         continue;
       }
-      if (isBlockBoundary(childElement, styleOf, 0)) {
+      if (blockBoundaries.has(childElement)) {
         // 块级边界（含内部还有块级后代的透明包裹）：先把它前面的文本段落定下来，再递归，保证段序 = 文档序。
         emit();
         if (!hidden) visitBlock(childElement, false);
-        // 紧随其后的直接文本要另起一段，并且插到这块之前才不会跑到它后面去。
-        pendingBlock = true;
         run = undefined;
         continue;
       }
+      // 隐藏的行内子元素既不并入文本、也不成段：display:none / aria-hidden 里的内容
+      // （未发布草稿、折叠面板、A/B 变体）不该被送到用户自己付费的翻译 API。
+      if (isHidden(childElement, styleOf)) continue;
       const text = inlineText(childElement, styleOf);
       if (text === '') continue;
       appendText(text, index);
     }
 
-    if (!hidden) emit();
+    emit();
   };
 
   const visitBlock = (element: Element, ancestorHidden: boolean): void => {
     if (isSkippable(element)) return;
 
     const hidden = ancestorHidden || isHidden(element, styleOf);
-    const children = Array.from(element.children);
-    const blocks = children.filter(
+    const blocks = Array.from(element.children).filter(
       (child) => !isSkippedForText(child) && isBlockBoundary(child, styleOf, 0),
     );
+    const boundaries = new Set(blocks);
 
     if (blocks.length === 0) {
-      // 整块没有任何块级子元素 → 这就是最内层的文本块，整块作为一段（块内含 <br> 时按 <br> 切分）。
+      // 整块没有任何块级边界 → 这就是最内层的文本块，整块作为一段（块内含 <br> 时按 <br> 切分）。
       if (hidden) return;
-      visitContent(element, false);
-      markTranslated(element);
+      visitContent(element, false, true, boundaries);
       return;
     }
 
-    // 有块级子元素：自己的直接文本也要成段，然后逐块下钻。
-    visitContent(element, hidden);
-    if (!hidden) markTranslated(element);
+    // 有块级边界：自己的直接文本也要成段，然后逐块下钻。
+    // 这个元素本身**不**标记已处理：它的直接文本是松散文本段，标记了会让新追加的子元素在重扫时被整棵短路。
+    visitContent(element, hidden, false, boundaries);
   };
 
   for (const element of rootElements(root)) visitBlock(element, false);

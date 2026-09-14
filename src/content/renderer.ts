@@ -26,13 +26,16 @@ function firstBlockInside(element: Element, styleOf: (element: Element) => strin
 }
 
 /**
- * 决定译文宿主插到哪里。
+ * 决定译文宿主插到哪里。只用于 `anchor.kind === 'auto'` 的段落——
+ * 松散文本段落带显式落点，由 ensureHost 直接按 `anchor.node` 插入，不走这里。
+ *
  * 表格单元格、列表项、以及弹性/网格布局的子元素都必须插到内部——
  * 否则会在 <tr> 里插入非单元格节点破坏表格，或在 flex 行里被挤成一行。
  *
  * `textRun` 的段落必须留在锚点内部：它的锚点是「装着好几块内容的容器」，
  * 插到容器外面会让译文和它对应的那段原文被别的块级子元素隔开。
- * 例外是锚点本身就是紧随其后的那个块级子元素（`prepend`）：这时插到它之前。
+ * 例外是锚点本身就是紧随其后的那个块级子元素（`prepend`）；采集端在 Fix 4 之后
+ * 不再产出 `prepend`（落点由 `anchor` 显式给出），这个分支只为兼容旧调用方保留。
  */
 export function resolveInsertion(element: HTMLElement, segment?: ExtractedSegment): InsertionTarget {
   const parent = element.parentElement;
@@ -131,15 +134,26 @@ export class DomRenderer {
     if (existing) return existing;
 
     const host = this.createHost(segment.id);
-    const target = resolveInsertion(segment.element, segment);
-    // 锚点必须真的还在算出来的父节点里，否则退回追加，别把节点插丢。
-    const anchor = target.before !== null && target.before.parentNode === target.parent ? target.before : null;
-    if (anchor !== null) target.parent.insertBefore(host, anchor);
-    else target.parent.append(host);
+    if (segment.anchor.kind === 'before') {
+      // 松散文本段落：落点由采集端显式给出——容器内部、anchor.node 之前；node 为 null 就追加到末尾。
+      // 容器里可能同时有好几段松散文本，只有显式落点才能保证译文与原文同序。
+      const parent = segment.element;
+      const before =
+        segment.anchor.node !== null && segment.anchor.node.parentNode === parent ? segment.anchor.node : null;
+      if (before !== null) parent.insertBefore(host, before);
+      else parent.append(host);
+    } else {
+      // 整元素段落：按布局规则决定插到元素之后还是元素内部。
+      const target = resolveInsertion(segment.element, segment);
+      // 锚点必须真的还在算出来的父节点里，否则退回追加，别把节点插丢。
+      const anchor = target.before !== null && target.before.parentNode === target.parent ? target.before : null;
+      if (anchor !== null) target.parent.insertBefore(host, anchor);
+      else target.parent.append(host);
+    }
 
     // 标记原文已翻译：即使后续被重复采集，extractor 也会跳过它。
-    // 标记的粒度是整个元素，所以文本段的锚点（「装着好几块内容的容器」）不标：
-    // 采集那一步已经标过一趟，这里再标只会把同一件事说第二遍。
+    // 松散文本段（`textRun`）的 element 是**容器**，绝不能标记：
+    // 整棵子树被短路之后，容器里新追加的内容就再也不会被采集了（见 extractor 的 Fix 5 取舍）。
     if (segment.textRun !== true) segment.element.setAttribute('data-jy-translated', '1');
     this.hosts.set(segment.id, host);
     return host;
