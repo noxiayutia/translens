@@ -10,6 +10,8 @@ import { toast } from './toast';
 let renderer: DomRenderer | null = null;
 let segments: ExtractedSegment[] = [];
 let running = false;
+/** 本轮翻译攒下的页面级提示：整轮跑完只弹一次，见 `translatePage` 末尾。 */
+let lastError: string | null = null;
 let displayMode: 'bilingual' | 'replace' = 'bilingual';
 const finished = new Set<string>();
 const failedIds = new Set<string>();
@@ -54,7 +56,7 @@ function isRetryable(code: TranslateItemResult['code']): boolean {
  * 只对"一次响应里全部条目都失败"生效：部分失败是正常的，逐个标注即可。
  * 返回 null 表示不该弹 toast。
  */
-export function sameCodeFailureMessage(results: TranslateItemResult[]): string | null {
+function sameCodeFailureMessage(results: TranslateItemResult[]): string | null {
   const failures = results.filter((result) => result.text === null);
   if (failures.length === 0 || failures.length !== results.length) return null;
 
@@ -94,13 +96,19 @@ function applyResults(results: TranslateItemResult[]): string | null {
   return message;
 }
 
-/** 响应级失败（`ok: false`）：连引擎都没问到，整页标注 + 一句提示。 */
-function applyResponseError(response: Extract<TranslateTextsResponse, { ok: false }>): void {
-  for (const segment of segments) {
+/**
+ * 响应级失败（`ok: false`）：连引擎都没问到，标注**本批**条目。
+ *
+ * 只标本批：一个响应只代表它自己那一批的对错。标整页会把别的批次已经翻译好的片段
+ * 一起算成失败——`applyResults` 从不回删被误标的 id，`done + failed` 会超过 `total`，
+ * 状态面板上就出现"一段既译好了又算失败"。提示不在这里弹，攒进 `lastError` 由调用方
+ * 在整轮跑完后弹一次。
+ */
+function failBatch(batch: TextSegment[], message: string): void {
+  for (const segment of batch) {
     failedIds.add(segment.id);
-    renderer?.fail(segment.id, response.message);
+    renderer?.fail(segment.id, message);
   }
-  toast(describeError(response));
 }
 
 async function translatePage(): Promise<void> {
@@ -116,6 +124,7 @@ async function translatePage(): Promise<void> {
   }
 
   running = true;
+  lastError = null;
   displayMode = settings.displayMode;
   finished.clear();
   failedIds.clear();
@@ -155,19 +164,24 @@ async function translatePage(): Promise<void> {
         }
 
         // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
-        // 见 `sameCodeFailureMessage`：整批同码时只弹一次 toast，且不挂重试按钮。
+        // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
         if (!response.ok) {
-          applyResponseError(response);
+          lastError = describeError(response);
+          failBatch(batch, response.message);
           return;
         }
         const notice = applyResults(response.results);
-        if (notice !== null) toast(notice);
+        if (notice !== null) lastError = notice;
       }),
       settings.concurrency,
     );
   } finally {
     running = false;
   }
+
+  // 整轮跑完才弹，且只弹一次：每批各弹一次的话，提示会被后一批顶掉重弹
+  // （`toast()` 是"删旧节点 + 建新节点"），一个多批页面等于把同一件事播 N 遍。
+  if (lastError !== null) toast(lastError);
 }
 
 async function retrySegment(segmentId: string): Promise<void> {
@@ -216,6 +230,7 @@ function restorePage(): void {
   segments = [];
   finished.clear();
   failedIds.clear();
+  lastError = null;
 }
 
 /**

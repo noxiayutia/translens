@@ -229,6 +229,34 @@ function clearToast(): void {
   for (const host of Array.from(document.querySelectorAll('[data-jy-root]'))) host.remove();
 }
 
+/**
+ * 数"这一轮一共新建了几个 toast 节点"，也就是 `toast()` 真实被调用的次数。
+ *
+ * `toast()` 每次都先删旧节点再建新节点（`content/toast.ts`），所以 `#jy-toast` 的数量
+ * 在任何时刻都只有 0 或 1——调用 3 次也仍然只有 1 个节点，数节点证明不了"只弹一次"。
+ * MutationObserver 记的是每一次新增，`count()` 会把还没投递的记录一起收进来
+ * （回调与 `takeRecords()` 是两条互斥的投递路径，同一条记录只会计一次）。
+ */
+function watchToastInserts(): { count: () => number; stop: () => void } {
+  const inserted: Element[] = [];
+  const collect = (records: MutationRecord[]): void => {
+    for (const record of records) {
+      for (const node of Array.from(record.addedNodes)) {
+        if (node instanceof Element && node.id === 'jy-toast') inserted.push(node);
+      }
+    }
+  };
+  const observer = new MutationObserver(collect);
+  observer.observe(document.documentElement, { childList: true });
+  return {
+    count: () => {
+      collect(observer.takeRecords());
+      return inserted.length;
+    },
+    stop: () => observer.disconnect(),
+  };
+}
+
 beforeEach(async () => {
   document.body.innerHTML = '';
   clearToast();
@@ -352,10 +380,16 @@ describe('内容脚本编排：翻译整页', () => {
     expect(document.getElementById('jy-toast')).toBeNull();
   });
 
-  it('全部条目同码失败（AUTH）时弹一次 toast，且不挂重试按钮', async () => {
+  it('全部条目同码失败（AUTH）时整轮只弹一次 toast，且不挂重试按钮', async () => {
+    // 必须按 1 条一批：默认 12 条一批会把三段塞进同一个请求，那样"等整批回完才弹"只是
+    // "请求还没回来"的同义反复（审查实测：requestCount = 1）。
+    await chromeStub.storage.local.set({
+      'jinyi:settings': { version: 1, maxSegmentsPerBatch: 1, concurrency: 1 },
+    });
     mount('<p>First text</p><p>Second text</p><p>Third text</p>');
     const { worker, contentListener } = await loadContentScript();
-    // 第三条故意挂住：验证 toast 是**等整批回完**才弹的，不是第一批回来就弹。
+    const toasts = watchToastInserts();
+    // 第三条故意挂住：验证 toast 是**整轮跑完**才弹的，不是前几批回来就弹。
     let releaseThird: (() => void) | undefined;
     worker.mockImplementation((message, _sender, sendResponse) => {
       if (!isTranslateRequest(message)) return false;
@@ -371,8 +405,9 @@ describe('内容脚本编排：翻译整页', () => {
 
     const pending = dispatch(contentListener, MSG.TRANSLATE_PAGE);
     await waitFor(() => releaseThird !== undefined);
-    // 另外两条已经回来了，但整批还没回完——此时不该弹 toast。
-    expect(document.getElementById('jy-toast')).toBeNull();
+    // 前两批已经回来、错误标注已经落地——所以下面"还没弹"不是"请求还没回来"的同义反复。
+    expect(hosts().filter((host) => bodyTextOf(host).includes('尚未填写 API Key'))).toHaveLength(2);
+    expect(toasts.count()).toBe(0);
 
     releaseThird?.();
     const state = await pending;
@@ -390,10 +425,12 @@ describe('内容脚本编排：翻译整页', () => {
     expect(toastHost?.shadowRoot?.textContent).toContain('尚未填写 API Key');
     // 用户必须知道该去哪儿解决。
     expect(toastHost?.shadowRoot?.textContent).toContain('扩展设置');
-    expect(document.querySelectorAll('#jy-toast')).toHaveLength(1);
+    // 三个批次全 AUTH，但整轮只弹这一次（每批各弹一次的写法在这里是 3 次）。
+    expect(toasts.count()).toBe(1);
+    toasts.stop();
   });
 
-  it('重复触发翻译不会重复挂宿主', async () => {
+  it('重复触发翻译不会重复挂宿主（renderer 守卫）', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();
     worker.mockImplementation(autoReply());
@@ -406,32 +443,67 @@ describe('内容脚本编排：翻译整页', () => {
 
     expect(hosts()).toHaveLength(2);
     expect(hosts()).toEqual(firstHosts);
-    expect(state.done).toBe(2);
+    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 2, failed: 0 });
     expect(translateRequests(worker)).toHaveLength(1);
+    // 光数宿主钉不住这条守卫：首次翻译已经给原文打了 `data-jy-translated`，第二次采集本
+    // 来就采不到东西，删掉守卫也会走"没有找到需要翻译的内容"早退（审查实测照样全绿）。
+    // 那次早退会弹提示，所以"一条提示都没有"才是守卫真正生效的读数。
+    expect(document.getElementById('jy-toast')).toBeNull();
+
+    // 页面在两次触发之间长出新内容也一样：已经有 renderer 就不再接管（要重来先还原），
+    // 否则会再建一个 renderer 只翻新段落，先前那些宿主则永远失去还原入口。
+    const extra = document.createElement('p');
+    extra.textContent = 'Third paragraph here';
+    document.body.append(extra);
+
+    const again = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(hosts()).toHaveLength(2);
+    expect(translateRequests(worker)).toHaveLength(1);
+    expect(again).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 2, failed: 0 });
+    expect(document.getElementById('jy-toast')).toBeNull();
   });
 
   it('翻译进行中再次触发不会重复挂宿主（running 守卫）', async () => {
     mount('<p>Hello world</p>');
     const { worker, contentListener } = await loadContentScript();
     let releaseFirstBatch: (() => void) | undefined;
+    let requests = 0;
     worker.mockImplementation((message, _sender, sendResponse) => {
       if (!isTranslateRequest(message)) return false;
+      requests += 1;
       // 挂住第一批，让第一次翻译停在"进行中"（不用计时器：真/假计时器切换容易假通过）。
-      releaseFirstBatch = () => sendResponse({ ok: true, results: [] });
+      if (requests === 1) {
+        releaseFirstBatch = () => sendResponse({ ok: true, results: [] });
+        return true;
+      }
+      // 真有第二次请求就立刻回话：删掉守卫的变异体停在断言上，而不是 1000ms 超时上。
+      sendResponse({ ok: true, results: [] });
       return true;
     });
     const first = dispatch(contentListener, MSG.TRANSLATE_PAGE);
     await waitFor(() => releaseFirstBatch !== undefined);
     expect(hosts()).toHaveLength(1);
 
+    // 还原把 renderer 置空了，但第一次翻译还在跑（running 仍为 true）——此刻 renderer
+    // 守卫已经拦不住第二次触发，能拦住的只有 running 守卫，这条用例才真的钉住了它。
+    expect(await dispatch(contentListener, MSG.RESTORE_PAGE)).toEqual({
+      translated: false,
+      mode: 'bilingual',
+      total: 0,
+      done: 0,
+      failed: 0,
+    });
+
     const secondState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
-    expect(hosts()).toHaveLength(1);
-    expect(secondState.translated).toBe(true);
+
+    expect(hosts()).toHaveLength(0);
     expect(translateRequests(worker)).toHaveLength(1);
+    expect(secondState).toEqual({ translated: false, mode: 'bilingual', total: 0, done: 0, failed: 0 });
 
     releaseFirstBatch?.();
     await first;
-    expect(hosts()).toHaveLength(1);
+    expect(hosts()).toHaveLength(0);
   });
 
   it('还原后页面回到原状：无残留节点、无残留属性', async () => {
@@ -525,7 +597,7 @@ describe('内容脚本编排：失败与边界', () => {
     expect(hasRetryButton(hosts()[0])).toBe(true);
   });
 
-  it('响应级失败（ok: false）时整页标注并弹一次提示', async () => {
+  it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();
     worker.mockImplementation((_message, _sender, sendResponse) => {
@@ -537,6 +609,35 @@ describe('内容脚本编排：失败与边界', () => {
 
     expect(state.failed).toBe(2);
     expect(hosts().every((host) => hasRetryButton(host))).toBe(true);
+    expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('限流');
+  });
+
+  it('响应级失败只算在本批头上：另一批已经译好的片段不会被算成失败', async () => {
+    // 一批失败、一批成功要真的分成两批才会发生（审查探针用的是 1 条一批）。
+    await chromeStub.storage.local.set({
+      'jinyi:settings': { version: 1, maxSegmentsPerBatch: 1, concurrency: 1 },
+    });
+    mount('<p>First text</p><p>Second text</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      if (items[0]?.text === 'First text') {
+        sendResponse({ ok: false, code: 'RATE_LIMIT', message: '接口限流，请稍后重试' });
+        return true;
+      }
+      sendResponse({ ok: true, results: items.map((item) => ({ id: item.id, text: translate(item.text) })) });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    // 标整页的写法会让"已经显示译文"的那段也算进 failed：done + failed > total（审查实测 1 + 2 > 2）。
+    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 1, failed: 1 });
+    expect(authedHosts()).toHaveLength(1);
+    expect(bodyTextOf(authedHosts()[0])).toBe(translate('Second text'));
+    // 失败批的条目照常标注并带重试按钮，整轮跑完弹一次提示。
+    expect(hosts().filter((host) => hasRetryButton(host))).toHaveLength(1);
     expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('限流');
   });
 
