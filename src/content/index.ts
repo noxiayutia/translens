@@ -1,6 +1,7 @@
 // src/content/index.ts
 import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
+import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { loadSettings, type Settings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
@@ -51,11 +52,18 @@ function describeError(response: { code: string; message: string }): string {
 }
 
 /**
- * 鉴权失败这类"重试多少次都是同一个结果"的条目级错误不挂重试按钮：
- * 一个 200 段的页面会变成 200 个点了也没用的按钮（规格 §8：不重试，改为页面 toast）。
+ * 条目级失败要不要挂重试按钮，判据是 `engines/types.ts` 的 `RETRYABLE_CODES` 那一份，
+ * 本层不再自带一套集合——两处各写一份时「哪个码算可重试」会随改动漂移。
+ *
+ * - 可重试：`NETWORK`（抖动）、`RATE_LIMIT`（限流），重发还有机会成功。
+ * - 不可重试：`AUTH` 重试多少次都是同一个结果（规格 §8：不重试，改为页面 toast）；
+ *   `TOO_LONG` 该走切分降级、`BAD_RESPONSE` 重试同一个输入没有意义——给它们挂上按钮，
+ *   用户只会对着注定失败的段落反复点（一个 200 段的页面就是 200 个没用的按钮）。
+ * - `code === undefined` 仍算可重试：没有错误码的失败（响应形状不符、后台漏了这条）
+ *   是「这次没拿到结果」，不是「这段翻不了」。
  */
 function isRetryable(code: TranslateItemResult['code']): boolean {
-  return code !== 'AUTH';
+  return code === undefined || RETRYABLE_CODES.has(code);
 }
 
 /**
@@ -109,8 +117,8 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
 /**
  * 落地一批条目级结果。
  *
- * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——重试多少次都是同一个结果
- * （`AUTH`）时不挂按钮，否则用户会拿到一排点了也没用的按钮。
+ * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——只有 `RETRYABLE_CODES`
+ * 里那两类（网络抖动、限流）才挂按钮，其余错误挂上去也只是让用户白点。
  * 整个响应**全部失败且错误码相同**时，逐条标注之外再加一句整批提示，由调用方选时机弹。
  * 返回该提示（不需要时返回 null）。
  *

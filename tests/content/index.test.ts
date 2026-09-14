@@ -380,6 +380,58 @@ describe('内容脚本编排：翻译整页', () => {
     expect(document.getElementById('jy-toast')).toBeNull();
   });
 
+  /**
+   * 重试按钮的判据只有 `engines/types.ts` 的 `RETRYABLE_CODES` 一份，内容脚本复用它
+   * （`isRetryable`）。这条用例逐码钉住"点了有没有用"：只有网络抖动与限流重发还有机会成功；
+   * `AUTH` 重试多少次都是同一个结果（规格 §8：不重试，改为页面 toast）、`TOO_LONG` 该走
+   * 切分降级、`BAD_RESPONSE` 重试同一个输入没有意义——给它们挂上按钮，用户只会对着注定
+   * 失败的段落反复点。
+   *
+   * 期望值是**手写**的，不从 `RETRYABLE_CODES` 推导：用被测集合自己算期望值等于没测。
+   */
+  it('重试按钮只挂在可重试的错误码上（判据来自 RETRYABLE_CODES）', async () => {
+    const cases: Array<{ code: TranslateItemResult['code']; label: string; retry: boolean }> = [
+      { code: 'NETWORK', label: '网络抖动', retry: true },
+      { code: 'RATE_LIMIT', label: '接口限流', retry: true },
+      { code: 'AUTH', label: '鉴权失败', retry: false },
+      { code: 'TOO_LONG', label: '文本过长', retry: false },
+      { code: 'BAD_RESPONSE', label: '响应分段错乱', retry: false },
+      { code: 'ABORTED', label: '请求已取消', retry: false },
+      { code: 'UNKNOWN', label: '未知错误', retry: false },
+      // 没有错误码的失败（响应形状不符、后台漏了这条）是"这次没拿到结果"，不是"这段翻不了"。
+      { code: undefined, label: '没有错误码', retry: true },
+    ];
+    mount(cases.map((_entry, index) => `<p>Paragraph ${index}</p>`).join(''));
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({
+        ok: true,
+        results: items.map((item) => {
+          const entry = cases[Number(item.text.replace('Paragraph ', ''))];
+          return failure(item.id, entry?.code, entry?.label ?? '未知错误');
+        }),
+      });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(state).toEqual({
+      translated: true,
+      mode: 'bilingual',
+      total: cases.length,
+      done: 0,
+      failed: cases.length,
+    });
+    for (const entry of cases) {
+      const host = hosts().find((candidate) => bodyTextOf(candidate).includes(entry.label));
+      expect(host, `找不到「${entry.label}」的失败宿主`).toBeDefined();
+      expect(hasRetryButton(host as Element), `${entry.code ?? '(无错误码)'} 的重试判据不对`).toBe(entry.retry);
+    }
+  });
+
   it('全部条目同码失败（AUTH）时整轮只弹一次 toast，且不挂重试按钮', async () => {
     // 必须按 1 条一批：默认 12 条一批会把三段塞进同一个请求，那样"等整批回完才弹"只是
     // "请求还没回来"的同义反复（审查实测：requestCount = 1）。
