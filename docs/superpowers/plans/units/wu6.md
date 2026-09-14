@@ -12,7 +12,7 @@ import { getEngine } from '../engines/registry';
 import { EngineError, toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
 import { isTranslateTextsMessage, MSG, type TranslateTextsResponse } from '../shared/messages';
-import { loadSettings } from '../shared/settings';
+import { DEFAULT_SETTINGS, loadSettings } from '../shared/settings';
 import { translateBatch } from './scheduler';
 
 const MENU_TRANSLATE_PAGE = 'jinyi-translate-page';
@@ -20,6 +20,14 @@ const MENU_TRANSLATE_SELECTION = 'jinyi-translate-selection';
 
 const localArea: StorageArea = chromeArea(chrome.storage.local);
 const sessionArea: StorageArea = chromeArea(chrome.storage.session);
+
+// 模块级只建一次缓存：每条消息新建实例时存储区对象也跟着换，实例级串行化就失效了。
+const persistentCache = new TranslationCache(localArea, DEFAULT_SETTINGS.cacheMaxEntries);
+const sessionCache = new TranslationCache(sessionArea, DEFAULT_SETTINGS.cacheMaxEntries);
+
+// 启动时按真实 key 对账一次索引：上次没走完的写入、被外部改坏的索引都在这时收敛。
+void persistentCache.prune();
+void sessionCache.prune();
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -60,10 +68,10 @@ async function handleTranslateTexts(
     const engine = getEngine(settings.engineId);
     const targetLang = payload.targetLang ?? settings.targetLang;
 
-    const cache = new TieredCache(
-      new TranslationCache(sessionArea, settings.cacheMaxEntries),
-      new TranslationCache(localArea, settings.cacheMaxEntries),
-    );
+    // 上限随设置变化；索引是存储区级的，所以缓存实例必须全局只有一个。
+    persistentCache.setMaxEntries(settings.cacheMaxEntries);
+    sessionCache.setMaxEntries(settings.cacheMaxEntries);
+    const cache = new TieredCache(sessionCache, persistentCache);
 
     const results = await translateBatch(payload.items, {
       engine,
