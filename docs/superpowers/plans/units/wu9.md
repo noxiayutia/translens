@@ -260,9 +260,10 @@ async function init(): Promise<void> {
       renderState(state);
     } catch {
       renderState(null);
-    } finally {
-      toggleButton.disabled = false;
     }
+    // 这里**没有** `finally { disabled = false }`：按钮可不可用由 `renderState` 的两个分支
+    // 收尾（可用页面放开、受限页面保持置灰）。无条件放开会把刚判定的"此页面不可用"
+    // 又变回可点。上面那句 `disabled = true` 只负责在飞的这一小段时间里防连点。
   });
 
   targetLangSelect.addEventListener('change', async () => {
@@ -290,7 +291,7 @@ Expected: 退出码 0。
 
 Run: `npm run build`
 
-Expected: 退出码 0，`dist/popup/popup.html`、`dist/popup/popup.js` 存在。
+Expected: 退出码 0，`dist/popup/popup.html`、`dist/popup.js` 存在（入口按 `entryFileNames: '[name].js'` 落在 dist 根，`popup.html` 里的 `<script type="module" crossorigin src="/popup.js">` 指的就是它）。
 
 - [ ] **Step 5: 提交**
 
