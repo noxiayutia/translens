@@ -23,6 +23,7 @@ describe('hashString', () => {
 describe('buildCacheKey', () => {
   const base = {
     engineId: 'google',
+    configHash: 'cfg-openai-gpt-4o-mini',
     targetLang: 'zh-Hans',
     glossaryHash: '',
     promptHash: '',
@@ -40,5 +41,6 @@ describe('buildCacheKey', () => {
     expect(buildCacheKey({ ...base, targetLang: 'ja' })).not.toBe(key);
     expect(buildCacheKey({ ...base, glossaryHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, promptHash: 'abc' })).not.toBe(key);
+    expect(buildCacheKey({ ...base, configHash: 'cfg-openai-gpt-4o' })).not.toBe(key);
   });
 });

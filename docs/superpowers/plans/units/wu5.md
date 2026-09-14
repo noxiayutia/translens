@@ -290,9 +290,11 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
 
   const glossaryHash = hashString(JSON.stringify(deps.glossary ?? []));
   const promptHash = hashString(deps.systemPrompt ?? '');
+  const configHash = hashString(JSON.stringify({ baseUrl: deps.engineConfig.baseUrl ?? '', model: deps.engineConfig.model ?? '' }));
   const keys = items.map((item) =>
     buildCacheKey({
       engineId: deps.engine.id,
+      configHash,
       targetLang: deps.targetLang,
       glossaryHash,
       promptHash,

@@ -15,6 +15,14 @@ export function hashString(input: string): string {
 
 export interface CacheKeyParts {
   engineId: string;
+  /**
+   * 引擎配置指纹（接口地址 + 模型名）。
+   * openai-compat 下用户可以随时改模型（gpt-4o-mini → gpt-4o）或接口地址，
+   * 这两项不参与 key 就会命中上一个模型的旧译文。
+   * **apiKey 不进这里**：换 key 不该让全部缓存失效；且哈希输入会落进 storage，
+   * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
+   */
+  configHash: string;
   targetLang: string;
   glossaryHash: string;
   promptHash: string;
@@ -24,6 +32,6 @@ export interface CacheKeyParts {
 /** 用 \u0000 分隔，避免字段拼接产生歧义（如 ("ab","c") 与 ("a","bc")）。 */
 export function buildCacheKey(parts: CacheKeyParts): string {
   return hashString(
-    [parts.engineId, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
+    [parts.engineId, parts.configHash, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
   );
 }

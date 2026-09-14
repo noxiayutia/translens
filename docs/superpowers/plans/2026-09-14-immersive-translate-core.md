@@ -359,6 +359,7 @@ describe('hashString', () => {
 describe('buildCacheKey', () => {
   const base = {
     engineId: 'google',
+    configHash: 'cfg-openai-gpt-4o-mini',
     targetLang: 'zh-Hans',
     glossaryHash: '',
     promptHash: '',
@@ -376,6 +377,7 @@ describe('buildCacheKey', () => {
     expect(buildCacheKey({ ...base, targetLang: 'ja' })).not.toBe(key);
     expect(buildCacheKey({ ...base, glossaryHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, promptHash: 'abc' })).not.toBe(key);
+    expect(buildCacheKey({ ...base, configHash: 'cfg-openai-gpt-4o' })).not.toBe(key);
   });
 });
 ```
@@ -408,6 +410,14 @@ export function hashString(input: string): string {
 
 export interface CacheKeyParts {
   engineId: string;
+  /**
+   * 引擎配置指纹（接口地址 + 模型名）。
+   * openai-compat 下用户可以随时改模型（gpt-4o-mini → gpt-4o）或接口地址，
+   * 这两项不参与 key 就会命中上一个模型的旧译文。
+   * **apiKey 不进这里**：换 key 不该让全部缓存失效；且哈希输入会落进 storage，
+   * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
+   */
+  configHash: string;
   targetLang: string;
   glossaryHash: string;
   promptHash: string;
@@ -417,7 +427,7 @@ export interface CacheKeyParts {
 /** 用 \u0000 分隔，避免字段拼接产生歧义（如 ("ab","c") 与 ("a","bc")）。 */
 export function buildCacheKey(parts: CacheKeyParts): string {
   return hashString(
-    [parts.engineId, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
+    [parts.engineId, parts.configHash, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
   );
 }
 ```
@@ -2853,9 +2863,11 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
 
   const glossaryHash = hashString(JSON.stringify(deps.glossary ?? []));
   const promptHash = hashString(deps.systemPrompt ?? '');
+  const configHash = hashString(JSON.stringify({ baseUrl: deps.engineConfig.baseUrl ?? '', model: deps.engineConfig.model ?? '' }));
   const keys = items.map((item) =>
     buildCacheKey({
       engineId: deps.engine.id,
+      configHash,
       targetLang: deps.targetLang,
       glossaryHash,
       promptHash,
