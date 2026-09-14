@@ -7,6 +7,19 @@ import { collectSegments, type ExtractedSegment } from './extractor';
 import { DomRenderer } from './renderer';
 import { toast } from './toast';
 
+/**
+ * 每一轮翻译的世代号：`translatePage` 认领一次就自增，`restorePage` 也自增。
+ *
+ * 它给"一轮"一个身份，解决两件靠 `running` 一个布尔量表达不了的事：
+ *
+ * - **还原必须立刻放行下一次翻译**。还原把 renderer 置空了，但上一轮可能还在飞；
+ *   如果 running 一直卡到那一轮跑完，用户"还原 → 再翻译"（Alt+T 连按两下就是这条路径）
+ *   期间的所有请求都会被入口守卫悄悄吞掉——监听器照常回响应，页面什么都不做。
+ * - **旧的一轮不能回来干扰新的一轮**。被接管的那一轮在 await 返回后要安静退出：
+ *   不写状态（renderer / lastError 属于新的一轮）、也不能在 finally 里把新的一轮的
+ *   running 守卫清掉（否则新的一轮在飞时又放进来第三个 renderer）。
+ */
+let generation = 0;
 let renderer: DomRenderer | null = null;
 let segments: ExtractedSegment[] = [];
 let running = false;
@@ -116,14 +129,24 @@ async function translatePage(): Promise<void> {
   // 已经翻译过就不重复翻译；要重来请先还原（避免插入两份译文）。
   if (renderer) return;
 
+  // 认领这一轮的身份，并**同步**占住 running：下一个触发（同一轮宏任务里的连按）
+  // 会在这里被拦住。generation 只被 restorePage 与下一轮推进，所以是"我这一轮"的凭据。
+  const mine = ++generation;
+  running = true;
+
   const settings: Settings = await loadSettings();
+  // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
+  if (mine !== generation) return;
+
   const collected = collectSegments(document.body, { targetLang: settings.targetLang });
   if (collected.length === 0) {
+    // 这里到认领之间没有 await，所以自己一定还是当前世代（generation 只能被下一轮
+    // 翻译或还原推进，而两者都跑不到这里），守卫直接收回即可。
+    running = false;
     toast('没有找到需要翻译的内容');
     return;
   }
 
-  running = true;
   lastError = null;
   displayMode = settings.displayMode;
   finished.clear();
@@ -142,6 +165,10 @@ async function translatePage(): Promise<void> {
   try {
     await runPool(
       batches.map((batch) => async () => {
+        // 被接管的那一轮不再动页面：此时 renderer / finished / failedIds 都已经属于
+        // 下一代，落笔只会把新的一轮搅乱（比如把新宿主标成失败）。
+        if (mine !== generation) return;
+
         let response: TranslateTextsResponse;
         try {
           response = await sendToBackground({
@@ -155,13 +182,14 @@ async function translatePage(): Promise<void> {
           // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）。
           // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
           // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
+          if (mine !== generation) return;
           const detail = raw instanceof Error ? raw.message : String(raw);
-          for (const segment of batch) {
-            failedIds.add(segment.id);
-            renderer?.fail(segment.id, `无法连接后台：${detail}`);
-          }
+          failBatch(batch, `无法连接后台：${detail}`);
           return;
         }
+
+        // 响应回来后这一轮可能已经被还原/被接管：这一批的结论属于上一代，丢掉。
+        if (mine !== generation) return;
 
         // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
         // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
@@ -176,8 +204,13 @@ async function translatePage(): Promise<void> {
       settings.concurrency,
     );
   } finally {
-    running = false;
+    // 只有自己仍是当前世代时才收回守卫：被接管的那一轮在飞完时不能把**新的一轮**
+    // 的 running 清掉——那会让新的一轮在飞时又放进来第三个触发（多挂一份宿主）。
+    if (mine === generation) running = false;
   }
+
+  // 一轮的收尾同样只能由当前世代做：还原已经把页面清干净了，就别再弹上一代的错误。
+  if (mine !== generation) return;
 
   // 整轮跑完才弹，且只弹一次：每批各弹一次的话，提示会被后一批顶掉重弹
   // （`toast()` 是"删旧节点 + 建新节点"），一个多批页面等于把同一件事播 N 遍。
@@ -231,6 +264,11 @@ function restorePage(): void {
   finished.clear();
   failedIds.clear();
   lastError = null;
+  // 世代 +1 接管在飞的那一轮（它随后在每个 await 后安静退出），并**当场释放守卫**：
+  // 还原之后紧接着的一次翻译（Alt+T 连按两下、或还原后点右键菜单）必须真的跑起来，
+  // 不能被一个还在飞的上一轮挡住；上一轮跑完时也不会再动这一轮的状态。
+  generation += 1;
+  running = false;
 }
 
 /**

@@ -464,7 +464,7 @@ describe('内容脚本编排：翻译整页', () => {
     expect(document.getElementById('jy-toast')).toBeNull();
   });
 
-  it('翻译进行中再次触发不会重复挂宿主（running 守卫）', async () => {
+  it('翻译进行中再触发两次都不会重复挂宿主（running 守卫）', async () => {
     mount('<p>Hello world</p>');
     const { worker, contentListener } = await loadContentScript();
     let releaseFirstBatch: (() => void) | undefined;
@@ -485,8 +485,52 @@ describe('内容脚本编排：翻译整页', () => {
     await waitFor(() => releaseFirstBatch !== undefined);
     expect(hosts()).toHaveLength(1);
 
-    // 还原把 renderer 置空了，但第一次翻译还在跑（running 仍为 true）——此刻 renderer
-    // 守卫已经拦不住第二次触发，能拦住的只有 running 守卫，这条用例才真的钉住了它。
+    // 没有还原、这一轮还在飞：第二次与第三次触发都必须被 running 拦住，
+    // 于是它们看到的是**在飞那一轮**的状态（renderer 已建好、还没跑完），而不是新起一轮。
+    // 两次早退分别发生在"renderer 还没建好"与"renderer 已经建好"两种页面状态下，
+    // 所以这条用例同时钉住了守卫的存在和它在 renderer 守卫之前的位置。
+    const secondState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    const thirdState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(hosts()).toHaveLength(1);
+    expect(translateRequests(worker)).toHaveLength(1);
+    expect(secondState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 0, failed: 0 });
+    expect(thirdState).toEqual(secondState);
+
+    releaseFirstBatch?.();
+    await first;
+    expect(hosts()).toHaveLength(1);
+  });
+
+  /**
+   * 这条用例原来钉的是**错误行为**：还原之后立刻再触发翻译时，第二次触发被 running 守卫
+   * 静默吞掉（响应照回，页面什么都不做）。它当时把"没有第二个宿主、没有第二个请求"当成
+   * 期望，而那个现象正是缺陷本身——还原已经把 renderer 置空，此刻唯一能拦住第二次触发的
+   * 就是 running，而 running 是上一轮的事，跟"页面现在是否需要翻译"无关。
+   * Alt+T 连按两下（第一次翻译、第二次还原，再按一下翻译）就能触到这条路径。
+   * 现在改成钉正确行为：还原接管在飞的一轮并当场放行下一次翻译。
+   */
+  it('还原后立即再触发翻译（running 守卫已释放）：第二轮真的跑起来', async () => {
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    let releaseFirst: (() => void) | undefined;
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      if (releaseFirst === undefined) {
+        // 挂住第一批，让第一次翻译停在"进行中"（不用计时器：真/假计时器切换容易假通过）。
+        releaseFirst = () => sendResponse({ ok: true, results: [] });
+        return true;
+      }
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({ ok: true, results: items.map((item) => ({ id: item.id, text: translate(item.text) })) });
+      return true;
+    });
+    const first = dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    await waitFor(() => releaseFirst !== undefined);
+    expect(hosts()).toHaveLength(1);
+
+    // 还原把 renderer 置空了，但第一次翻译还在跑；此刻唯一还立着的守卫就是 running，
+    // 所以"还原之后能不能再翻译"这条用例真正钉住的是它有没有被释放。
     expect(await dispatch(contentListener, MSG.RESTORE_PAGE)).toEqual({
       translated: false,
       mode: 'bilingual',
@@ -497,13 +541,63 @@ describe('内容脚本编排：翻译整页', () => {
 
     const secondState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
-    expect(hosts()).toHaveLength(0);
-    expect(translateRequests(worker)).toHaveLength(1);
-    expect(secondState).toEqual({ translated: false, mode: 'bilingual', total: 0, done: 0, failed: 0 });
+    // 第二轮必须真的发请求、真的挂宿主——不能被入口守卫吞掉（吞掉的表现是监听器
+    // 照常回状态，用户却看到"没有译文、也没有任何提示"）。
+    expect(translateRequests(worker)).toHaveLength(2);
+    expect(hosts()).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
+    expect(secondState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 1, failed: 0 });
 
-    releaseFirstBatch?.();
+    // 第一轮仍然在飞（它的响应还没回）：它收尾时不许再动这一轮的页面状态。
+    releaseFirst?.();
     await first;
-    expect(hosts()).toHaveLength(0);
+
+    expect(hosts()).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
+    expect(document.getElementById('jy-toast')).toBeNull();
+  });
+
+  it('旧的一轮收尾不会清掉新一轮的守卫，也不会删掉新一轮的宿主', async () => {
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    const releases = new Map<number, () => void>();
+    let requests = 0;
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      requests += 1;
+      releases.set(requests, () => {
+        sendResponse({ ok: true, results: items.map((item) => ({ id: item.id, text: translate(item.text) })) });
+      });
+      return true;
+    });
+
+    const first = dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    await waitFor(() => releases.has(1));
+    await dispatch(contentListener, MSG.RESTORE_PAGE);
+
+    const second = dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    await waitFor(() => releases.has(2));
+    const secondHost = hosts()[0];
+    expect(secondHost).toBeDefined();
+    expect(bodyTextOf(secondHost)).toContain('翻译中…');
+
+    // 第一轮先结束，第二轮还在飞：第一轮的 finally 不能把第二轮的 running 守卫清掉。
+    releases.get(1)?.();
+    await first;
+    expect(hosts()).toEqual([secondHost]);
+
+    const thirdState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    expect(translateRequests(worker)).toHaveLength(2);
+    expect(hosts()).toEqual([secondHost]);
+    expect(thirdState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 0, failed: 0 });
+
+    releases.get(2)?.();
+    const secondState = await second;
+
+    expect(secondState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 1, failed: 0 });
+    expect(hosts()).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
   });
 
   it('还原后页面回到原状：无残留节点、无残留属性', async () => {
@@ -639,6 +733,64 @@ describe('内容脚本编排：失败与边界', () => {
     // 失败批的条目照常标注并带重试按钮，整轮跑完弹一次提示。
     expect(hosts().filter((host) => hasRetryButton(host))).toHaveLength(1);
     expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('限流');
+  });
+
+  it('响应里 results 是 undefined 时整批标注失败态并给重试，页面不会卡在「翻译中…」', async () => {
+    mount('<p>Hello world</p><p>Second paragraph here</p>');
+    const { worker, contentListener } = await loadContentScript();
+    // 形状不符的响应：跨进程边界上类型断言是拦不住它的（真机上这就是后台/引擎版本不匹配）。
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      sendResponse({ ok: true });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(hosts()).toHaveLength(2);
+    for (const host of hosts()) {
+      expect(bodyTextOf(host)).not.toContain('翻译中…');
+      expect(hasRetryButton(host)).toBe(true);
+    }
+    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 0, failed: 2 });
+    // 响应形状不对是一种失败，不是"什么也没发生"：用户至少要知道出了什么事。
+    expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('响应');
+  });
+
+  it('results 里的元素形状不对时：好的条目照常显示译文，坏的条目失败态可重试', async () => {
+    mount('<p>Hello world</p><p>Second paragraph here</p><p>Third paragraph here</p>');
+    const { worker, contentListener } = await loadContentScript();
+    // 逐条坏形状混一条好的：一条是字符串（连对象都不是）、一条缺 id，
+    // 剩下那条带着真 id 的必须照常落地（不能因为同批里有坏形状就整批丢弃）。
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({
+        ok: true,
+        results: items.map((item) => {
+          if (item.text === 'Hello world') return 'oops';
+          if (item.text === 'Second paragraph here') return { text: '没有 id' };
+          return { id: item.id, text: translate(item.text) };
+        }),
+      });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 3, done: 1, failed: 2 });
+    expect(hosts()).toHaveLength(3);
+    // 带真 id 的那条照常显示译文。注意不能用 `authedHosts()`（它按"含译字"筛）：
+    // 失败文案「翻译响应格式不正确」里也有"译"字，那样三条都算"有译文"。
+    const done = hosts().filter((host) => bodyTextOf(host).startsWith('译:'));
+    expect(done).toHaveLength(1);
+    expect(bodyTextOf(done[0])).toBe(translate('Third paragraph here'));
+    // 形状不对的两条：明确失败态 + 可重试，绝不停在 pending。
+    for (const host of hosts()) expect(bodyTextOf(host)).not.toContain('翻译中…');
+    const broken = hosts().filter((host) => bodyTextOf(host).includes('翻译响应格式不正确'));
+    expect(broken).toHaveLength(2);
+    for (const host of broken) expect(hasRetryButton(host)).toBe(true);
+    expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('响应');
   });
 
   it('同一条消息重复发送不会出现第二个 toast 节点', async () => {
