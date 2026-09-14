@@ -165,6 +165,48 @@ export interface StubContextMenus {
   click(info: StubMenuClickInfo, tab?: StubTab): void;
 }
 
+/**
+ * `chrome.permissions` 替身：可选宿主权限（manifest 的 `optional_host_permissions`）。
+ *
+ * 默认**什么都没授权**，与真机一致：Chrome 不会因为 manifest 里声明了就自动授权。
+ * 需要授权的用例自己调 `grantedOrigins.add(...)`（模拟"以前已经点过允许"），
+ * 或把 `approveRequests` 置为 false（模拟"这次点了拒绝"）。
+ *
+ * 这里存的是**整串匹配模式**（`https://api.example.com/*`）而不是裸 origin：被授权的
+ * 对象就是它。替身不做通配匹配，免得把「申请的模式写错了」这种真实缺陷一起糊过去。
+ */
+export interface StubPermissions {
+  /** 已授权的 origin 匹配模式 */
+  grantedOrigins: Set<string>;
+  /** 下一次 `request` 会不会被同意（真机上由用户在授权框里点「允许 / 拒绝」） */
+  approveRequests: boolean;
+  /** 每次 `request` 传进来的 origins，按调用顺序 */
+  requests: string[][];
+  contains(permissions: { origins?: string[] }): Promise<boolean>;
+  request(permissions: { origins?: string[] }): Promise<boolean>;
+}
+
+function createPermissions(): StubPermissions {
+  const permissions: StubPermissions = {
+    grantedOrigins: new Set<string>(),
+    approveRequests: true,
+    requests: [],
+    // 与真机一致：请求的每一个 origin 都已授权才算 contains 为真。
+    async contains(asked) {
+      const origins = asked.origins ?? [];
+      return origins.length > 0 && origins.every((origin) => permissions.grantedOrigins.has(origin));
+    },
+    async request(asked) {
+      const origins = asked.origins ?? [];
+      permissions.requests.push([...origins]);
+      if (!permissions.approveRequests) return false;
+      for (const origin of origins) permissions.grantedOrigins.add(origin);
+      return true;
+    },
+  };
+  return permissions;
+}
+
 /** `onMessage` 的监听器签名（与 `@types/chrome` 一致）。 */
 export type StubMessageListener = (
   message: unknown,
@@ -224,6 +266,8 @@ export interface StubRuntime {
 export interface ChromeStub {
   storage: { local: StubStorageArea; session: StubStorageArea };
   runtime: StubRuntime;
+  /** 可选宿主权限；默认什么都没授权（与真机一致），见 {@link StubPermissions} */
+  permissions: StubPermissions;
   commands: {
     onCommand: StubEvent<(command: string, tab?: StubTab) => void>;
     /** 触发一次快捷键 */
@@ -386,6 +430,7 @@ export function createChromeStub(): ChromeStub {
   const stub: ChromeStub = {
     storage: { local, session },
     runtime: createRuntime(),
+    permissions: createPermissions(),
     commands: {
       onCommand: createEvent<(command: string, tab?: StubTab) => void>(),
       run(command) {
@@ -407,6 +452,9 @@ export function createChromeStub(): ChromeStub {
       stub.runtime.noReceiver = false;
       stub.runtime.sentMessages = [];
       stub.runtime.openOptionsPageCalls = 0;
+      stub.permissions.grantedOrigins.clear();
+      stub.permissions.approveRequests = true;
+      stub.permissions.requests = [];
     },
   };
   return stub;

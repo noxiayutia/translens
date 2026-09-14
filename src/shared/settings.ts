@@ -73,7 +73,13 @@ function pickBoolean(value: unknown, fallback: boolean): boolean {
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
-function isAllowedBaseUrl(value: string): boolean {
+/**
+ * 接口地址是否合法：只接受 https（本机回环地址放行 http，Ollama 等本地服务默认就是 http）。
+ *
+ * 导出是给**设置页**用的：它必须在保存按钮里给出与这里**同一套判据**的提示，否则会出现
+ * 「设置页说保存成功、存储层把地址悄悄退回默认值」这种用户永远查不出来的分歧。
+ */
+export function isAllowedBaseUrl(value: string): boolean {
   let url: URL;
   try {
     url = new URL(value);

@@ -135,4 +135,54 @@ describe('openAiCompatEngine.translate', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>oops</html>', { status: 200 })));
     await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
+
+  it('接口地址不是合法 URL 时抛 AUTH 并说明地址有问题', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      openAiCompatEngine.translate(request(['A']), { ...CONFIG, baseUrl: 'api.example.com/v1' }),
+    ).rejects.toMatchObject({ code: 'AUTH', message: expect.stringContaining('不是合法的 URL') });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * manifest 只声明了 `optional_host_permissions`，而 Chrome 要求可选权限在用户手势里申请。
+   * 没授权就发请求时浏览器会把它拦下，而我们拿到的只是一个失败的 fetch——错误会伪装成
+   * `NETWORK`（"断网"），用户查不出原因也找不到该去哪儿点。所以发请求**之前**先查一次权限。
+   */
+  it('未授权该 origin 时抛 AUTH 并指路设置页，且一个请求都不发', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const contains = vi.fn().mockResolvedValue(false);
+    vi.stubGlobal('chrome', { permissions: { contains } });
+
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({
+      code: 'AUTH',
+      message: expect.stringContaining('未授权访问该接口地址，请到设置页保存一次以授权'),
+    });
+
+    // 查的是这个端点自己的 origin 模式，不是别的什么串。
+    expect(contains).toHaveBeenCalledWith({ origins: ['https://api.example.com/*'] });
+    // 关键：拦在 fetch 之前——被浏览器拦下就只剩一个伪装成 NETWORK 的失败。
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('已授权该 origin 时照常发请求', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('chrome', { permissions: { contains: vi.fn().mockResolvedValue(true) } });
+
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).resolves.toEqual(['你好']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('没有权限 API 的环境（纯 Node 单测）不做权限判断', async () => {
+    // `vi.stubGlobal('chrome', …)` 一次都不调：`typeof chrome === 'undefined'` 这条路
+    // 就是引擎能在纯 Node 里被单测的前提，上面所有既有用例其实都在走它。
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).resolves.toEqual(['你好']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
