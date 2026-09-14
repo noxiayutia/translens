@@ -146,6 +146,16 @@ describe('detectScript', () => {
     expect(detectScript('你好世界 Hello')).toBe('zh');
   });
 
+  it('短汉字段不敌长拉丁段', () => {
+    expect(detectScript('aaaaa 你好')).toBe('latin');
+    expect(detectScript('中文 abcde')).toBe('latin');
+  });
+
+  it('片段分同档时按先出现者判定', () => {
+    expect(detectScript('Hi 你好')).toBe('latin');
+    expect(detectScript('你好 Hi')).toBe('zh');
+  });
+
   it('没有字母时返回 unknown', () => {
     expect(detectScript('123 --- !!!')).toBe('unknown');
   });
@@ -201,6 +211,20 @@ describe('shouldSkip', () => {
   it('目标日文时跳过日文段落', () => {
     expect(shouldSkip('これはテストです', 'ja')).toBe(true);
   });
+
+  it('混排段落与目标语言同分时不跳过（低置信度偏保守）', () => {
+    expect(shouldSkip('Hi 你好', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('你好 Hi', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('你好世界 Hello', 'zh-Hans')).toBe(false);
+  });
+
+  it('短汉字段不敌长拉丁段时不跳过', () => {
+    expect(shouldSkip('aaaaa 你好', 'zh-Hans')).toBe(false);
+  });
+
+  it('中文段明显占优时仍然跳过', () => {
+    expect(shouldSkip('这是一段较长的中文内容，Hello', 'zh-Hans')).toBe(true);
+  });
 });
 ```
 
@@ -234,49 +258,106 @@ export const LANGUAGES: LanguageOption[] = [
 
 export type ScriptLang = 'zh' | 'ja' | 'ko' | 'ru' | 'ar' | 'latin' | 'unknown';
 
-const SCRIPT_PATTERNS: Array<[ScriptLang, RegExp]> = [
-  ['ja', /[\u3040-\u30ff]/g],
-  ['ko', /[\uac00-\ud7af]/g],
-  ['zh', /[\u4e00-\u9fff]/g],
-  ['ru', /[\u0400-\u04ff]/g],
-  ['ar', /[\u0600-\u06ff]/g],
-  ['latin', /[A-Za-z]/g],
+/**
+ * 各字符集的码点区间。表内顺序只在「得分与首次出现位置都相同」时兜底，
+ * 而一个字符只属于一个字符集，实际到不了这一步。
+ */
+const SCRIPT_RANGES: Array<[ScriptLang, ReadonlyArray<readonly [number, number]>]> = [
+  ['ja', [[0x3040, 0x30ff]]],
+  ['ko', [[0xac00, 0xd7af]]],
+  ['zh', [[0x4e00, 0x9fff]]],
+  ['ru', [[0x0400, 0x04ff]]],
+  ['ar', [[0x0600, 0x06ff]]],
+  ['latin', [[0x41, 0x5a], [0x61, 0x7a]]],
 ];
 
-function countMatches(text: string, re: RegExp): number {
-  const matched = text.match(re);
-  return matched ? matched.length : 0;
+function scriptOf(codePoint: number): ScriptLang | undefined {
+  for (const [lang, ranges] of SCRIPT_RANGES) {
+    for (const [from, to] of ranges) {
+      if (codePoint >= from && codePoint <= to) return lang;
+    }
+  }
+  return undefined;
+}
+
+interface ScriptStat {
+  /** 该字符集全部连续片段的得分之和 */
+  score: number;
+  /** 该字符集第一个片段的起始下标 */
+  firstAt: number;
 }
 
 /**
- * 统计某字符集在文本里出现的「连续片段」数，而非字符数。
- * 混排时一个汉字与一个英文单词的信息量相当，
- * 因此 '你好世界 Hello' 是 1 段中文 + 1 段拉丁（平局），而不是 4 个汉字 vs 5 个字母。
+ * 单遍扫描文本，统计每个字符集的连续片段及其得分。
+ * 每个片段计 `1 + floor(log2(段长))`——段长每翻一倍多算一分，段数与段长同时参与。
+ * 只数片段会丢掉长度信息：'aaaaa 你好' 是两个各 1 段的字符集，按段数打平后
+ * 会误判成 zh（中文段落被整段跳过、5 个字母永远不翻）；加权后拉丁段跨两档，正确判为 latin。
+ * 分档取 floor 而不是精确值，是为了让 4 与 5 个字符同分，保住
+ * '你好世界 Hello'（中文 1 段 4 字 / 拉丁 1 段 5 字母）判为 zh 的既有断言。
  */
-function countRuns(text: string, re: RegExp): number {
-  let runs = 0;
-  let inRun = false;
+function scoreScripts(text: string): Map<ScriptLang, ScriptStat> {
+  const stats = new Map<ScriptLang, ScriptStat>();
+  let current: ScriptLang | undefined;
+  let runLength = 0;
+  let runStart = 0;
+  let offset = 0;
+
+  const closeRun = () => {
+    if (current === undefined || runLength === 0) return;
+    const stat = stats.get(current) ?? { score: 0, firstAt: runStart };
+    stat.score += 1 + Math.floor(Math.log2(runLength));
+    stats.set(current, stat);
+  };
+
   for (const char of text) {
-    re.lastIndex = 0;
-    const matched = re.test(char);
-    if (matched && !inRun) runs += 1;
-    inRun = matched;
+    const lang = scriptOf(char.codePointAt(0) ?? 0);
+    if (lang !== current) {
+      closeRun();
+      current = lang;
+      runLength = 0;
+      runStart = offset;
+    }
+    if (lang !== undefined) runLength += 1;
+    offset += char.length;
   }
-  return runs;
+  closeRun();
+
+  return stats;
 }
 
-/** 按各字符集连续片段数取最多的那个；平局时按 SCRIPT_PATTERNS 的顺序优先。 */
-export function detectScript(text: string): ScriptLang {
-  let best: ScriptLang = 'unknown';
-  let bestScore = 0;
-  for (const [lang, re] of SCRIPT_PATTERNS) {
-    const score = countRuns(text, re);
-    if (score > bestScore) {
-      best = lang;
-      bestScore = score;
+interface ScriptPick {
+  lang: ScriptLang;
+  /** 是否有其它字符集与最高分持平（低置信度） */
+  tied: boolean;
+}
+
+/** 取分最高的字符集；同分时先出现者优先，不依赖 SCRIPT_RANGES 的表序。 */
+function pickScript(text: string): ScriptPick {
+  const stats = scoreScripts(text);
+  let lang: ScriptLang = 'unknown';
+  let score = 0;
+  let firstAt = Number.POSITIVE_INFINITY;
+  let tied = false;
+
+  for (const [candidate] of SCRIPT_RANGES) {
+    const stat = stats.get(candidate);
+    if (stat === undefined) continue;
+    if (stat.score > score || (stat.score === score && stat.firstAt < firstAt)) {
+      // 换人时若分数相同，被换下的那个仍然与新的最高分持平。
+      tied = stat.score === score;
+      lang = candidate;
+      score = stat.score;
+      firstAt = stat.firstAt;
+    } else if (stat.score === score) {
+      tied = true;
     }
   }
-  return best;
+
+  return { lang, tied };
+}
+
+export function detectScript(text: string): ScriptLang {
+  return pickScript(text).lang;
 }
 
 export function normalizeText(raw: string | null | undefined): string {
@@ -289,7 +370,7 @@ const LETTER = /\p{L}/gu;
 export function isTranslatableText(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < 2) return false;
-  return countMatches(trimmed, LETTER) >= 2;
+  return (trimmed.match(LETTER)?.length ?? 0) >= 2;
 }
 
 function baseLang(code: string): string {
@@ -308,18 +389,26 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
   es: 'latin',
 };
 
-/** 段落已经是指定目标语言时无需翻译。 */
+/**
+ * 段落已经是指定目标语言时无需翻译。
+ * 只有目标字符集严格领先才跳过：与其它字符集同分时宁可翻译——
+ * 跳过等于放弃翻译，错一边就是漏翻（'Hi 你好' 这类极短混排任何多数决都不可靠）。
+ */
 export function shouldSkip(text: string, targetLang: string): boolean {
   const expected = TARGET_SCRIPT[baseLang(targetLang)];
   if (!expected) return false;
-  return detectScript(text) === expected;
+  const pick = pickScript(text);
+  return pick.lang === expected && !pick.tied;
 }
 ```
 
-> 实现备注（该行为已被本单元测试冻结）：`detectScript` 按各字符集的**连续片段数**而非字符数取多数，
-> 平局时按 `SCRIPT_PATTERNS` 顺序优先。因此 `'你好世界 Hello'`（中文 1 段 / 拉丁 1 段）判为 `zh`，
-> 于是 `shouldSkip('Hello 你好世界', 'zh-Hans') === true`——中文与拉丁各占一段的混排段落会被整段跳过。
-> 若产品上要求这类混排段落参与翻译，需同时调整 `lang.test.ts` 的期望与本段说明，而不是只改实现。
+> 实现备注（口径的由来与候选对比见 `docs/superpowers/plans/2026-09-14-wu2-plan-amendment.md`）：
+> `detectScript` 按各字符集**连续片段的得分**取最高者，每段计 `1 + floor(log2(段长))`，
+> 即段数与段长同时参与；同分时先出现者优先，不依赖 `SCRIPT_RANGES` 的表序。
+> 因此 `'你好世界 Hello'`（中文 1 段 4 字 / 拉丁 1 段 5 字母，同档同分）判为 `zh`，
+> 而 `'aaaaa 你好'`（拉丁段跨两档）正确判为 `latin`，不会把 5 个字母的混排段落整段跳过。
+> `shouldSkip` 只在目标字符集**严格领先**时返回 `true`：与其它字符集同分的混排段落
+> （`'Hi 你好'`、`'你好 Hi'`）按低置信度处理，宁可不跳过——跳过等于放弃翻译，错一边就是漏翻。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -374,6 +463,14 @@ describe('planBatches', () => {
     expect(batches.map((b) => b.map((s) => s.id))).toEqual([['a'], ['b']]);
   });
 
+  it('预算计入每段的编号包装开销', () => {
+    const batches = planBatches(
+      [seg('a', 'x'.repeat(45)), seg('b', 'x'.repeat(45))],
+      OPTIONS,
+    );
+    expect(batches.map((b) => b.map((s) => s.id))).toEqual([['a'], ['b']]);
+  });
+
   it('超过段数上限时切批', () => {
     const batches = planBatches(
       [seg('a', 'x'), seg('b', 'x'), seg('c', 'x'), seg('d', 'x')],
@@ -421,6 +518,13 @@ describe('splitBySentence', () => {
     const text = '第一句。第二句。第三句。第四句。';
     expect(splitBySentence(text, 5).join('')).toBe(text);
   });
+
+  it('maxLen 非法时报错而不是死循环', () => {
+    expect(() => splitBySentence('abc', 0)).toThrow(RangeError);
+    expect(() => splitBySentence('abc', -1)).toThrow(RangeError);
+    expect(() => splitBySentence('abc', Number.NaN)).toThrow(RangeError);
+    expect(() => splitBySentence('abc', Number.POSITIVE_INFINITY)).toThrow(RangeError);
+  });
 });
 
 describe('joinPieces', () => {
@@ -456,11 +560,17 @@ export interface TextSegment {
 }
 
 export interface BatchOptions {
-  /** 一批内所有段落的总字符上限 */
+  /** 一批内所有段落的总字符上限（含每段的编号包装开销） */
   maxBatchChars: number;
   /** 一批内最多几段，避免一次塞进几十个碎句 */
   maxSegmentsPerBatch: number;
 }
+
+/**
+ * 每段在真实载荷里除正文外还要多出编号包装（`<<<n>>>` 与数组分隔符）的固定开销，
+ * 预算按「正文 + 开销」计，避免贴边的批次真实长度越过上限。
+ */
+const PER_SEGMENT_OVERHEAD = 8;
 
 /**
  * 按 DOM 顺序把相邻段落合并成批次。
@@ -481,40 +591,50 @@ export function planBatches(segments: TextSegment[], options: BatchOptions): Tex
   };
 
   for (const segment of segments) {
-    const length = segment.text.length;
-    if (length >= options.maxBatchChars) {
+    const cost = segment.text.length + PER_SEGMENT_OVERHEAD;
+    if (cost > options.maxBatchChars) {
       flush();
       batches.push([segment]);
       continue;
     }
-    const wouldExceedChars = currentChars + length > options.maxBatchChars;
+    const wouldExceedChars = currentChars + cost > options.maxBatchChars;
     const wouldExceedCount = current.length >= options.maxSegmentsPerBatch;
     if (current.length > 0 && (wouldExceedChars || wouldExceedCount)) flush();
     current.push(segment);
-    currentChars += length;
+    currentChars += cost;
   }
   flush();
   return batches;
 }
 
-/** 句末标点连同其后的空白一起归属前一片段（'One. Two.' → 'One. ' + 'Two.'）。 */
-const SENTENCE_BOUNDARY = /[。！？；!?;]\s*|\.(?=\s|$)\s*/g;
+/**
+ * 句末标点连同其后的空白一起归属前一片段（'One. Two.' → 'One. ' + 'Two.'）。
+ * 每次现取一个新实例：带 g 的正则自带可变 lastIndex，
+ * 模块级共享会让「切分结果」取决于调用点有没有记得重置它。
+ */
+function sentenceBoundary(): RegExp {
+  return /[。！？；!?;]\s*|\.(?=\s|$)\s*/g;
+}
 
 /**
  * 把超长文本按句子边界切成不超过 maxLen 的片段。
  * 单句本身超过 maxLen 时硬切，保证输出片段一定不超限。
+ * maxLen 必须是不小于 1 的有限数，否则窗口无法推进（死循环 + 无限切片）。
  */
 export function splitBySentence(text: string, maxLen: number): string[] {
+  if (!Number.isFinite(maxLen) || maxLen < 1) {
+    throw new RangeError(`splitBySentence 的 maxLen 必须是不小于 1 的有限数，收到 ${String(maxLen)}`);
+  }
   const pieces: string[] = [];
   let rest = text;
   while (rest.length > maxLen) {
-    const window = rest.slice(0, maxLen);
-    SENTENCE_BOUNDARY.lastIndex = 0;
+    const chunk = rest.slice(0, maxLen);
+    const boundary = sentenceBoundary();
     let cut = -1;
-    let match = SENTENCE_BOUNDARY.exec(window);
+    let match = boundary.exec(chunk);
     while (match !== null) {
       cut = match.index + match[0].length;
-      match = SENTENCE_BOUNDARY.exec(window);
+      match = boundary.exec(chunk);
     }
     if (cut <= 0) cut = maxLen;
     pieces.push(rest.slice(0, cut));
@@ -712,6 +832,15 @@ describe('toEngineError', () => {
     expect(err.message).toBe('boom');
   });
 
+  it('保留原始错误为 cause', () => {
+    const raw = new TypeError('boom');
+    expect(toEngineError(raw).cause).toBe(raw);
+
+    const abort = new Error('aborted');
+    abort.name = 'AbortError';
+    expect(toEngineError(abort).cause).toBe(abort);
+  });
+
   it('非 Error 值也能处理', () => {
     expect(toEngineError('oops').code).toBe('UNKNOWN');
     expect(toEngineError('oops').message).toBe('oops');
@@ -769,8 +898,8 @@ export class EngineError extends Error {
   readonly code: EngineErrorCode;
   readonly retryable: boolean;
 
-  constructor(code: EngineErrorCode, message: string) {
-    super(message);
+  constructor(code: EngineErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'EngineError';
     this.code = code;
     this.retryable = RETRYABLE.has(code);
@@ -780,8 +909,10 @@ export class EngineError extends Error {
 export function toEngineError(raw: unknown): EngineError {
   if (raw instanceof EngineError) return raw;
   if (raw instanceof Error) {
-    if (raw.name === 'AbortError') return new EngineError('ABORTED', '请求已取消');
-    return new EngineError('UNKNOWN', raw.message);
+    // 保留原始错误：fetch 失败带的 cause、超时属性等要靠它才能追查。
+    const options: ErrorOptions = { cause: raw };
+    if (raw.name === 'AbortError') return new EngineError('ABORTED', '请求已取消', options);
+    return new EngineError('UNKNOWN', raw.message, options);
   }
   return new EngineError('UNKNOWN', String(raw));
 }

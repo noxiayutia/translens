@@ -26,6 +26,14 @@ describe('planBatches', () => {
     expect(batches.map((b) => b.map((s) => s.id))).toEqual([['a'], ['b']]);
   });
 
+  it('预算计入每段的编号包装开销', () => {
+    const batches = planBatches(
+      [seg('a', 'x'.repeat(45)), seg('b', 'x'.repeat(45))],
+      OPTIONS,
+    );
+    expect(batches.map((b) => b.map((s) => s.id))).toEqual([['a'], ['b']]);
+  });
+
   it('超过段数上限时切批', () => {
     const batches = planBatches(
       [seg('a', 'x'), seg('b', 'x'), seg('c', 'x'), seg('d', 'x')],
@@ -72,6 +80,13 @@ describe('splitBySentence', () => {
   it('切分后不丢字符', () => {
     const text = '第一句。第二句。第三句。第四句。';
     expect(splitBySentence(text, 5).join('')).toBe(text);
+  });
+
+  it('maxLen 非法时报错而不是死循环', () => {
+    expect(() => splitBySentence('abc', 0)).toThrow(RangeError);
+    expect(() => splitBySentence('abc', -1)).toThrow(RangeError);
+    expect(() => splitBySentence('abc', Number.NaN)).toThrow(RangeError);
+    expect(() => splitBySentence('abc', Number.POSITIVE_INFINITY)).toThrow(RangeError);
   });
 });
 

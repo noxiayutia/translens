@@ -38,6 +38,15 @@ describe('toEngineError', () => {
     expect(err.message).toBe('boom');
   });
 
+  it('保留原始错误为 cause', () => {
+    const raw = new TypeError('boom');
+    expect(toEngineError(raw).cause).toBe(raw);
+
+    const abort = new Error('aborted');
+    abort.name = 'AbortError';
+    expect(toEngineError(abort).cause).toBe(abort);
+  });
+
   it('非 Error 值也能处理', () => {
     expect(toEngineError('oops').code).toBe('UNKNOWN');
     expect(toEngineError('oops').message).toBe('oops');

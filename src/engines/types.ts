@@ -37,8 +37,8 @@ export class EngineError extends Error {
   readonly code: EngineErrorCode;
   readonly retryable: boolean;
 
-  constructor(code: EngineErrorCode, message: string) {
-    super(message);
+  constructor(code: EngineErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'EngineError';
     this.code = code;
     this.retryable = RETRYABLE.has(code);
@@ -48,8 +48,10 @@ export class EngineError extends Error {
 export function toEngineError(raw: unknown): EngineError {
   if (raw instanceof EngineError) return raw;
   if (raw instanceof Error) {
-    if (raw.name === 'AbortError') return new EngineError('ABORTED', '请求已取消');
-    return new EngineError('UNKNOWN', raw.message);
+    // 保留原始错误：fetch 失败带的 cause、超时属性等要靠它才能追查。
+    const options: ErrorOptions = { cause: raw };
+    if (raw.name === 'AbortError') return new EngineError('ABORTED', '请求已取消', options);
+    return new EngineError('UNKNOWN', raw.message, options);
   }
   return new EngineError('UNKNOWN', String(raw));
 }

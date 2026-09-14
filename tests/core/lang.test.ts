@@ -23,6 +23,16 @@ describe('detectScript', () => {
     expect(detectScript('你好世界 Hello')).toBe('zh');
   });
 
+  it('短汉字段不敌长拉丁段', () => {
+    expect(detectScript('aaaaa 你好')).toBe('latin');
+    expect(detectScript('中文 abcde')).toBe('latin');
+  });
+
+  it('片段分同档时按先出现者判定', () => {
+    expect(detectScript('Hi 你好')).toBe('latin');
+    expect(detectScript('你好 Hi')).toBe('zh');
+  });
+
   it('没有字母时返回 unknown', () => {
     expect(detectScript('123 --- !!!')).toBe('unknown');
   });
@@ -77,5 +87,19 @@ describe('shouldSkip', () => {
 
   it('目标日文时跳过日文段落', () => {
     expect(shouldSkip('これはテストです', 'ja')).toBe(true);
+  });
+
+  it('混排段落与目标语言同分时不跳过（低置信度偏保守）', () => {
+    expect(shouldSkip('Hi 你好', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('你好 Hi', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('你好世界 Hello', 'zh-Hans')).toBe(false);
+  });
+
+  it('短汉字段不敌长拉丁段时不跳过', () => {
+    expect(shouldSkip('aaaaa 你好', 'zh-Hans')).toBe(false);
+  });
+
+  it('中文段明显占优时仍然跳过', () => {
+    expect(shouldSkip('这是一段较长的中文内容，Hello', 'zh-Hans')).toBe(true);
   });
 });
