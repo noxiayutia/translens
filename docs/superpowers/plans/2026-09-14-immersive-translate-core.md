@@ -574,12 +574,29 @@ function countMatches(text: string, re: RegExp): number {
   return matched ? matched.length : 0;
 }
 
-/** 按各字符集出现次数取最多的那个；平局时按 SCRIPT_PATTERNS 的顺序优先。 */
+/**
+ * 统计某字符集在文本里出现的「连续片段」数，而非字符数。
+ * 混排时一个汉字与一个英文单词的信息量相当，
+ * 因此 '你好世界 Hello' 是 1 段中文 + 1 段拉丁（平局），而不是 4 个汉字 vs 5 个字母。
+ */
+function countRuns(text: string, re: RegExp): number {
+  let runs = 0;
+  let inRun = false;
+  for (const char of text) {
+    re.lastIndex = 0;
+    const matched = re.test(char);
+    if (matched && !inRun) runs += 1;
+    inRun = matched;
+  }
+  return runs;
+}
+
+/** 按各字符集连续片段数取最多的那个；平局时按 SCRIPT_PATTERNS 的顺序优先。 */
 export function detectScript(text: string): ScriptLang {
   let best: ScriptLang = 'unknown';
   let bestScore = 0;
   for (const [lang, re] of SCRIPT_PATTERNS) {
-    const score = countMatches(text, re);
+    const score = countRuns(text, re);
     if (score > bestScore) {
       best = lang;
       bestScore = score;
@@ -624,6 +641,11 @@ export function shouldSkip(text: string, targetLang: string): boolean {
   return detectScript(text) === expected;
 }
 ```
+
+> 实现备注（该行为已被本单元测试冻结）：`detectScript` 按各字符集的**连续片段数**而非字符数取多数，
+> 平局时按 `SCRIPT_PATTERNS` 顺序优先。因此 `'你好世界 Hello'`（中文 1 段 / 拉丁 1 段）判为 `zh`，
+> 于是 `shouldSkip('Hello 你好世界', 'zh-Hans') === true`——中文与拉丁各占一段的混排段落会被整段跳过。
+> 若产品上要求这类混排段落参与翻译，需同时调整 `lang.test.ts` 的期望与本段说明，而不是只改实现。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -801,7 +823,8 @@ export function planBatches(segments: TextSegment[], options: BatchOptions): Tex
   return batches;
 }
 
-const SENTENCE_BOUNDARY = /[。！？；!?;]|\.(?=\s|$)/g;
+/** 句末标点连同其后的空白一起归属前一片段（'One. Two.' → 'One. ' + 'Two.'）。 */
+const SENTENCE_BOUNDARY = /[。！？；!?;]\s*|\.(?=\s|$)\s*/g;
 
 /**
  * 把超长文本按句子边界切成不超过 maxLen 的片段。
