@@ -174,7 +174,8 @@ async function translateWithFallback(
 }
 
 /**
- * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求。
+ * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求——其中**字面相同的文本
+ * 只翻一次**（见下方 `uniqueTexts`），结果再按条目摊回。
  * 任何失败都转成携带错误码的结果项，绝不抛错——内容脚本据此渲染"重试"按钮。
  * 缓存读写失败不在此列：那不是"这次翻译失败"，降级即可（读当未命中、写当没缓存上）。
  */
@@ -221,6 +222,26 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   });
   if (missing.length === 0) return results;
 
+  /**
+   * 同一批里**字面完全相同**的文本只翻一次。
+   *
+   * 真实网页里重复文本很常见：导航、「Read more」、表头、免责声明能占 20-40% 的段落数。
+   * 而 Google 引擎不支持一次请求多条文本（一条文本一个请求），逐条发等于把免费额度
+   * 白烧在重复段上——正文反而会因 429 失败。缓存 key 是按文本算的，所以重复文本只会
+   * 一起命中或一起未命中，折叠不会改变任何一条的结果。
+   */
+  const uniqueTexts: string[] = [];
+  const indexesByText = new Map<string, number[]>();
+  for (const index of missing) {
+    const group = indexesByText.get(items[index].text);
+    if (group === undefined) {
+      indexesByText.set(items[index].text, [index]);
+      uniqueTexts.push(items[index].text);
+    } else {
+      group.push(index);
+    }
+  }
+
   // 待写缓存的条目：声明在 try 之外，因为写入发生在 try/catch 之后（见下方注释）。
   const toCache = new Map<string, string>();
   /**
@@ -245,13 +266,15 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
   };
 
   try {
-    const translations = await translateWithFallback(
-      missing.map((index) => items[index].text),
-      deps,
-    );
+    const translations = await translateWithFallback(uniqueTexts, deps);
     // 逐条降级的半成品：逐条上报，别把已经翻好的条目一起丢掉，也别给它们安上
     // 邻居的错误码。成功的那几条照常进缓存，用户点重试时只需再翻失败的那几条。
-    missing.forEach((index, offset) => void settle(index, translations[offset]));
+    // 去重后的结果按**下标组**摊回每一条：同一文本的 N 个条目拿到同一份译文，
+    // 各自的缓存 key 也各自写上（key 由文本派生，这里其实是同一个 key）。
+    uniqueTexts.forEach((text, offset) => {
+      const translation = translations[offset];
+      for (const index of indexesByText.get(text) ?? []) settle(index, translation);
+    });
   } catch (raw) {
     const error = toEngineError(raw);
     for (const index of missing) settle(index, error);

@@ -74,6 +74,70 @@ describe('translateBatch', () => {
     ]);
   });
 
+  /**
+   * 同一批里字面完全相同的文本只翻一次。真实网页的导航、「Read more」、表头、免责声明
+   * 能占 20-40% 的段落数，而 Google 引擎不支持批量（一条文本一个请求），逐条发等于把
+   * 免费额度白烧在重复段上，正文反而会因 429 失败（审查实测：60 个相同段落打出 36 次 fetch）。
+   */
+  it('同一批里字面相同的文本只送一次引擎，结果摊回每一条且都进缓存', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['重复段译文', '独有段译文']]);
+    const items = [
+      { id: 'a', text: 'Read more' },
+      { id: 'b', text: 'Unique sentence here' },
+      { id: 'c', text: 'Read more' },
+      { id: 'd', text: 'Read more' },
+    ];
+
+    const out = await translateBatch(items, deps(engine, { cache }));
+
+    // 3 个相同 + 1 个不同 → 引擎只收到 2 条文本。
+    expect(calls).toEqual([['Read more', 'Unique sentence here']]);
+    // 4 条结果都正确：重复的那 3 条拿到同一份译文，顺序与输入一致。
+    expect(out).toEqual([
+      { id: 'a', text: '重复段译文' },
+      { id: 'b', text: '独有段译文' },
+      { id: 'c', text: '重复段译文' },
+      { id: 'd', text: '重复段译文' },
+    ]);
+    // 都进缓存：缓存 key 由文本派生，重复的那 3 条共用同一个 key，所以真实条目数是 2。
+    expect(await cache.count()).toBe(2);
+
+    // 同一批再来一次：一条都不该再打给引擎（重复段命中的是同一个 key）。
+    const again = await translateBatch(items, deps(engine, { cache }));
+    expect(calls).toHaveLength(1);
+    expect(again).toEqual(out);
+  });
+
+  it('命中的与未命中的一起折叠：只有未命中的唯一文本进引擎', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['重复段译文'], ['独有段译文']]);
+    const shared = deps(engine, { cache });
+
+    // 先单独翻一次，让 'Read more' 进缓存。
+    await translateBatch([{ id: 'seed', text: 'Read more' }], shared);
+    expect(calls).toHaveLength(1);
+
+    // 这一批里两条命中、两条未命中同一段文本（都未命中缓存的那条只该送一次）。
+    const out = await translateBatch(
+      [
+        { id: 'a', text: 'Read more' },
+        { id: 'b', text: 'Unique sentence here' },
+        { id: 'c', text: 'Unique sentence here' },
+        { id: 'd', text: 'Read more' },
+      ],
+      shared,
+    );
+
+    expect(calls).toEqual([['Read more'], ['Unique sentence here']]);
+    expect(out).toEqual([
+      { id: 'a', text: '重复段译文' },
+      { id: 'b', text: '独有段译文' },
+      { id: 'c', text: '独有段译文' },
+      { id: 'd', text: '重复段译文' },
+    ]);
+  });
+
   it('鉴权失败不重试', async () => {
     const { engine, calls } = fakeEngine([new EngineError('AUTH', 'Key 无效')]);
     const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));
