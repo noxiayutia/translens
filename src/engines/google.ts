@@ -9,32 +9,16 @@ export function toGoogleLang(code: string): string {
   return code;
 }
 
-/** 句子数组形如 [[译文片段, 原文片段, ...], ...]：元素是数组，且每条的首项就是译文。 */
-function isSentenceList(value: unknown): value is unknown[] {
-  return Array.isArray(value) && Array.isArray(value[0]) && typeof (value[0] as unknown[])[0] === 'string';
-}
-
-/** 外层信封最多下钻几层，避免畸形（甚至自引用）返回把解析拖成死循环。 */
-const MAX_ENVELOPE_DEPTH = 4;
-
 /**
- * 免费接口返回 [[[译文片段, 原文片段, ...], ...], null, 源语言, ...]，句子数组就在 data[0]。
- * 但部分网关会把整包再包一层，所以按下标逐层下钻找**结构上**的句子数组，
- * 而不是写死 data[0]：两种形状都能解析，写死会在多包一层时静默返回空译文。
+ * 免费接口返回 [[[译文片段, 原文片段, ...], ...], null, 源语言, ...]。
+ * 所有片段首尾相接才是完整译文。
  */
-function locateSentenceList(data: unknown): unknown[] {
-  let node: unknown = data;
-  for (let depth = 0; depth <= MAX_ENVELOPE_DEPTH && Array.isArray(node); depth += 1) {
-    if (isSentenceList(node)) return node;
-    node = node[0];
-  }
-  throw new EngineError('BAD_RESPONSE', '免费接口返回格式异常');
-}
-
-/** 所有片段首尾相接才是完整译文。 */
 export function parseGoogleResponse(data: unknown): string {
+  if (!Array.isArray(data) || !Array.isArray(data[0])) {
+    throw new EngineError('BAD_RESPONSE', '免费接口返回格式异常');
+  }
   const parts: string[] = [];
-  for (const chunk of locateSentenceList(data)) {
+  for (const chunk of data[0] as unknown[]) {
     if (Array.isArray(chunk) && typeof chunk[0] === 'string') parts.push(chunk[0]);
   }
   const text = parts.join('');

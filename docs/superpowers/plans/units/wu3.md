@@ -21,7 +21,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** Google 免费接口的真实返回结构：[[[译文, 原文, ...], ...], null, "en", ...] */
 function googleBody(translations: string[]): unknown {
-  return [[translations.map((t) => [t, 'source', null, null, 10]), null, 'en']];
+  return [translations.map((t) => [t, 'source', null, null, 10]), null, 'en'];
 }
 
 afterEach(() => {
