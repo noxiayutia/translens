@@ -138,6 +138,21 @@ describe('translateBatch', () => {
     ]);
   });
 
+  it('源语言变化时缓存不命中：key 里带了 sourceLang', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['自动检测的译文'], ['按英文源的译文']]);
+
+    await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'auto' }));
+    const second = await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'en' }));
+
+    // 换了源语言语义就必须重新问引擎；共用 key 会命中按 auto 翻出来的那一份。
+    expect(calls).toHaveLength(2);
+    expect(second[0].text).toBe('按英文源的译文');
+    // 反过来：同样的源语言仍然命中缓存。
+    await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache, sourceLang: 'en' }));
+    expect(calls).toHaveLength(2);
+  });
+
   it('鉴权失败不重试', async () => {
     const { engine, calls } = fakeEngine([new EngineError('AUTH', 'Key 无效')]);
     const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));

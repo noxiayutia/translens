@@ -192,6 +192,9 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
     buildCacheKey({
       engineId: deps.engine.id,
       configHash,
+      // 源语言也进 key：`sourceLang` 是设置项、会一路传到 `TranslateRequest.from`，
+      // 它不参与 key 时，改了源语言就会命中按另一种语义翻出来的旧译文（见 core/hash.ts）。
+      sourceLang: deps.sourceLang,
       targetLang: deps.targetLang,
       glossaryHash,
       promptHash,

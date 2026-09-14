@@ -23,6 +23,14 @@ export interface CacheKeyParts {
    * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
    */
   configHash: string;
+  /**
+   * 源语言。`sourceLang` 是设置项，会一路传到 `TranslateRequest.from`；它不参与 key 时，
+   * 用户把「自动检测」改成某个具体源语言（或反过来）之后，同一个引擎、同一段文本、同一个
+   * 目标语言会命中**按另一种源语言语义**翻出来的旧译文，而且事后无法自愈。
+   * 今天两个引擎都还没真的读 `from`（Google 把 `sl=auto` 硬编码），所以这条还没有可观察
+   * 的错误；等接上就用错语义——key 必须在那之前就带上它。
+   */
+  sourceLang: string;
   targetLang: string;
   glossaryHash: string;
   promptHash: string;
@@ -32,6 +40,14 @@ export interface CacheKeyParts {
 /** 用 \u0000 分隔，避免字段拼接产生歧义（如 ("ab","c") 与 ("a","bc")）。 */
 export function buildCacheKey(parts: CacheKeyParts): string {
   return hashString(
-    [parts.engineId, parts.configHash, parts.targetLang, parts.glossaryHash, parts.promptHash, parts.text].join('\u0000'),
+    [
+      parts.engineId,
+      parts.configHash,
+      parts.sourceLang,
+      parts.targetLang,
+      parts.glossaryHash,
+      parts.promptHash,
+      parts.text,
+    ].join('\u0000'),
   );
 }
