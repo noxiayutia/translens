@@ -72,6 +72,16 @@ export function isBlockDisplay(display: string | undefined): boolean {
   return display !== undefined && BLOCK_DISPLAYS.has(display);
 }
 
+/**
+ * 透明包裹：自身不生成块级盒（`contents` 连盒都不生成），但里面的块级后代仍然要按块处理。
+ * 只看 BLOCK_DISPLAYS 会把这些包裹整体当成行内，于是整棵子树既不成段也不参与拼接，
+ * 那片区域永远没有译文，父容器还会被标记成已翻译——静默漏翻。
+ */
+const TRANSPARENT_DISPLAYS = new Set(['inline-block', 'inline-flex', 'inline-grid', 'contents']);
+
+/** 递归判定的深度上限。DOM 是树、不可能成环，但病态深树不该把调用栈吃掉。 */
+const MAX_WRAPPER_DEPTH = 16;
+
 interface ElementStyle {
   display: string;
   visibility: string;
@@ -118,21 +128,65 @@ function isSkippedForText(element: Element): boolean {
 }
 
 /**
- * 拼行内文本时补一个空格，避免 `<b>a</b><i>b</i>` 被粘成 `ab`。
- * 只在「词字符 + 词字符」之间补，所以 `</b>.` 这类标点边界不会多出空格。
+ * 一个子元素算不算**块级边界**（即：父元素的文本到此为止，这块自己成段）：
+ * 1. 它的 computed display 在白名单里；或者
+ * 2. 它是透明包裹（inline-block / inline-flex / inline-grid / contents）**并且**内部存在块级后代。
+ *
+ * 第 2 条是必须的：`<span style="display:inline-block"><h3>标题</h3><p>正文</p></span>`
+ * 与 Tailwind 的 `contents` 工具类在真实站点里都很常见。少了它，包裹内部整棵子树
+ * 既不成段也不参与拼接，那片区域永远没有译文。
+ * 反过来，`<span style="display:inline-block">world</span>` 内部没有块级后代，
+ * 就不算边界——它仍然是父段的一部分，`<p>Hello <span …>world</span></p>` 抽成一段。
+ */
+function isBlockBoundary(element: Element, styleOf: (element: Element) => ElementStyle, depth: number): boolean {
+  const display = styleOf(element).display;
+  if (isBlockDisplay(display)) return true;
+  if (!TRANSPARENT_DISPLAYS.has(display)) return false;
+  return hasBlockDescendant(element, styleOf, depth);
+}
+
+function hasBlockDescendant(
+  element: Element,
+  styleOf: (element: Element) => ElementStyle,
+  depth: number,
+): boolean {
+  if (depth > MAX_WRAPPER_DEPTH) return false;
+  for (const child of Array.from(element.children)) {
+    if (isSkippedForText(child) || child.nodeName === 'BR') continue;
+    if (isBlockBoundary(child, styleOf, depth + 1)) return true;
+  }
+  return false;
+}
+
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+const CJK_CHAR = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u;
+
+/**
+ * 只有两侧都是「词字符」且都不在 CJK 区间时才补一个空格，其余一律直接拼。
+ *
+ * 判定必须在**拼接处**做，不能做成对整段文本的全局后处理：全局后处理分不清
+ * 「插件自己补的分隔符」与「原文本来就有、或者是唯一一个的空格」，
+ * 会把 `5 $` / `50 %` / `a + b` / `Well ...` / `plan — announced` 里的空格一起删掉，
+ * 抽出来的文本就不再是页面上写的文本，送翻译、算缓存 key、以后术语表匹配全都跟着偏。
  */
 function needsSeparator(previous: string, next: string): boolean {
-  if (previous === '' || next === '') return false;
-  if (/\s$/.test(previous) || /^\s/.test(next)) return false;
-  return /[\p{L}\p{N}]$/u.test(previous) && /^[\p{L}\p{N}]/u.test(next);
+  if (previous.length === 0 || next.length === 0) return false;
+  const last = previous[previous.length - 1];
+  const first = next[0];
+  if (/\s/.test(last) || /\s/.test(first)) return false;
+  // 中日韩之间不加空格；中英之间也不加（宁可贴在一起，也不要凭空多出一个空格）。
+  if (CJK_CHAR.test(last) || CJK_CHAR.test(first)) return false;
+  // 标点、符号旁边不加空格：`Hello` + `, and italic.` 应该是 `Hello, and italic.`
+  if (!WORD_CHAR.test(last) || !WORD_CHAR.test(first)) return false;
+  return true;
 }
 
 /**
- * 去掉标记之间被补出来的空格：`**` 中间的空白一律挤掉，
- * 于是 `<b>bold</b>, and` 拼成 `bold, and` 而不是 `bold , and`。
+ * 文本片段内部折叠空白，但**不 trim**：片段首尾的空白正是原文的分隔信息，
+ * 留给 needsSeparator 判断，段尾统一 normalizeText 时再去掉。
  */
-function dropMarkupGaps(text: string): string {
-  return text.replace(/ (?=[\p{P}\p{S}])/gu, '');
+function collapseSpaces(raw: string): string {
+  return raw.replace(/\s+/g, ' ');
 }
 
 /**
@@ -145,7 +199,8 @@ function inlineText(element: Element, styleOf: (element: Element) => ElementStyl
 
   const walk = (node: Node): void => {
     if (node.nodeType === Node.TEXT_NODE) {
-      const piece = node.nodeValue ?? '';
+      const piece = collapseSpaces(node.nodeValue ?? '');
+      if (piece === '') return;
       if (needsSeparator(result, piece)) result += ' ';
       result += piece;
       return;
@@ -153,12 +208,13 @@ function inlineText(element: Element, styleOf: (element: Element) => ElementStyl
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const child = node as Element;
     if (isSkippedForText(child) || isHidden(child, styleOf) || child.nodeName === 'BR') return;
-    if (isBlockDisplay(styleOf(child).display)) return;
+    if (isBlockBoundary(child, styleOf, 0)) return;
     for (const grandChild of Array.from(child.childNodes)) walk(grandChild);
   };
 
   for (const child of Array.from(element.childNodes)) walk(child);
-  return normalizeText(result);
+  // 不 trim：首尾空白留给拼接处判断要不要补分隔符。
+  return result;
 }
 
 function isSkippable(element: Element): boolean {
@@ -234,7 +290,7 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     let pendingBlock = false;
     let hasLineBreak = false;
 
-    /** 这段文本之后是否还有块级子元素；有就锚到那一个之前，没有就锚到容器末尾。 */
+    /** 这段文本之后是否还有块级边界；有就锚到那一个之前，没有就锚到容器末尾。 */
     const nextBlockAfter = (at: number): Element | undefined => {
       const nodes = element.childNodes;
       for (let cursor = at; cursor < nodes.length; cursor += 1) {
@@ -242,7 +298,7 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
         if (node === undefined || node.nodeType !== Node.ELEMENT_NODE) continue;
         const candidate = node as Element;
         if (isSkippedForText(candidate) || candidate.nodeName === 'BR') continue;
-        if (isBlockDisplay(styleOf(candidate).display)) return candidate;
+        if (isBlockBoundary(candidate, styleOf, 0)) return candidate;
       }
       return undefined;
     };
@@ -256,12 +312,13 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
         breakRun = false;
         runs.push(run);
       }
-      run.text = run.text === '' ? piece : `${run.text} ${piece}`;
+      // 分隔符只在拼接处补，而且只在两侧都是词字符时才补。
+      run.text = needsSeparator(run.text, piece) ? `${run.text} ${piece}` : `${run.text}${piece}`;
     };
     const emit = (): void => {
       for (const run of runs) {
-        // 文本节点是按原样拼起来的，段尾统一折叠空白、去掉首尾空格与标记间补出来的空格。
-        const text = dropMarkupGaps(normalizeText(run.text));
+        // 只折叠空白并去掉段首尾的空格：标记之间该不该有空格，拼接时已经判过了。
+        const text = normalizeText(run.text);
         if (text === '') continue;
         if (run.anchor === element) {
           // 只有「整个元素就是这一段文本」才可以就地替换：多一个块级子元素或 <br> 都不行。
@@ -282,7 +339,8 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     for (const child of Array.from(element.childNodes)) {
       index += 1;
       if (child.nodeType === Node.TEXT_NODE) {
-        const text = (child.nodeValue ?? '').trim();
+        // 折叠空白但不 trim：首尾空白是原文的分隔信息，交给 needsSeparator 判断。
+        const text = collapseSpaces(child.nodeValue ?? '');
         if (text === '') continue;
         appendText(text, index);
         pendingBlock = false;
@@ -299,8 +357,8 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
         pendingBlock = false;
         continue;
       }
-      if (isBlockDisplay(styleOf(childElement).display)) {
-        // 块级子元素：先把它前面的文本段落定下来，再递归，保证段序 = 文档序。
+      if (isBlockBoundary(childElement, styleOf, 0)) {
+        // 块级边界（含内部还有块级后代的透明包裹）：先把它前面的文本段落定下来，再递归，保证段序 = 文档序。
         emit();
         if (!hidden) visitBlock(childElement, false);
         // 紧随其后的直接文本要另起一段，并且插到这块之前才不会跑到它后面去。
@@ -322,7 +380,7 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     const hidden = ancestorHidden || isHidden(element, styleOf);
     const children = Array.from(element.children);
     const blocks = children.filter(
-      (child) => !isSkippedForText(child) && isBlockDisplay(styleOf(child).display),
+      (child) => !isSkippedForText(child) && isBlockBoundary(child, styleOf, 0),
     );
 
     if (blocks.length === 0) {

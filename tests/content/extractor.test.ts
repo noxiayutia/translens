@@ -9,6 +9,64 @@ function mount(html: string): HTMLElement {
   return document.body;
 }
 
+/**
+ * 参照实现：与被测代码无关，只按 WU7 的拼接规格重写一遍——
+ * 「片段内部折叠空白、不 trim；拼接时只有两侧都是词字符、且都不在 CJK 区间才补一个空格」。
+ * 不变量用例靠它独立算出期望值，避免拿被测函数去验证被测函数。
+ */
+const REF_SKIP_TAGS = new Set([
+  'SCRIPT',
+  'STYLE',
+  'NOSCRIPT',
+  'CODE',
+  'PRE',
+  'KBD',
+  'SAMP',
+  'TEXTAREA',
+  'INPUT',
+  'SELECT',
+  'OPTION',
+  'SVG',
+  'CANVAS',
+  'IFRAME',
+  'VIDEO',
+  'AUDIO',
+  'HEAD',
+  'TITLE',
+  'META',
+  'LINK',
+  'BUTTON',
+]);
+const REF_WORD = /[\p{L}\p{N}]/u;
+const REF_CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u;
+
+function refJoin(previous: string, next: string): string {
+  if (previous === '' || next === '') return previous + next;
+  const last = previous[previous.length - 1];
+  const first = next[0];
+  if (/\s/.test(last) || /\s/.test(first)) return previous + next;
+  if (REF_CJK.test(last) || REF_CJK.test(first)) return previous + next;
+  if (!REF_WORD.test(last) || !REF_WORD.test(first)) return previous + next;
+  return `${previous} ${next}`;
+}
+
+/** 参照实现：把一个只含行内内容的元素的文本按规格拼出来。 */
+function refTextOf(element: Element): string {
+  let out = '';
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out = refJoin(out, (node.nodeValue ?? '').replace(/\s+/g, ' '));
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const child = node as Element;
+    if (REF_SKIP_TAGS.has(child.tagName)) return;
+    for (const grandChild of Array.from(child.childNodes)) walk(grandChild);
+  };
+  for (const child of Array.from(element.childNodes)) walk(child);
+  return out.replace(/\s+/g, ' ').trim();
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
 });
@@ -60,6 +118,47 @@ describe('collectSegments', () => {
     const root = mount('<p>Hello <b>bold</b>, and <i>italic</i>.</p>');
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
     expect(segments.map((s) => s.text)).toEqual(['Hello bold, and italic.']);
+  });
+
+  it('抽出文本与页面上写的文本逐字一致：标点与符号旁的空格不能被删掉', () => {
+    const cases: Array<[string, string]> = [
+      ['<p>The plan — announced today — failed.</p>', 'The plan — announced today — failed.'],
+      ['<p>It costs 5 $ per unit today.</p>', 'It costs 5 $ per unit today.'],
+      ['<p>Sales rose 50 % in May.</p>', 'Sales rose 50 % in May.'],
+      ['<p>Compute a + b first.</p>', 'Compute a + b first.'],
+      ['<p>Well ... that happened.</p>', 'Well ... that happened.'],
+    ];
+    for (const [html, expected] of cases) {
+      expect(collectSegments(mount(html), { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual([expected]);
+    }
+  });
+
+  it('中文之间不插空格，中英之间也不插', () => {
+    const root = mount('<p>東京<b>タワー</b>へ行く</p>');
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['東京タワーへ行く']);
+  });
+
+  it('透明包裹里有块级后代时下钻进去成段（inline-block）', () => {
+    const root = mount(
+      '<div><span style="display:inline-block"><h3>Heading here</h3><p>Body text here</p></span></div>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Heading here', 'Body text here']);
+  });
+
+  it('透明包裹里有块级后代时下钻进去成段（display:contents）', () => {
+    const root = mount(
+      '<div><section style="display:contents"><p>One two three</p><p>Four five six</p></section></div>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['One two three', 'Four five six']);
+  });
+
+  it('inline-block 里没有块级后代时不算边界，仍并入父段', () => {
+    const root = mount('<p>Hello <span style="display:inline-block">world</span></p>');
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Hello world']);
   });
 
   it('嵌套块级结构只取最内层文本块', () => {
@@ -245,5 +344,39 @@ describe('collectSegments', () => {
     // 采集前每个元素最多问一次；缓存失效会让这个数字掉到元素总数的两倍以上。
     expect(lookups).toBeLessThanOrEqual(elementCount);
     expect(lookups).toBeGreaterThan(0);
+  });
+});
+
+describe('抽出文本的不变量', () => {
+  /**
+   * 混排结构的集合：破折号、货币、百分号、数学式、省略号、行内标记、标点边界、
+   * 中日韩混排、实体、多余空白、符号紧贴字母。每一段都必须逐字等于参照实现的结果。
+   */
+  const MIXED_BLOCKS = [
+    'The plan — announced today — failed.',
+    'It costs 5 $ per unit today.',
+    'Sales rose 50 % in May.',
+    'Compute a + b first.',
+    'Well ... that happened.',
+    'Hello <b>bold</b>, and <i>italic</i>.',
+    '東京<b>タワー</b>へ行く',
+    'Home <a href="/pricing"><span>Pricing</span></a> page',
+    'Mixed <em>mark</em>up &amp; entities  spaced   out',
+    'Prefix<span>suffix</span>5 $<b>+</b>tax',
+  ];
+
+  it('每一段的 text 都等于把该段节点的内容按同一套规则独立重算的结果', () => {
+    const root = mount(
+      `<section class="page">${MIXED_BLOCKS.map((html) => `<p>${html}</p>`).join('\n')}</section>`,
+    );
+    const blocks = Array.from(document.querySelectorAll('section.page > p'));
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+
+    // 每个文本块恰好一段、不多不少、顺序与文档一致。
+    expect(segments).toHaveLength(blocks.length);
+    segments.forEach((segment, index) => {
+      expect(segment.element).toBe(blocks[index]);
+      expect(segment.text).toBe(refTextOf(blocks[index]));
+    });
   });
 });
