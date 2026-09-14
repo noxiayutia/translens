@@ -313,7 +313,11 @@ describe('受限页面', () => {
     // 这里替身没有接收方，`sendMessage` 兑现为 undefined，于是按"拿不到状态"如实渲染。
     expect(toggle.disabled).toBe(false);
     toggle.click();
-    await waitFor(() => toggle.textContent === '此页面不可用');
+    // 等待条件要能区分「点击前那次渲染」与「点击后这次渲染」：两者文案都是"重新试一次"
+    // （初始化时设置读取失败也是 retryable），所以按状态行的对象判断。
+    await waitFor(() => !status.textContent.includes('设置读取失败'));
+    expect(toggle.textContent).toBe('重新试一次');
+    expect(toggle.disabled).toBe(false);
     // 设置都没读出来，初始化那一步根本没走到发消息；这条 TOGGLE_PAGE 是点击发出的，
     // 也就是说监听器确实在第一个 await 之前就挂好了。
     expect(sentTypes()).toEqual([MSG.TOGGLE_PAGE]);
@@ -335,12 +339,14 @@ describe('受限页面', () => {
     chromeStub.tabs.rejectSendMessage = true;
     toggle.click();
     await waitFor(() => status.textContent.includes('无法与页面通信'));
-    expect(toggle.textContent).toBe('此页面不可用');
+    expect(toggle.textContent).toBe('重新试一次');
     // 残留的"已翻译"配色会让深灰底挂在一句错误文案上，两个信号自相矛盾。
     expect(toggle.dataset.active).toBeUndefined();
     // 页面本身是可以翻译的，只是这一条消息没走通：再点一次是合理动作，不该被锁死。
     expect(toggle.disabled).toBe(false);
-    expect(status.textContent).toContain('请重新加载页面后重试');
+    expect(status.textContent).toContain('请重新打开弹窗重试');
+    // 不要建议重新加载页面：翻译可能正在跑，那是唯一会丢掉已完成部分的建议。
+    expect(status.textContent).not.toContain('重新加载页面');
     expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE, MSG.TOGGLE_PAGE]);
   });
 
@@ -365,11 +371,17 @@ describe('受限页面', () => {
       vi.useRealTimers();
     }
 
-    expect(status.textContent).toBe('页面超过 30 秒没有响应，请重新加载页面后重试。');
-    expect(toggle.textContent).toBe('此页面不可用');
+    expect(status.textContent).toBe(
+      '页面已翻译超过 30 秒仍在进行，这里先不打扰它——重新打开弹窗即可看到最新进度。',
+    );
+    expect(toggle.textContent).toBe('翻译进行中');
     expect(toggle.dataset.active).toBeUndefined();
-    // 超时是"这一条消息没回来"，不是"这个页面不能翻译"：按钮要回到可点。
-    expect(toggle.disabled).toBe(false);
+    // **必须保持置灰**。弹窗主按钮是幂等开关：内容脚本看到 renderer 非空就执行还原，
+    // 所以在这个状态下放开按钮等于给用户一个"点一下就把正在跑的翻译静默撤掉"的陷阱。
+    // 几百段的页面本来就会超过兜底时限，这条路径在真机上很常见。
+    expect(toggle.disabled).toBe(true);
+    // 也绝不能建议重新加载页面——那是唯一会把已完成部分全丢掉的建议。
+    expect(status.textContent).not.toContain('重新加载页面');
     expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE, MSG.TOGGLE_PAGE]);
   });
 });
@@ -393,6 +405,12 @@ describe('引擎提示区', () => {
     expect(hint.classList.contains('warn')).toBe(false);
     // 文案必须与"警告分支"互为补集：这句只在 Key **确实填了**时成立。
     expect(hint.textContent).toBe('已配置你自己的 API Key。');
+
+    // 安全不变式：弹窗为了判断"要不要提示未配置 Key"必须持有完整设置（含密钥），
+    // 但密钥绝不能落到 DOM 上。这条属性目前只靠上面那句判断为真，没有别的东西守着——
+    // 日后有人加一句"把当前引擎配置显示出来"就会破，所以在这里钉住。
+    expect(document.body.textContent).not.toContain('sk-test');
+    expect(document.documentElement.outerHTML).not.toContain('sk-test');
   });
 
   it('零配置引擎不警告，并说明无需 Key', async () => {

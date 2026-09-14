@@ -151,25 +151,8 @@ body {
 
 - [ ] **Step 3: 写弹窗逻辑**
 
-> **质量审查后的修正（2026-09）**：下面这段曾经就是原样，审查在真实可达的路径上发现四处
-> 会导致"看着正常、其实不可用"的缺陷，修正已回写进本代码块（与 `src/popup/popup.ts` 现状一致）：
-> 监听器注册必须在第一个 `await` 之前（否则"设置版本过高/存储损坏"会让弹窗变成能点没反应的死界面）、
-> 按钮三态不能共用一个 `disabled`、`TOGGLE_PAGE` 要有兜底超时、发送失败不能一律说成"此页面不可用"。
-
 ```ts
 // src/popup/popup.ts
-//
-// 本代码块的四处要点是**质量审查修出来的**，照抄前先读懂，别再退回旧写法：
-// 1. 监听器必须在第一个 `await` **之前**挂好——`loadSettings()` 有明确的拒绝路径
-//    （存储版本高于本代码、存储读写失败），挂在后面会让弹窗变成"看着能点、其实
-//    没有任何监听器"的死界面，连齿轮都打不开；
-// 2. 按钮的三态不能共用一个 `disabled`：页面不可用（保持置灰）与请求在飞（防连点）是
-//    两种语义，分开成 `pageState === null` 与 `inFlight` 两个变量；
-// 3. TOGGLE_PAGE 要有兜底超时——内容脚本在整页翻译跑完之前不响应，被 `running`
-//    拦下时更是永远不响应，靠端口自己关闭可能要好几分钟；
-// 4. 发送失败 ≠ 页面不可翻译：端口关闭、内容脚本报错、等待超时都要如实说成
-//    "无法与页面通信"，并且转成"不可用"态时要清掉 `dataset.active`，否则上一次
-//    渲染留下的"已翻译"配色会挂在一句错误文案上。
 import { LANGUAGES } from '../core/lang';
 import { ENGINES, getEngine } from '../engines/registry';
 import { MSG, type PageState } from '../shared/messages';
@@ -243,19 +226,45 @@ async function requestPageState(tabId: number, message: { type: string }): Promi
 }
 
 /**
- * 整块界面的唯一渲染出口。
+ * 整块界面的唯一渲染出口。`fallback` 描述「不知道页面状态」时该怎么办，三种语义要分清：
  *
- * - `state === null`：不知道页面状态。按钮置灰并清掉 `dataset.active`——否则上一次
- *   渲染留下的"已翻译"深灰配色会挂在一句错误文案上，两个信号自相矛盾。
- * - `retryable`：这次失败只是这一条消息没走通（端口关闭、内容脚本报错、等待超时），
- *   再点一次有意义，所以按钮保持可点；页面不可用则要一直置灰到重开弹窗。
+ * - `unavailable`：页面确实不能翻译（浏览器内置页、扩展商店页）。一直置灰。
+ * - `busy`：这一条消息没回来，但页面**正在翻译**。必须置灰——弹窗主按钮是幂等开关，
+ *   内容脚本看到 `renderer` 非空就执行还原，放开按钮等于给用户一个"点一下就把在跑的
+ *   翻译静默撤掉"的陷阱。几百段的页面本来就会超过兜底时限，这条路径在真机上很常见。
+ * - `retryable`：只是这一条消息没走通，页面状态未知。按钮保持可点，文案说"重新试一次"，
+ *   而不是冒充"此页面不可用"。
+ *
+ * 三种都清掉 `dataset.active`：否则上一次渲染留下的"已翻译"深灰配色会挂在一句错误
+ * 文案上，两个信号自相矛盾。
  */
-function renderToggle(state: PageState | null, reason?: string, retryable = false): void {
+type ToggleFallback = 'unavailable' | 'busy' | 'retryable';
+
+const FALLBACK_TEXT: Record<ToggleFallback, { button: string; status: string; disabled: boolean }> = {
+  unavailable: {
+    button: '此页面不可用',
+    status: '当前页面不支持翻译（浏览器内置页面或扩展商店页面）。',
+    disabled: true,
+  },
+  busy: {
+    button: '翻译进行中',
+    status: '页面还在翻译，重新打开弹窗即可看到最新进度。',
+    disabled: true,
+  },
+  retryable: {
+    button: '重新试一次',
+    status: '没能拿到页面状态，重新打开弹窗或再试一次。',
+    disabled: false,
+  },
+};
+
+function renderToggle(state: PageState | null, reason?: string, fallback?: ToggleFallback): void {
   if (state === null) {
-    toggleButton.disabled = !retryable;
+    const preset = FALLBACK_TEXT[fallback ?? 'unavailable'];
+    toggleButton.disabled = preset.disabled;
     delete toggleButton.dataset.active;
-    toggleButton.textContent = '此页面不可用';
-    statusText.textContent = reason ?? '当前页面不支持翻译（浏览器内置页面或扩展商店页面）。';
+    toggleButton.textContent = preset.button;
+    statusText.textContent = reason ?? preset.status;
     return;
   }
   // 在飞期间保持置灰：连点会开出两份译文宿主。
@@ -308,7 +317,7 @@ function runSafely(prefix: string, run: () => Promise<void>): void {
     setInFlight(false);
     // retryable：按钮别锁死。设置读不出来时页面本身没坏，用户按一下会得到一次
     // 如实的通信失败提示，而不是"看着能点、点了没反应"。
-    renderToggle(null, errorText(prefix, raw), true);
+    renderToggle(null, errorText(prefix, raw), 'retryable');
   });
 }
 
@@ -342,9 +351,9 @@ async function handleToggleClick(): Promise<void> {
   }
 
   setInFlight(true);
-  // 超时自己收尾：内容脚本在"整页翻译跑完"之前不会响应 TOGGLE_PAGE；这一轮被
-  // `running` 拦下时（见 content/index.ts 里 translatePage 的早返回）更是永远不会
-  // 响应。等端口自己关闭可能要几分钟，用户看到的是一个没有理由的置灰按钮。
+  // 超时自己收尾：内容脚本要等**整页翻译跑完**才响应 TOGGLE_PAGE，几百段的页面必然
+  // 超过这个时限，而那时翻译其实正在正常进行。等端口自己关闭可能要几分钟，用户看到的
+  // 是一个没有理由的置灰按钮。
   // 同一个定时器既渲染又拒绝：两个独立定时器会各渲染一次，后跑的那个把先跑的
   // 文案盖掉。
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -355,8 +364,8 @@ async function handleToggleClick(): Promise<void> {
       pageState = null;
       renderToggle(
         null,
-        `页面超过 ${Math.round(TOGGLE_TIMEOUT_MS / 1000)} 秒没有响应，请重新加载页面后重试。`,
-        true,
+        `页面已翻译超过 ${Math.round(TOGGLE_TIMEOUT_MS / 1000)} 秒仍在进行，这里先不打扰它——重新打开弹窗即可看到最新进度。`,
+        'busy',
       );
       reject(new Error('等待页面响应超时'));
     }, TOGGLE_TIMEOUT_MS);
@@ -364,20 +373,24 @@ async function handleToggleClick(): Promise<void> {
 
   try {
     // Promise.race 而不是只等 sendMessage：超时那一支必须自己渲染，而 sendMessage
-    // 的 promise 可能永远不兑现，界面就会一直停在置灰的"此页面不可用"上。
+    // 的 promise 可能永远不兑现，界面就会一直停在置灰的按钮上。
     const state = await Promise.race([requestPageState(tabId, { type: MSG.TOGGLE_PAGE }), timeout]);
     pageState = state;
     inFlight = false;
-    renderToggle(pageState);
+    // 消息回来了但没带状态（内容脚本先卸载、端口半关）与"页面不能翻译"是两回事：
+    // 前者该让用户再试一次，不能冒充"此页面不可用"。
+    renderToggle(pageState, undefined, state === null ? 'retryable' : undefined);
   } catch (raw) {
     pageState = null;
     // 发送失败≠页面不可翻译：端口提前关闭、内容脚本内部报错、等待超时都长这样。
-    // 如实说明并让用户重试（`retryable`），而不是把可翻译的页面说成"此页面不可用"。
+    // 如实说明而不是把可翻译的页面说成"此页面不可用"。
+    // 也不要建议"重新加载页面"——在翻译正在进行时，那是唯一会把已完成部分全丢掉的
+    // 操作；用户真正该做的是重开弹窗看最新进度。
     // 超时那句已经在上面渲染好了，这里不要再盖一次。
     // 在飞标记要在渲染**之前**落定：渲染之后没人再碰它，就不会出现
     // "按钮已放开、文案和 disabled 却还是上一次渲染留下的"这种自相矛盾的状态。
     inFlight = false;
-    if (!timedOut) renderToggle(null, `${errorText('无法与页面通信', raw)}。请重新加载页面后重试。`, true);
+    if (!timedOut) renderToggle(null, `${errorText('无法与页面通信', raw)}。请重新打开弹窗重试。`, 'retryable');
   } finally {
     clearTimeout(timeoutId);
   }
