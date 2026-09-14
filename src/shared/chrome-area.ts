@@ -7,5 +7,6 @@ export function chromeArea(area: chrome.storage.StorageArea): StorageArea {
     get: (keys) => area.get(keys) as Promise<Record<string, unknown>>,
     set: (items) => area.set(items) as Promise<void>,
     remove: (keys) => area.remove(keys) as Promise<void>,
+    keys: async () => Object.keys(await area.get(null)),
   };
 }

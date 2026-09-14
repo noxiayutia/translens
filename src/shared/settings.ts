@@ -35,8 +35,11 @@ export interface Settings {
 
 export const SETTINGS_KEY = 'jinyi:settings';
 
+/** 当前设置 schema 版本；改动字段语义时递增。 */
+export const CURRENT_VERSION = 1;
+
 export const DEFAULT_SETTINGS: Settings = {
-  version: 1,
+  version: CURRENT_VERSION,
   engineId: 'google',
   engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
   targetLang: 'zh-Hans',
@@ -65,6 +68,20 @@ function pickString(value: unknown, fallback: string): string {
 
 function pickBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+/** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+function isAllowedBaseUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol === 'https:') return true;
+  return url.protocol === 'http:' && LOCAL_HOSTS.has(url.hostname);
 }
 
 function pickSiteRules(value: unknown): SiteRule[] {
@@ -97,25 +114,41 @@ function pickEngineConfig(value: unknown): EngineConfigSettings {
   const raw = (value ?? {}) as Partial<EngineConfigSettings>;
   return {
     apiKey: pickString(raw.apiKey, DEFAULT_SETTINGS.engineConfig.apiKey),
-    baseUrl: pickString(raw.baseUrl, DEFAULT_SETTINGS.engineConfig.baseUrl),
+    baseUrl: pickBaseUrl(raw.baseUrl),
     model: pickString(raw.model, DEFAULT_SETTINGS.engineConfig.model),
   };
+}
+
+/**
+ * BaseURL 决定 `Authorization: Bearer <apiKey>` 发往哪里，是这个凭据的唯一下游，
+ * 所以它是反序列化边界上必须校验的字段而不是一个可自由填写的字符串：
+ * 只接受 https（本机回环地址放行 http，Ollama 等本地服务默认就是 http）。
+ * 非法值不抛错，退回默认值——这样错误输入永远不会变成"把 Key 发到别处"。
+ */
+function pickBaseUrl(value: unknown): string {
+  if (typeof value !== 'string') return DEFAULT_SETTINGS.engineConfig.baseUrl;
+  const trimmed = value.trim();
+  if (!isAllowedBaseUrl(trimmed)) return DEFAULT_SETTINGS.engineConfig.baseUrl;
+  return trimmed;
 }
 
 /**
  * 把任意来源的对象合并成完整设置。
  * 逐字段校验而不是整体替换，这样新版字段可以在老数据上补齐，
  * 单个字段损坏也不会让整个设置页崩掉。
+ *
+ * `version` 是**声明值**而不是校验结果：调用方决定它是多少（见 `saveSettings` 的
+ * 防降级与 `loadSettings` 的版本闸门），这里只负责拒绝非正整数。
  */
-export function mergeSettings(raw: unknown): Settings {
+export function mergeSettings(raw: unknown, version: unknown = undefined): Settings {
   const input = (raw ?? {}) as Partial<Settings>;
   return {
-    version: DEFAULT_SETTINGS.version,
+    version: pickVersion(version ?? input.version),
     engineId: pickString(input.engineId, DEFAULT_SETTINGS.engineId),
     engineConfig: pickEngineConfig(input.engineConfig),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
-    displayMode: input.displayMode === 'replace' ? 'replace' : 'bilingual',
+    displayMode: input.displayMode === 'replace' ? 'replace' : DEFAULT_SETTINGS.displayMode,
     hoverTranslate: pickBoolean(input.hoverTranslate, DEFAULT_SETTINGS.hoverTranslate),
     selectionTranslate: pickBoolean(input.selectionTranslate, DEFAULT_SETTINGS.selectionTranslate),
     autoTranslateDelay: clampInt(input.autoTranslateDelay, DEFAULT_SETTINGS.autoTranslateDelay, 0, 60),
@@ -129,21 +162,72 @@ export function mergeSettings(raw: unknown): Settings {
   };
 }
 
+/** 版本号必须能原样读回，否则无从判断来源版本；非正整数一律按当前版本处理。 */
+function pickVersion(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) return CURRENT_VERSION;
+  return value;
+}
+
+/** 读出存储里声明的版本号（缺失或非法即"当作当前版本"）。 */
+function readStoredVersion(raw: unknown): number {
+  if (!raw || typeof raw !== 'object') return CURRENT_VERSION;
+  return pickVersion((raw as Partial<Settings>).version);
+}
+
 let sharedArea: StorageArea | null = null;
 
 function resolveArea(area?: StorageArea): StorageArea {
   if (area) return area;
+  if (typeof chrome === 'undefined') {
+    throw new Error('当前运行环境没有扩展存储，调用时必须显式传入 StorageArea');
+  }
   if (!sharedArea) sharedArea = chromeArea(chrome.storage.local);
   return sharedArea;
 }
 
+/**
+ * 读取完整设置（**含 API Key**）：只允许 service worker 与设置页调用。
+ * 内容脚本等不需要密钥的地方一律用 `loadUiSettings()`，从结构上拿不到密钥。
+ * 密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
+ *
+ * 这里也是**迁移入口**（规格 §7.3）：版本号必须从存储里真实读出来，否则将来
+ * 无从判断该按哪一版语义解释老数据。当前只有 v1，所以 v1 数据只需逐字段补齐；
+ * v0 之类的历史版本号今天不可能出现；读到**比本代码更新**的版本号说明用户装过
+ * 新版扩展后又回退了，此时按 v1 语义解释 v2 数据会得出错误结果，因此明确拒绝，
+ * 而不是静默降级。将来新增 v2 时，在这个分支里按 `storedVersion` 补迁移步骤。
+ */
 export async function loadSettings(area?: StorageArea): Promise<Settings> {
   const target = resolveArea(area);
   const raw = await target.get([SETTINGS_KEY]);
-  return mergeSettings(raw[SETTINGS_KEY]);
+  const stored = raw[SETTINGS_KEY];
+  const storedVersion = readStoredVersion(stored);
+  if (storedVersion > CURRENT_VERSION) {
+    throw new Error(`设置版本 ${storedVersion} 高于当前支持的 ${CURRENT_VERSION}，请更新扩展`);
+  }
+  return mergeSettings(stored, CURRENT_VERSION);
 }
 
+/** 不带 API Key 的设置投影，供内容脚本、弹窗等非可信上下文使用。 */
+export type UiEngineConfig = Omit<EngineConfigSettings, 'apiKey'>;
+
+export type UiSettings = Omit<Settings, 'engineConfig'> & { engineConfig: UiEngineConfig };
+
+export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
+  const { engineConfig, ...rest } = await loadSettings(area);
+  return { ...rest, engineConfig: { baseUrl: engineConfig.baseUrl, model: engineConfig.model } };
+}
+
+/**
+ * 保存前先归一化（`mergeSettings`），UI 不可能把脏数据写进存储。
+ * 存储里的版本号高于本代码时拒绝写入：继续写就等于用旧 schema 覆盖新数据
+ * （弹窗每次改动开关都会保存一次），会把新版字段悄悄丢掉。
+ */
 export async function saveSettings(settings: Settings, area?: StorageArea): Promise<void> {
   const target = resolveArea(area);
-  await target.set({ [SETTINGS_KEY]: mergeSettings(settings) });
+  const stored = await target.get([SETTINGS_KEY]);
+  const storedVersion = readStoredVersion(stored[SETTINGS_KEY]);
+  if (storedVersion > CURRENT_VERSION) {
+    throw new Error(`存储中的设置版本 ${storedVersion} 高于当前支持的 ${CURRENT_VERSION}，已跳过保存`);
+  }
+  await target.set({ [SETTINGS_KEY]: mergeSettings(settings, CURRENT_VERSION) });
 }

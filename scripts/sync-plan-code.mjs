@@ -61,13 +61,21 @@ for (let i = 0; i < lines.length; i += 1) {
     continue;
   }
 
-  const fileText = readFileSync(absPath, 'utf8').replace(/\r\n/g, '\n').replace(/\n+$/, '');
-  const before = body.slice(1).join('\n').replace(/\n+$/, '');
+  const bodyLines = readFileSync(absPath, 'utf8').replace(/\r\n/g, '\n').replace(/^\n+/, '').replace(/\n+$/, '').split('\n');
+  // 仓库文件自己就带 `// <路径>` 首行标记时，那一行同时就是围栏块的标记，
+  // 不能既当标记又当成被丢弃的"块首行"，也不能在块里重复写两遍。
+  const hasInlineMarker = bodyLines[0] === body[0].trim();
+  const before = (hasInlineMarker ? body.slice(0) : body.slice(1))
+    .join('\n')
+    .replace(/^\n+/, '')
+    .replace(/\n+$/, '');
+  const fileText = bodyLines.join('\n');
   if (before !== fileText) {
     synced += 1;
     console.log(`同步 ${relPath}（${before.split('\n').length} 行 -> ${fileText.split('\n').length} 行）`);
   }
-  output.push(lines[i], body[0], ...fileText.split('\n'), lines[end]);
+  const labels = hasInlineMarker ? [] : (body[1] ?? '') === '' ? [body[0], ''] : [body[0]];
+  output.push(lines[i], ...labels, ...bodyLines, lines[end]);
   i = end;
 }
 

@@ -17,6 +17,10 @@ describe('isTranslateTextsMessage', () => {
     expect(isTranslateTextsMessage(message)).toBe(true);
   });
 
+  it('允许空批次（形状合法，空只是发送方的约定）', () => {
+    expect(isTranslateTextsMessage({ type: MSG.TRANSLATE_TEXTS, payload: { items: [] } })).toBe(true);
+  });
+
   it('拒绝 payload 缺失的消息', () => {
     expect(isTranslateTextsMessage({ type: MSG.TRANSLATE_TEXTS })).toBe(false);
   });
@@ -29,6 +33,27 @@ describe('isTranslateTextsMessage', () => {
     expect(
       isTranslateTextsMessage({ type: MSG.TRANSLATE_TEXTS, payload: { items: [{ id: 1, text: 2 }] } }),
     ).toBe(false);
+  });
+
+  it('拒绝 targetLang 类型不对的消息', () => {
+    expect(
+      isTranslateTextsMessage({
+        type: MSG.TRANSLATE_TEXTS,
+        payload: { items: [{ id: 'jy-1', text: 'Hello' }], targetLang: 123 },
+      }),
+    ).toBe(false);
+  });
+
+  it('允许省略 targetLang', () => {
+    expect(
+      isTranslateTextsMessage({ type: MSG.TRANSLATE_TEXTS, payload: { items: [{ id: 'jy-1', text: 'Hi' }] } }),
+    ).toBe(true);
+    expect(
+      isTranslateTextsMessage({
+        type: MSG.TRANSLATE_TEXTS,
+        payload: { items: [{ id: 'jy-1', text: 'Hi' }], targetLang: 'ja' },
+      }),
+    ).toBe(true);
   });
 
   it('拒绝其它类型的消息', () => {

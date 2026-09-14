@@ -50,15 +50,21 @@ export interface PageState {
   failed: number;
 }
 
-/** 跨进程边界的消息必须在运行时校验，不能只信 TypeScript 类型。 */
+/**
+ * 跨进程边界的消息必须在运行时校验，不能只信 TypeScript 类型。
+ *
+ * 只校验**形状**：空批次是发送方自己的约定（下游对 `items: []` 返回空结果即可），
+ * 不是安全属性。把空批次判为非法，只会让一个良性请求收不到任何响应、变成悬空的 RPC。
+ */
 export function isTranslateTextsMessage(value: unknown): value is TranslateTextsMessage {
   if (!value || typeof value !== 'object') return false;
   const message = value as Partial<TranslateTextsMessage>;
   if (message.type !== MSG.TRANSLATE_TEXTS) return false;
   if (!message.payload || typeof message.payload !== 'object') return false;
-  const items = (message.payload as { items?: unknown }).items;
-  if (!Array.isArray(items) || items.length === 0) return false;
-  return items.every(
+  const payload = message.payload as { items?: unknown; targetLang?: unknown };
+  if (!Array.isArray(payload.items)) return false;
+  if (payload.targetLang !== undefined && typeof payload.targetLang !== 'string') return false;
+  return payload.items.every(
     (item) =>
       !!item &&
       typeof item === 'object' &&

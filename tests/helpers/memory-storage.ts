@@ -24,6 +24,10 @@ export class MemoryStorage implements StorageArea {
     for (const key of keys) this.data.delete(key);
   }
 
+  async keys(): Promise<string[]> {
+    return [...this.data.keys()];
+  }
+
   size(): number {
     return this.data.size;
   }

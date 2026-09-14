@@ -322,13 +322,16 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
       results[index] = { id: items[index].id, text: translation };
       toCache.set(keys[index], translation);
     });
-    await deps.cache.putMany(toCache);
   } catch (raw) {
     const error = toEngineError(raw);
     for (const index of missing) {
       results[index] = { id: items[index].id, text: null, code: error.code, message: error.message };
     }
   }
+
+  // 写缓存放在引擎 try 之外：缓存写失败只意味着这次没缓存上（cache.putMany 本身也不抛错），
+  // 放进同一个 try 会把"翻译成功但没缓存上"上报成整批失败，给用户一个错误的重试按钮。
+  await deps.cache.putMany(toCache);
 
   return results;
 }
