@@ -124,6 +124,32 @@ describe('googleEngine.translate', () => {
     ).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
 
+  it('批内单条瞬时抖动只重发该条，不重发整批', async () => {
+    // 12 条批次里第 11 条抖一次就不该实打实发出两倍的文本量：
+    // 条目级重试必须发生在引擎内部，调度器那边只看得见"整批失败"。
+    const texts = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'];
+    const attempts = new Map<string, number>();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const query = new URL(String(input)).searchParams.get('q') ?? '';
+      const seen = (attempts.get(query) ?? 0) + 1;
+      attempts.set(query, seen);
+      // 第 3 条第一次调用抖一次，第二次成功；其余全部一次成功。
+      if (query === 't3' && seen === 1) throw new TypeError('failed to fetch');
+      return jsonResponse(googleBody([`译:${query}`]));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await googleEngine.translate(
+      { texts, from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+      {},
+    );
+
+    expect(out).toEqual(texts.map((text) => `译:${text}`));
+    // 8 条文本 + 第 3 条的那一次重发 = 9；整批重发会是 16。
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    for (const text of texts) expect(attempts.get(text)).toBe(text === 't3' ? 2 : 1);
+  });
+
   it('单个批次内部并发不超过 4', async () => {
     let inFlight = 0;
     let peak = 0;
@@ -232,6 +258,34 @@ export async function translateOne(text: string, to: string, signal: AbortSignal
   return parseGoogleResponse(data);
 }
 
+/** 单条文本的瞬时失败重试次数与退避；批内一条抖动不该让整批重发。 */
+const ITEM_RETRY_DELAYS_MS = [200, 600];
+
+/**
+ * 条目级的抖动吸收：一次 `translate()` 内部摊成了 N 个独立 fetch，
+ * 谁来重试必须按条目算，否则调度器只看得见「整批失败」，把已经成功的 N-1 条一起重发。
+ *
+ * 只重试瞬时错误（`NETWORK` / `RATE_LIMIT`）：鉴权失败、请求取消、文本过长
+ * 重试多少次结果都一样，必须原样上抛——`TOO_LONG` 要靠调度器的切分降级，不能被这里吞掉。
+ */
+async function translateOneWithRetry(text: string, to: string, signal: AbortSignal): Promise<string> {
+  let last: unknown;
+  for (let attempt = 0; attempt <= ITEM_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await translateOne(text, to, signal);
+    } catch (raw) {
+      last = raw;
+      const error = toEngineError(raw);
+      // 只重试瞬时错误：鉴权失败、请求取消、文本过长重试多少次都一样。
+      if (error.code !== 'NETWORK' && error.code !== 'RATE_LIMIT') throw error;
+      if (attempt < ITEM_RETRY_DELAYS_MS.length) {
+        await new Promise((resolve) => setTimeout(resolve, ITEM_RETRY_DELAYS_MS[attempt]));
+      }
+    }
+  }
+  throw toEngineError(last);
+}
+
 export const googleEngine: Translator = {
   id: 'google',
   name: 'Google 免费接口',
@@ -239,7 +293,9 @@ export const googleEngine: Translator = {
   supportsGlossary: false,
   async translate(request: TranslateRequest, _config: EngineConfig): Promise<string[]> {
     // 免费接口不支持一次请求多条文本，只能逐条发出；用并发池限制突发。
-    const tasks = request.texts.map((text) => () => translateOne(text, request.to, request.signal));
+    const tasks = request.texts.map(
+      (text) => () => translateOneWithRetry(text, request.to, request.signal),
+    );
     return runPool(tasks, MAX_CONCURRENCY);
   },
 };
