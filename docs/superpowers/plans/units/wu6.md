@@ -29,7 +29,8 @@ const sessionCache = new TranslationCache(sessionArea, DEFAULT_SETTINGS.cacheMax
 /**
  * 启动时的只读设置查询（**取缓存上限**）：设置页会显示缓存条目数，所以冷启动就必须按
  * 用户配置的上限来裁剪，而不是先按默认上限、等第一条翻译消息到达时才纠正。
- * 读不出来（存储坏了、版本高于本代码）就按实例上的默认上限走，绝不因此让 SW 启动失败。
+ * 读不出来（存储坏了、版本高于本代码）就返回 undefined，调用方据此跳过整次对账，
+ * 绝不因此让 SW 启动失败。
  */
 const startupSettings = loadSettings(persistentArea).catch(() => undefined);
 
@@ -39,19 +40,21 @@ const startupSettings = loadSettings(persistentArea).catch(() => undefined);
  *
  * 两处刻意的安排：
  * - 先 await 设置再 prune：prune 会按 `maxEntries` 真删条目，拿默认上限当用户上限就会
- *   多删（用户配 500 却按 5000 裁）。
+ *   多删（用户配 500 却按 5000 裁）。**设置读不出来时直接跳过整次对账**——实例上是默认
+ *   的 5000，而用户配的更小（最小 100），照默认值裁同样会多删，且这是真删用户数据。
+ *   近似计数留到下次成功读取设置后再收敛，代价只是晚一轮，比删错安全得多。
  * - 放在 `queueMicrotask` 里、而不是模块体里直接调：监听器注册与 `onMessage` 的返回
  *   值必须是**同步**的，这个存储区上的串行队列（`core/cache.ts` 的 `queue`）不该在
  *   此之前就被一次全量扫描占住。延后一个微任务仍然早于任何 `chrome.*` 事件回调。
+ *   （注册本身是同步的，所以两种写法行为等价；这里只是让启动路径不与注册抢队列。）
  *
  * 导出只是为了让测试能等到它跑完；生产代码里没有任何地方 await 它。
  */
 export const cachesInitialized: Promise<void> = (async () => {
   const settings = await startupSettings;
-  if (settings) {
-    persistentCache.setMaxEntries(settings.cacheMaxEntries);
-    sessionCache.setMaxEntries(settings.cacheMaxEntries);
-  }
+  if (!settings) return;
+  persistentCache.setMaxEntries(settings.cacheMaxEntries);
+  sessionCache.setMaxEntries(settings.cacheMaxEntries);
   // 两次 prune 并行：两个存储区各有一条队列，互不相关，没有必要串起来等。
   await Promise.all([persistentCache.prune(), sessionCache.prune()]);
 })();
@@ -97,7 +100,8 @@ async function handleTranslateTexts(
     const engine = getEngine(settings.engineId);
     const targetLang = payload.targetLang ?? settings.targetLang;
 
-    // 上限随设置变化；索引是存储区级的，所以缓存实例必须全局只有一个。
+    // 上限随设置变化；上限是实例属性而条目挂在存储区上，所以每个存储区只能有这一个实例
+    // （见 `core/cache.ts` 的不变量 1），这里改的正是那个唯一实例的上限。
     persistentCache.setMaxEntries(settings.cacheMaxEntries);
     sessionCache.setMaxEntries(settings.cacheMaxEntries);
     const cache = new TieredCache(sessionCache, persistentCache);
@@ -128,8 +132,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const error: EngineError = toEngineError(raw);
       sendResponse({ ok: false, code: error.code, message: error.message } satisfies TranslateTextsResponse);
     })
-    // `sendResponse` 自己会抛：端口已关闭（内容脚本超时、页面跳走、SW 被回收）时上面的
-    // catch 又调用它一次、那个异常背后再没有处理者，整条消息会变成一个未处理拒绝。
+    // `sendResponse` 自己会抛：内容脚本先关掉端口（自己的超时、页面跳走、SW 被回收）时
+    // 第一个 `sendResponse` 就抛，上面的 catch 又调用它一次、那个异常背后再没有处理者，
+    // 整条消息会变成一个未处理拒绝。消息已经没人收，静默丢弃即可。
     .catch(() => undefined);
   // 返回 true 保持消息通道打开，等待异步响应。
   return true;
