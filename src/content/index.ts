@@ -40,8 +40,66 @@ function currentState(): PageState {
   };
 }
 
+/**
+ * 内容脚本 → 后台单次请求的超时。
+ *
+ * MV3 的 service worker 空闲约 30 秒就会被浏览器回收。翻译中途被回收时
+ * `chrome.runtime.sendMessage` 的 promise **可能永不兑现**：端口既不关闭也不报错，
+ * 于是这一批永远停在「翻译中…」——`runPool` 永不 settle、`running` 永不释放，
+ * 页面卡死且连重试按钮都出不来（规格 §8：绝不静默失败）。
+ *
+ * 取 60 秒：默认批次（12 段 / 1000 字符）正常几秒内就回来；这个上限要容得下调度器
+ * 一次退避重试（500ms + 1500ms）与慢接口的往返，又不至于让用户对着一个死页面干等。
+ * 超时归这一层——调度器自身不设超时（见 `background/scheduler.ts` 的 `callEngine`）。
+ */
+const BACKGROUND_TIMEOUT_MS = 60_000;
+
+/**
+ * 后台在超时预算内一次都没响应。文案自带完整语义，所以不再套「无法连接后台」的壳：
+ * 用户看到的应该是「后台没响应」，而不是一句会被理解成"网络不通"的通用错误。
+ */
+class BackgroundTimeoutError extends Error {
+  constructor() {
+    super(
+      `后台 ${Math.round(BACKGROUND_TIMEOUT_MS / 1000)} 秒没有响应（翻译服务可能已被浏览器回收），请重试`,
+    );
+    this.name = 'BackgroundTimeoutError';
+  }
+}
+
+/**
+ * 发一条消息给后台，**最多等 `BACKGROUND_TIMEOUT_MS`**。
+ *
+ * 超时与消息本身的成败都收敛成同一个 promise 的两种结局，调用方（批任务 / 单条重试）
+ * 原有的 try/catch 照旧兜住——失败走已有的 `failBatch` 路径进失败态并可重试，
+ * 不会让整个 `runPool` 挂起。
+ *
+ * 定时器在两种收尾里都会清掉：内容脚本活在页面进程里，一个永不清除的定时器会被页面
+ * 一直持有（页面上有几百个批次时就是几百个悬挂的定时器）。
+ */
 function sendToBackground(message: unknown): Promise<TranslateTextsResponse> {
-  return chrome.runtime.sendMessage(message) as Promise<TranslateTextsResponse>;
+  return new Promise<TranslateTextsResponse>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new BackgroundTimeoutError()), BACKGROUND_TIMEOUT_MS);
+    const settle = (run: () => void): void => {
+      clearTimeout(timer);
+      run();
+    };
+    try {
+      (chrome.runtime.sendMessage(message) as Promise<TranslateTextsResponse>).then(
+        (response) => settle(() => resolve(response)),
+        (error: unknown) => settle(() => reject(error)),
+      );
+    } catch (raw) {
+      // `sendMessage` 自己抛（极端情况下扩展上下文已失效）：与异步失败同一条路。
+      settle(() => reject(raw));
+    }
+  });
+}
+
+/** 传输层失败的条目文案：超时自带完整语义，其余套「无法连接后台」的壳。 */
+function describeTransportError(raw: unknown): string {
+  if (raw instanceof BackgroundTimeoutError) return raw.message;
+  return `无法连接后台：${raw instanceof Error ? raw.message : String(raw)}`;
 }
 
 /** 页面级失败的文案（`ok: false`：设置读不出来这类"连请求都没发出去"的错）。 */
@@ -263,12 +321,12 @@ async function translatePage(): Promise<void> {
               },
             });
           } catch (raw) {
-            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）。
+            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
+            // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
             // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
             if (mine !== generation) return;
-            const detail = raw instanceof Error ? raw.message : String(raw);
-            failBatch(batch, `无法连接后台：${detail}`);
+            failBatch(batch, describeTransportError(raw));
             return;
           }
 
@@ -326,9 +384,9 @@ async function retrySegment(segmentId: string): Promise<void> {
       payload: { items: [{ id: segment.id, text: segment.text }], targetLang: settings.targetLang },
     });
   } catch (raw) {
-    const detail = raw instanceof Error ? raw.message : String(raw);
     failedIds.add(segmentId);
-    renderer?.fail(segment.id, `无法连接后台：${detail}`);
+    // 超时可能发生在用户点击重试之后：同样如实说明，而不是把页面吊在「翻译中…」。
+    renderer?.fail(segment.id, describeTransportError(raw));
     return;
   }
 

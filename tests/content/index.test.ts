@@ -32,6 +32,13 @@ type FakeWorker = MessageListener;
 /** 内容脚本模块的句柄；每个用例都重新 import 一份（模块里持有一整页的状态）。 */
 type ContentScript = typeof import('../../src/content/index');
 
+/**
+ * 与 `src/content/index.ts` 里的同名常量一致。不 import 它：静态 import 会在装 DOM
+ * 之前执行内容脚本模块（那里一 import 就注册消息监听器）。超时时长是用户看得见的
+ * 行为（失败文案里就写着秒数），钉在这里是有意的。
+ */
+const BACKGROUND_TIMEOUT_MS = 60_000;
+
 let chromeStub: ChromeStub;
 
 async function loadContentScript(): Promise<{
@@ -116,6 +123,38 @@ function dispatchIgnored(
     responded = true;
   });
   return { returned, responded };
+}
+
+/**
+ * 与 `dispatch` 同形，但**不挂兜底计时器**。只在用例自己推动假定时器时使用：
+ * `dispatch` 那个 1000ms 的兜底计时器同样是假的，推时间时会先于被测的 60 秒超时触发，
+ * 用例就变成了"测试自己超时"而不是"被测超时"。
+ */
+async function dispatchWithoutFallbackTimer(
+  contentListener: MessageListener,
+  type: string,
+  payload?: unknown,
+): Promise<PageState> {
+  let responded = false;
+  let settle: ((response: unknown) => void) | undefined;
+  const response = new Promise<unknown>((resolve) => {
+    settle = resolve;
+  });
+
+  const returned = contentListener(
+    payload === undefined ? { type } : { type, payload },
+    { id: 'jinyi-test' },
+    (incoming?: unknown) => {
+      if (responded) return;
+      responded = true;
+      settle?.(incoming);
+    },
+  );
+  if (!responded && returned !== true) {
+    throw new Error(`内容脚本没有接管 ${type}：既没有响应，也没有保持消息通道`);
+  }
+
+  return (await response) as PageState;
 }
 
 /**
@@ -752,6 +791,64 @@ describe('内容脚本编排：失败与边界', () => {
     expect(bodyTextOf(hosts()[0])).toContain('无法连接后台');
     // 这种失败是可重试的（SW 可能只是被回收了）：给按钮。
     expect(hasRetryButton(hosts()[0])).toBe(true);
+  });
+
+  /**
+   * MV3 的 service worker 空闲约 30 秒会被回收。翻译中途被回收时 `sendMessage` 的
+   * promise **可能永不兑现**（端口既不关闭也不报错），这一批就永远停在「翻译中…」：
+   * `runPool` 永不 settle、`running` 永不释放，页面卡死且无法重试。
+   *
+   * 用一个**永不回话**的发送端钉住它。时间用假定时器推：推过 60 秒之前必须还停在
+   * 「翻译中…」（超时不是立刻发生的），推过去之后这一批必须进失败态。
+   */
+  it('后台永不响应时本批超时进失败态：页面不卡死、可重试、重新翻译仍能工作', async () => {
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const delivered: unknown[] = [];
+    const neverSettles = new Promise<never>(() => {});
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      delivered.push(message);
+      return neverSettles;
+    };
+
+    vi.useFakeTimers();
+    const pending = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    // 让设置读取、采集、分批这条微任务链走完，请求真的发出去。
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+    expect(delivered).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
+
+    // 差 1 毫秒到点：仍在等（这条断言同时挡掉"把超时写成 0 或写在别处"的实现）。
+    await vi.advanceTimersByTimeAsync(BACKGROUND_TIMEOUT_MS - 1);
+    expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
+
+    await vi.advanceTimersByTimeAsync(1);
+    const state = await pending;
+
+    // 整批进失败态：不是永远 pending，也不是静默什么都不做。
+    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 0, failed: 1 });
+    expect(bodyTextOf(hosts()[0])).toContain('没有响应');
+    expect(bodyTextOf(hosts()[0])).not.toContain('翻译中…');
+    expect(hasRetryButton(hosts()[0])).toBe(true);
+
+    // 超时后 running 守卫必须已经释放：还原 + 重新翻译要真的跑起来（卡死的实现里
+    // 第二次触发会被入口守卫吞掉，表现是"响应照回、页面什么都不做"）。
+    chromeStub.runtime.sendMessage = originalSendMessage;
+    expect(await dispatchWithoutFallbackTimer(contentListener, MSG.RESTORE_PAGE)).toEqual({
+      translated: false,
+      mode: 'bilingual',
+      total: 0,
+      done: 0,
+      failed: 0,
+    });
+    const again = await dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(again).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 1, failed: 0 });
+    expect(hosts()).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
   });
 
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
