@@ -9,6 +9,10 @@ import {
 } from '../engines/types';
 import type { TranslateItem, TranslateItemResult } from '../shared/messages';
 
+/**
+ * 批次用到的缓存子集。实现允许抛错：`translateBatch` 会自行降级
+ * （读当未命中、写当没缓存上），不把缓存异常抛给调用方。
+ */
 export interface CacheLike {
   getMany(keys: string[]): Promise<Map<string, string>>;
   putMany(items: Map<string, string>): Promise<void>;
@@ -94,6 +98,7 @@ async function translateWithFallback(texts: string[], deps: BatchDeps): Promise<
 /**
  * 处理一个批次：缓存命中直接返回，未命中的合并成一次引擎请求。
  * 任何失败都转成携带错误码的结果项，绝不抛错——内容脚本据此渲染"重试"按钮。
+ * 缓存读写失败不在此列：那不是"这次翻译失败"，降级即可（读当未命中、写当没缓存上）。
  */
 export async function translateBatch(items: TranslateItem[], deps: BatchDeps): Promise<TranslateItemResult[]> {
   const results: TranslateItemResult[] = items.map((item) => ({ id: item.id, text: null }));
@@ -113,7 +118,14 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
     }),
   );
 
-  const cached = await deps.cache.getMany(keys);
+  // CacheLike 是鸭子类型接口，读失败由实现自行决定抛不抛；这里自己兜住，
+  // 最坏只是把命中的条目也当成未命中重翻一遍，好过把异常抛出 translateBatch。
+  let cached: Map<string, string>;
+  try {
+    cached = await deps.cache.getMany(keys);
+  } catch {
+    cached = new Map();
+  }
   const missing: number[] = [];
   items.forEach((item, index) => {
     const hit = cached.get(keys[index]);
@@ -141,9 +153,15 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
     }
   }
 
-  // 写缓存放在引擎 try 之外：缓存写失败只意味着这次没缓存上（cache.putMany 本身也不抛错），
+  // 写缓存放在引擎 try 之外：缓存写失败只意味着这次没缓存上，
   // 放进同一个 try 会把"翻译成功但没缓存上"上报成整批失败，给用户一个错误的重试按钮。
-  await deps.cache.putMany(toCache);
+  // 因此这里单独兜住异常——CacheLike 是鸭子类型接口，不能假定实现不抛错，
+  // 而 translateBatch 的对外契约是绝不抛错。
+  try {
+    await deps.cache.putMany(toCache);
+  } catch {
+    // 没写进缓存，下次再翻一遍即可；本轮的译文结果依然有效。
+  }
 
   return results;
 }

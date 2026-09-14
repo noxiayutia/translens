@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { translateBatch, type BatchDeps } from '../../src/background/scheduler';
+import { translateBatch, type BatchDeps, type CacheLike } from '../../src/background/scheduler';
 import { EngineError, type TranslateRequest, type Translator } from '../../src/engines/types';
 import { TranslationCache } from '../../src/core/cache';
 import { MemoryStorage } from '../helpers/memory-storage';
@@ -182,5 +182,46 @@ describe('translateBatch', () => {
     expect(first[0].text).toBe('你好');
     expect(smart.calls).toHaveLength(1);
     expect(second[0].text).toBe('您好');
+  });
+
+  it('单条请求返回条目数不符时不再降级，直接报错', async () => {
+    // translateWithFallback 的逐条降级以 texts.length > 1 为条件：只有一条时可退的地方
+    // 都没有，只能把 BAD_RESPONSE 上报，否则会拿 [text] 反复请求同一个引擎。
+    const { engine, calls } = fakeEngine([['甲', '乙']]);
+    const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));
+
+    expect(calls).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: 'a', text: null, code: 'BAD_RESPONSE' });
+  });
+
+  it('缓存写入失败不影响译文，也不向调用方抛错', async () => {
+    // CacheLike 是鸭子类型接口，putMany 抛错不在类型系统里排除；
+    // 写失败只该意味着"这次没缓存上"，不能把翻译成功的一批上报成失败。
+    const cache: CacheLike = {
+      getMany: async () => new Map(),
+      putMany: async () => {
+        throw new Error('storage exploded');
+      },
+    };
+    const { engine } = fakeEngine([['你好']]);
+
+    await expect(translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache }))).resolves.toEqual([
+      { id: 'a', text: '你好' },
+    ]);
+  });
+
+  it('缓存读取失败时退化为全部未命中，仍然照常翻译', async () => {
+    const cache: CacheLike = {
+      getMany: async () => {
+        throw new Error('storage exploded');
+      },
+      putMany: async () => {},
+    };
+    const { engine, calls } = fakeEngine([['你好']]);
+
+    const out = await translateBatch([{ id: 'a', text: 'Hello' }], deps(engine, { cache }));
+
+    expect(calls).toHaveLength(1);
+    expect(out).toEqual([{ id: 'a', text: '你好' }]);
   });
 });
