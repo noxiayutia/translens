@@ -54,8 +54,8 @@ Firefox 兼容、云同步、账号体系。
 
 ### 职责边界
 
-- **content script**：只负责"页面上的事"——找段落、注入译文、划词、悬停。**不直接发起翻译请求**（避免页面 CSP 干扰），一律经 SW 转发。
-- **service worker**：消息路由、右键菜单与快捷键注册、引擎调度、并发控制、缓存读写。MV3 下 SW 会被休眠，因此**所有长任务状态必须落在 `chrome.storage`**，不能只放在内存变量里。
+- **content script**：负责"页面上的事"——找段落、切分批、注入译文、划词、悬停。**不直接发起翻译请求**（避免页面 CSP 干扰），一律经 SW 转发；但**批次编排与并发池在内容脚本内**，因为它的生命周期与页面一致，而 SW 会被随时休眠。
+- **service worker**：消息路由、右键菜单与快捷键注册、**单批次**的缓存读取、引擎调用、重试与降级。SW 保持无状态——每次消息独立完成，不在内存里保存跨批次进度。
 - **engines**：网络请求的唯一出口。每个引擎是一个 `Translator` 实现。
 - **core**：纯函数，零 DOM、零 `chrome.*` 依赖，100% 可单测。
 
@@ -63,23 +63,20 @@ Firefox 兼容、云同步、账号体系。
 
 ```
 src/
-  manifest.ts             # MV3 清单（由构建生成 manifest.json）
+  manifest.json           # MV3 清单（静态文件，构建时原样复制到 dist/）
   background/
     service-worker.ts     # 入口：消息路由、菜单、命令
-    scheduler.ts          # 并发控制、退避重试、批次编排
+    scheduler.ts          # 单批次处理：缓存命中判定、引擎调用、退避重试、降级
   content/
-    index.ts              # 内容脚本入口：总编排
+    index.ts              # 内容脚本入口：批次编排 + 并发池 + 总调度
     extractor.ts          # 段落识别
     renderer.ts           # 译文注入 / 还原（可插拔接口）
-    observer.ts           # MutationObserver 增量翻译
-    selection.ts          # 划词气泡
-    hover.ts              # Shift + 悬停段落翻译
+    styles.ts             # 译文样式常量（注入 Shadow DOM，双向隔离）
     toast.ts              # 页面内轻提示
-    styles.css            # 译文样式（全部带 jy- 前缀 + Shadow DOM 隔离）
   core/
-    segmenter.ts          # 长文切分 + 相邻短段合并 + 句子边界对齐
+    segmenter.ts          # 相邻短段合并 + 超长段按句子边界切分
+    pool.ts               # 并发池
     cache.ts              # 两级缓存
-    glossary.ts           # 术语表 → 提示词组装
     lang.ts               # 语种检测与目标语言决策
     hash.ts               # 稳定哈希（缓存 key）
   engines/
@@ -141,11 +138,11 @@ interface Renderer {
 2. **抽取**（`extractor.ts`）：遍历可见 DOM，产出 `Segment[] = { id, node, text, order }`。
    跳过规则：`script/style/noscript/code/pre/textarea/input/svg/canvas`；`display:none` 或尺寸为 0；已被本插件注入的节点；
    纯数字/纯标点/单字符；已是目标语言（中文页面翻中文直接整体跳过并提示）。
-3. **合并**（`segmenter.ts`）：按 DOM 顺序把相邻段落打包，单批上限约 1000 字符；单段超过上限时按句子边界（`。！？.!?` + 空格/换行）二次切分，保证不切断句子。
-4. **缓存查询**（`core/cache.ts`）：逐批计算 key，命中则直接产出，不问引擎。
-5. **请求**（`scheduler.ts`）：未命中的批次进队列，默认 3 路并发，每批独立 `AbortController`。
-6. **渲染**（`renderer.ts`）：严格按 `order` 顺序注入译文节点，避免后返回的短段落先出现造成跳动。
-   译文节点用 `textContent` 写入，容器加 `jy-block` 类并挂在一个 Shadow DOM 宿主里，防止页面 CSS 污染译文样式。
+3. **合并**（`segmenter.ts`）：按 DOM 顺序把相邻段落打包，单批上限约 1000 字符、最多 12 段；单段超过上限时**独占一批**不切分。切分只发生在引擎报"文本过长"的降级路径上（见第 8 节），按句子边界切并拼接。
+4. **缓存查询**（`background/scheduler.ts`）：逐批计算 key，命中则直接产出，不问引擎。
+5. **请求**：批次在内容脚本内经并发池（`core/pool.ts`，默认 3 路）逐批发给 SW；SW 对每批独立完成"缓存 → 引擎 → 重试"，互不依赖，因此 SW 被休眠也不会丢任务状态。
+6. **渲染**（`renderer.ts`）：每个批次一返回就立刻渲染该批译文，用户能逐步看到结果。
+   译文节点用 `textContent` 写入，宿主元素带 `data-jy-root` 标记并挂 Shadow DOM，防止页面 CSS 污染译文样式。
 7. **增量**（`observer.ts`）：`MutationObserver` 监听 `childList`，防抖 500ms；**仅在当前页翻译已开启时**才处理新节点，且只抽取未翻译过的段落。对 X/Twitter 这类无限滚动站点必须做节流，否则会触发翻译风暴。
 8. **还原**：再次 `Alt+T` 或弹窗"显示原文"，`renderer.restore()` 移除全部注入节点，页面回到原状。
 
@@ -160,7 +157,7 @@ interface Renderer {
 | 引擎 | 需要 Key | 支持术语表 | 说明 |
 | --- | --- | --- | --- |
 | `google` | 否 | 否 | 免费网页接口，默认引擎，零配置可用。接口失效时明确提示用户切换。 |
-| `bing` | 否 | 否 | 免费备用，Google 失败时的备选。 |
+| `bing` | 否 | 否 | 免费备用，Google 失败时的备选。**实施排期：二期**——它需要先抓取页面 token 再请求，两段式且易失效，放在核心链路跑通之后再做。 |
 | `openai-compat` | 是 | 是 | 用户填 BaseURL + Key + 模型名，兼容 OpenAI / DeepSeek / 硅基流动 / Ollama 等。 |
 
 `openai-compat` 的提示词策略：system message 声明"你是翻译引擎，只输出译文，不要解释、不要加引号、保持段落数一致"；
