@@ -2,11 +2,82 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <link rel="stylesheet" href="./options.css" />
     <title>浸译 · 设置</title>
   </head>
-  <body style="font-family: system-ui, sans-serif">
-    <h1>浸译 设置</h1>
-    <p>设置页将在 Plan 2 中实现。</p>
+  <body>
+    <main class="page">
+      <h1 class="title">浸译 设置</h1>
+
+      <section class="card">
+        <h2>翻译引擎</h2>
+        <label class="field">
+          <span>引擎</span>
+          <select id="engine"></select>
+        </label>
+        <p id="engine-hint" class="hint"></p>
+
+        <label class="field">
+          <span>接口地址</span>
+          <input id="base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1" />
+        </label>
+        <label class="field">
+          <span>API Key</span>
+          <span class="key-row">
+            <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+            <button id="toggle-key" class="ghost" type="button" aria-pressed="false" title="显示 API Key">显示</button>
+          </span>
+        </label>
+        <label class="field">
+          <span>模型名</span>
+          <input id="model" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-4o-mini" />
+        </label>
+
+        <div class="actions">
+          <button id="save" class="primary" type="button">保存</button>
+          <button id="test-connection" class="ghost" type="button">测试连接</button>
+        </div>
+        <p id="engine-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <h2>目标语言</h2>
+        <label class="field">
+          <span>把网页翻译成</span>
+          <select id="target-lang"></select>
+        </label>
+        <p id="target-hint" class="hint">改完记得点上面的「保存」。</p>
+      </section>
+
+      <section class="card">
+        <h2>翻译缓存</h2>
+        <p class="hint">缓存里存的是原文与译文，不含 API Key。清除后所有页面都需要重新翻译一次。</p>
+        <button id="clear-cache" class="ghost" type="button">清除翻译缓存</button>
+        <p id="cache-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <h2>隐私</h2>
+        <ul class="privacy">
+          <li>
+            <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：不上传、不同步、
+            不写入日志，也不会进入发给网页的设置投影——内容脚本拿到的设置里根本没有这个字段。
+          </li>
+          <li>
+            <strong>除翻译请求本身外，不发起任何网络请求</strong>：不采集浏览数据，不做任何统计上报。
+          </li>
+          <li>
+            自定义接口地址的访问权限<strong>只在你点「保存」时</strong>按需申请，授权范围限定为
+            你填的那个域名；免费引擎不需要额外授权。
+          </li>
+          <li>
+            只有网页里<strong>可见</strong>的文本才会被送去翻译；不可见区域与
+            <code>contenteditable</code> 可编辑区域（你正在写、还没保存的草稿）一律不采集。
+          </li>
+        </ul>
+      </section>
+    </main>
+
     <script type="module" src="./options.ts"></script>
   </body>
 </html>
