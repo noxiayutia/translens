@@ -224,4 +224,69 @@ describe('translateBatch', () => {
     expect(calls).toHaveLength(1);
     expect(out).toEqual([{ id: 'a', text: '你好' }]);
   });
+
+  it('逐条降级途中的网络错误照样退避重试', async () => {
+    // 降级把一批摊成 N 次请求，撞上瞬时抖动的概率比整批请求更高，
+    // 规格给的退避预算在这里同样要用上。
+    const sleeps: number[] = [];
+    const { engine, calls } = fakeEngine([['只有一条'], new EngineError('NETWORK', '断网'), ['甲'], ['乙']]);
+    const out = await translateBatch(
+      [
+        { id: 'a', text: 'A' },
+        { id: 'b', text: 'B' },
+      ],
+      deps(engine, { sleep: async (ms) => void sleeps.push(ms) }),
+    );
+
+    expect(calls).toHaveLength(4);
+    expect(sleeps).toEqual([500]);
+    expect(out).toEqual([
+      { id: 'a', text: '甲' },
+      { id: 'b', text: '乙' },
+    ]);
+  });
+
+  it('逐条降级中某条失败时，保留已成功的译文并只标记失败的那条', async () => {
+    // 成功的那条不该被邻居的错误码连坐，也不该把已经发出去的请求白费掉。
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([
+      ['只有一条'],
+      ['甲'],
+      new EngineError('AUTH', 'Key 无效'),
+    ]);
+    const out = await translateBatch(
+      [
+        { id: 'a', text: 'A' },
+        { id: 'b', text: 'B' },
+      ],
+      deps(engine, { cache }),
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(out).toEqual([
+      { id: 'a', text: '甲' },
+      { id: 'b', text: null, code: 'AUTH', message: 'Key 无效' },
+    ]);
+    // 成功的那条已经写进缓存：重试只需再翻 B。
+    await expect(cache.count()).resolves.toBe(1);
+  });
+
+  it('空文本不进引擎也不写缓存', async () => {
+    const cache = new TranslationCache(new MemoryStorage());
+    const { engine, calls } = fakeEngine([['你好']]);
+    const out = await translateBatch(
+      [
+        { id: 'a', text: '' },
+        { id: 'b', text: 'Hello' },
+      ],
+      deps(engine, { cache }),
+    );
+
+    expect(calls).toEqual([['Hello']]);
+    expect(out).toEqual([
+      { id: 'a', text: '' },
+      { id: 'b', text: '你好' },
+    ]);
+    await expect(cache.count()).resolves.toBe(1);
+  });
 });
