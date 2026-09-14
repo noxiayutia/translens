@@ -458,7 +458,7 @@ git commit -m "feat(core): 稳定哈希与缓存 key 组装"
 ```ts
 // tests/core/lang.test.ts
 import { describe, expect, it } from 'vitest';
-import { detectScript, isTranslatableText, normalizeText, shouldSkip } from '../../src/core/lang';
+import { detectHanVariant, detectScript, isTranslatableText, normalizeText, shouldSkip } from '../../src/core/lang';
 
 describe('detectScript', () => {
   it('识别纯中文', () => {
@@ -516,6 +516,33 @@ describe('detectScript', () => {
 
   it('没有字母时返回 unknown', () => {
     expect(detectScript('123 --- !!!')).toBe('unknown');
+  });
+});
+
+describe('detectHanVariant', () => {
+  it('识别繁体特征字', () => {
+    expect(detectHanVariant('這是繁體中文')).toBe('hant');
+  });
+
+  it('识别简体特征字', () => {
+    expect(detectHanVariant('这是简体中文')).toBe('hans');
+  });
+
+  it('没有任何简繁特征字时判 unknown', () => {
+    expect(detectHanVariant('你好世界')).toBe('unknown');
+  });
+
+  it('两类特征字数量相等时判 unknown', () => {
+    expect(detectHanVariant('这這')).toBe('unknown');
+  });
+
+  it('数量多者胜', () => {
+    expect(detectHanVariant('这个们来说 這是')).toBe('hans');
+    expect(detectHanVariant('這是繁體中文 this 这')).toBe('hant');
+  });
+
+  it('非中文字符不参与计数', () => {
+    expect(detectHanVariant('這是 Japanese です')).toBe('hant');
   });
 });
 
@@ -593,9 +620,25 @@ describe('shouldSkip', () => {
     expect(shouldSkip('first party tools 第一段中文。第二段中文。', 'en')).toBe(false);
   });
 
-  it('目标繁體中文时不跳过中文字段（简繁互转不走跳过快路径）', () => {
+  it('目标繁體中文时只在文本已是繁体时跳过（简繁互转不走 no-op 快路径）', () => {
     expect(shouldSkip('这是简体中文', 'zh-Hant')).toBe(false);
-    expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(false);
+    // 原断言把 '這是繁體中文' 也钉成 false（HANT_TARGET 一刀切），与「同变体才跳过」的新口径互斥；
+    // 按新口径改为 true，异议与理由见留档 §8.1。
+    expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(true);
+  });
+
+  it('文本与目标简繁变体不同时不跳过（需要简繁转换）', () => {
+    expect(shouldSkip('這是繁體中文段落', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('这是简体中文段落', 'zh-Hant')).toBe(false);
+  });
+
+  it('文本已是目标简繁变体时跳过', () => {
+    expect(shouldSkip('这是简体中文段落', 'zh-Hans')).toBe(true);
+    expect(shouldSkip('這是繁體中文段落', 'zh-Hant')).toBe(true);
+  });
+
+  it('没有任何简繁特征字的纯中文按字符集判定跳过', () => {
+    expect(shouldSkip('没有简繁特征的纯中文', 'zh-Hans')).toBe(true);
   });
 });
 ```
@@ -758,30 +801,76 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
   es: 'latin',
 };
 
+export type HanVariant = 'hans' | 'hant' | 'unknown';
+
 /**
- * 显式指定繁体（Hant）脚本的目标语言。
- * ScriptLang 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），分辨不了简繁：
- * 选繁體中文时简体段落会被判成「已是目标语言」而整段跳过，简繁互转直接变成 no-op。
- * 这类目标一律不做跳过判定——跳过等于放弃翻译，宁可多翻一遍交给引擎转换。
+ * 只在某一字体出现的高频字。两组**严格一一对应**：`HANS_ONLY[i]` 与 `HANT_ONLY[i]`
+ * 是同一个字的两种写法，增删必须成对，否则计数会天然偏向更长的那一组。
+ * 选的都是在两岸三地日常文本里高频出现的字，单段文本里出现一两个就足以定性。
  */
-const HANT_TARGET = /^zh-hant(?:-|$)/;
+const HANS_ONLY =
+  '这个们来说国会对时过开关学样么产业发经长问题实现应该东车马鸟风云电气万与专从见门体书买卖乐习义为广庆龙';
+const HANT_ONLY =
+  '這個們來說國會對時過開關學樣麼產業發經長問題實現應該東車馬鳥風雲電氣萬與專從見門體書買賣樂習義為廣慶龍';
+
+/**
+ * 靠「只在某一字体出现的高频字」分辨简繁：两边各计一次，多者胜。
+ * 数量相等（含两边都是 0，即整段没有任何简繁特征字）返回 'unknown'——
+ * 这一层没有更多信息，怎么判都可能错，交给调用方按保守方向处理（见 shouldSkip）。
+ */
+export function detectHanVariant(text: string): HanVariant {
+  let hans = 0;
+  let hant = 0;
+  for (const char of text) {
+    if (HANS_ONLY.includes(char)) hans += 1;
+    else if (HANT_ONLY.includes(char)) hant += 1;
+  }
+  if (hans > hant) return 'hans';
+  if (hant > hans) return 'hant';
+  return 'unknown';
+}
+
+/**
+ * 目标语言的简繁变体。只认显式变体（'zh-Hans*' / 'zh-Hant*'）：
+ * 裸 'zh' 与 'zh-CN' / 'zh-TW' 这类只带地区的写法分辨不了简繁，返回 undefined，
+ * 由 shouldSkip 走「不跳过」——变体判不出来时多翻一遍，好过静默漏翻。
+ */
+function targetHanVariant(code: string): HanVariant | undefined {
+  if (/^zh-hant(?:-|$)/.test(code)) return 'hant';
+  if (/^zh-hans(?:-|$)/.test(code)) return 'hans';
+  return undefined;
+}
 
 /**
  * 段落已经是指定目标语言时无需翻译。
- * 只有目标字符集严格领先才跳过：与其它字符集同分时宁可翻译——
+ * 非中文目标：只有目标字符集严格领先才跳过，与其它字符集同分时宁可翻译——
  * 跳过等于放弃翻译，错一边就是漏翻（'Hi 你好' 这类极短混排任何多数决都不可靠）。
+ * 中文目标：`ScriptLang` 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），
+ * 靠 detectHanVariant 分辨简繁——文本与目标**同变体**才跳过；异变体必须翻译，
+ * 简繁互转正是在这一步发生的，一刀切跳过会让它变成静默 no-op。
  */
 export function shouldSkip(text: string, targetLang: string): boolean {
   const code = targetLang.toLowerCase();
-  if (HANT_TARGET.test(code)) return false;
   const expected = TARGET_SCRIPT[baseLang(code)];
-  if (!expected) return false;
+  if (expected === undefined) return false;
+
   const pick = pickScript(text);
-  return pick.lang === expected && !pick.tied;
+  if (expected !== 'zh') return pick.lang === expected && !pick.tied;
+
+  // 目标 base 是 'zh'：先确认段落本身是中文，含假名的日文、英文段落照常翻译。
+  if (pick.lang !== 'zh') return false;
+
+  const variant = targetHanVariant(code);
+  if (variant === undefined) return false;
+
+  // 整段没有任何简繁特征字（'你好世界'）：变体层面无信息，退回字符集判定，同分仍不跳过。
+  const textVariant = detectHanVariant(text);
+  if (textVariant === 'unknown') return !pick.tied;
+  return textVariant === variant;
 }
 ```
 
-> 实现备注（口径的由来、候选对比与被否掉的口径见 `docs/superpowers/plans/2026-09-14-wu2-plan-amendment.md` §5、§7）：
+> 实现备注（口径的由来、候选对比与被否掉的口径见 `docs/superpowers/plans/2026-09-14-wu2-plan-amendment.md` §5、§7、§8）：
 > `detectScript` 按各字符集**字符总数**分档取最高者，档位是 `1 + floor(log2(字数))`，
 > 不是按「连续片段」计分：拉丁文天然被空格切成多段、中文一句话通常只有 1 段，
 > 按片段计分会让结论取决于标点怎么切。实测 `'这是一段很长的中文内容需要翻译成英文。Hello world'`
@@ -789,10 +878,12 @@ export function shouldSkip(text: string, targetLang: string): boolean {
 > 同分时先出现者优先，不依赖 `SCRIPT_RANGES` 的表序。
 > 因此 `'你好世界 Hello'`（中文 4 字与拉丁 5 字母同档同分）判为 `zh`，
 > 而 `'aaaaa 你好'`（拉丁字数是中文的两倍以上，跨档）正确判为 `latin`。
-> `shouldSkip` 只在目标字符集**严格领先**时返回 `true`：与其它字符集同分的混排段落
+> `shouldSkip` 在**非中文目标**下只在目标字符集**严格领先**时返回 `true`：与其它字符集同分的混排段落
 > （`'Hi 你好'`、`'你好 Hi'`）按低置信度处理，宁可不跳过——跳过等于放弃翻译，错一边就是漏翻。
-> 目标为 `zh-Hant` 时一律不跳过：`ScriptLang` 只到字符集一级、分辨不了简繁，
-> 否则简体段落会被判成「已是目标语言」，简繁互转静默失效。
+> **中文目标**下 `ScriptLang` 只到字符集一级（`zh-Hant` 与 `zh-Hans` 都是 `'zh'`），分辨不了简繁，
+> 改由 `detectHanVariant` 判定：段落与目标**同变体**才跳过，异变体必须翻译（简繁互转正是在这一步发生）；
+> 整段没有任何简繁特征字（`'你好世界'`）时退回字符集判定，同分仍不跳过。
+> 目标为 `zh-Hant` 不再一刀切跳过：那只是把简转繁变成 no-op，繁转简同样漏。
 
 - [ ] **Step 4: 运行测试确认通过**
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectScript, isTranslatableText, normalizeText, shouldSkip } from '../../src/core/lang';
+import { detectHanVariant, detectScript, isTranslatableText, normalizeText, shouldSkip } from '../../src/core/lang';
 
 describe('detectScript', () => {
   it('识别纯中文', () => {
@@ -57,6 +57,33 @@ describe('detectScript', () => {
 
   it('没有字母时返回 unknown', () => {
     expect(detectScript('123 --- !!!')).toBe('unknown');
+  });
+});
+
+describe('detectHanVariant', () => {
+  it('识别繁体特征字', () => {
+    expect(detectHanVariant('這是繁體中文')).toBe('hant');
+  });
+
+  it('识别简体特征字', () => {
+    expect(detectHanVariant('这是简体中文')).toBe('hans');
+  });
+
+  it('没有任何简繁特征字时判 unknown', () => {
+    expect(detectHanVariant('你好世界')).toBe('unknown');
+  });
+
+  it('两类特征字数量相等时判 unknown', () => {
+    expect(detectHanVariant('这這')).toBe('unknown');
+  });
+
+  it('数量多者胜', () => {
+    expect(detectHanVariant('这个们来说 這是')).toBe('hans');
+    expect(detectHanVariant('這是繁體中文 this 这')).toBe('hant');
+  });
+
+  it('非中文字符不参与计数', () => {
+    expect(detectHanVariant('這是 Japanese です')).toBe('hant');
   });
 });
 
@@ -134,8 +161,24 @@ describe('shouldSkip', () => {
     expect(shouldSkip('first party tools 第一段中文。第二段中文。', 'en')).toBe(false);
   });
 
-  it('目标繁體中文时不跳过中文字段（简繁互转不走跳过快路径）', () => {
+  it('目标繁體中文时只在文本已是繁体时跳过（简繁互转不走 no-op 快路径）', () => {
     expect(shouldSkip('这是简体中文', 'zh-Hant')).toBe(false);
-    expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(false);
+    // 原断言把 '這是繁體中文' 也钉成 false（HANT_TARGET 一刀切），与「同变体才跳过」的新口径互斥；
+    // 按新口径改为 true，异议与理由见留档 §8.1。
+    expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(true);
+  });
+
+  it('文本与目标简繁变体不同时不跳过（需要简繁转换）', () => {
+    expect(shouldSkip('這是繁體中文段落', 'zh-Hans')).toBe(false);
+    expect(shouldSkip('这是简体中文段落', 'zh-Hant')).toBe(false);
+  });
+
+  it('文本已是目标简繁变体时跳过', () => {
+    expect(shouldSkip('这是简体中文段落', 'zh-Hans')).toBe(true);
+    expect(shouldSkip('這是繁體中文段落', 'zh-Hant')).toBe(true);
+  });
+
+  it('没有任何简繁特征字的纯中文按字符集判定跳过', () => {
+    expect(shouldSkip('没有简繁特征的纯中文', 'zh-Hans')).toBe(true);
   });
 });

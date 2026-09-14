@@ -146,24 +146,70 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
   es: 'latin',
 };
 
+export type HanVariant = 'hans' | 'hant' | 'unknown';
+
 /**
- * 显式指定繁体（Hant）脚本的目标语言。
- * ScriptLang 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），分辨不了简繁：
- * 选繁體中文时简体段落会被判成「已是目标语言」而整段跳过，简繁互转直接变成 no-op。
- * 这类目标一律不做跳过判定——跳过等于放弃翻译，宁可多翻一遍交给引擎转换。
+ * 只在某一字体出现的高频字。两组**严格一一对应**：`HANS_ONLY[i]` 与 `HANT_ONLY[i]`
+ * 是同一个字的两种写法，增删必须成对，否则计数会天然偏向更长的那一组。
+ * 选的都是在两岸三地日常文本里高频出现的字，单段文本里出现一两个就足以定性。
  */
-const HANT_TARGET = /^zh-hant(?:-|$)/;
+const HANS_ONLY =
+  '这个们来说国会对时过开关学样么产业发经长问题实现应该东车马鸟风云电气万与专从见门体书买卖乐习义为广庆龙';
+const HANT_ONLY =
+  '這個們來說國會對時過開關學樣麼產業發經長問題實現應該東車馬鳥風雲電氣萬與專從見門體書買賣樂習義為廣慶龍';
+
+/**
+ * 靠「只在某一字体出现的高频字」分辨简繁：两边各计一次，多者胜。
+ * 数量相等（含两边都是 0，即整段没有任何简繁特征字）返回 'unknown'——
+ * 这一层没有更多信息，怎么判都可能错，交给调用方按保守方向处理（见 shouldSkip）。
+ */
+export function detectHanVariant(text: string): HanVariant {
+  let hans = 0;
+  let hant = 0;
+  for (const char of text) {
+    if (HANS_ONLY.includes(char)) hans += 1;
+    else if (HANT_ONLY.includes(char)) hant += 1;
+  }
+  if (hans > hant) return 'hans';
+  if (hant > hans) return 'hant';
+  return 'unknown';
+}
+
+/**
+ * 目标语言的简繁变体。只认显式变体（'zh-Hans*' / 'zh-Hant*'）：
+ * 裸 'zh' 与 'zh-CN' / 'zh-TW' 这类只带地区的写法分辨不了简繁，返回 undefined，
+ * 由 shouldSkip 走「不跳过」——变体判不出来时多翻一遍，好过静默漏翻。
+ */
+function targetHanVariant(code: string): HanVariant | undefined {
+  if (/^zh-hant(?:-|$)/.test(code)) return 'hant';
+  if (/^zh-hans(?:-|$)/.test(code)) return 'hans';
+  return undefined;
+}
 
 /**
  * 段落已经是指定目标语言时无需翻译。
- * 只有目标字符集严格领先才跳过：与其它字符集同分时宁可翻译——
+ * 非中文目标：只有目标字符集严格领先才跳过，与其它字符集同分时宁可翻译——
  * 跳过等于放弃翻译，错一边就是漏翻（'Hi 你好' 这类极短混排任何多数决都不可靠）。
+ * 中文目标：`ScriptLang` 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），
+ * 靠 detectHanVariant 分辨简繁——文本与目标**同变体**才跳过；异变体必须翻译，
+ * 简繁互转正是在这一步发生的，一刀切跳过会让它变成静默 no-op。
  */
 export function shouldSkip(text: string, targetLang: string): boolean {
   const code = targetLang.toLowerCase();
-  if (HANT_TARGET.test(code)) return false;
   const expected = TARGET_SCRIPT[baseLang(code)];
-  if (!expected) return false;
+  if (expected === undefined) return false;
+
   const pick = pickScript(text);
-  return pick.lang === expected && !pick.tied;
+  if (expected !== 'zh') return pick.lang === expected && !pick.tied;
+
+  // 目标 base 是 'zh'：先确认段落本身是中文，含假名的日文、英文段落照常翻译。
+  if (pick.lang !== 'zh') return false;
+
+  const variant = targetHanVariant(code);
+  if (variant === undefined) return false;
+
+  // 整段没有任何简繁特征字（'你好世界'）：变体层面无信息，退回字符集判定，同分仍不跳过。
+  const textVariant = detectHanVariant(text);
+  if (textVariant === 'unknown') return !pick.tied;
+  return textVariant === variant;
 }
