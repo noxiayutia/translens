@@ -522,6 +522,20 @@ function targetHanVariant(code: string): HanVariant | undefined {
  * 中文目标：`ScriptLang` 只到字符集一级（zh-Hant 与 zh-Hans 都是 'zh'），
  * 靠 detectHanVariant 分辨简繁——文本与目标**同变体**才跳过；异变体必须翻译，
  * 简繁互转正是在这一步发生的，一刀切跳过会让它变成静默 no-op。
+ *
+ * 已知限制：**纯汉字、不含假名的日文**会被判成中文。
+ * `'東京都港区赤坂'` 这类只有汉字的日文，字符全部落在 `SCRIPT_RANGES` 的 CJK 区间里，
+ * `detectScript` 只能给出 `'zh'`，于是目标为中文时这里把它当成「已是目标语言」：
+ * `zh-Hant` 下必跳（東是繁体特征字），`zh-Hans` 下只要整段没有特征字也跳，
+ * 这一整段就永远不翻。
+ *
+ * 这在**单段文本**层面不可判：汉字是简繁日共用的书写系统，不看上下文没有任何依据，
+ * 加什么启发式都只是换一种错法。唯一可靠的办法是文档级上下文——整页出现过假名
+ * 就把全页按日文处理，段落再继承这个判断。那要求 `shouldSkip` 拿到整页信息
+ * （改签名或引入状态），属于内容脚本接线的设计。Plan 1 的 core 是纯函数层，
+ * 只回答「这一段像不像目标语言」，不持有页面状态，所以不做；
+ * 等它真正接到内容脚本上（目前尚无生产调用点）再在**调用方**补页面级判定，
+ * 不要在这里塞启发式。
  */
 export function shouldSkip(text: string, targetLang: string): boolean {
   const code = targetLang.toLowerCase();

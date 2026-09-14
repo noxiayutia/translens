@@ -1,5 +1,16 @@
 # wu2 任务书修正留档（Plan 1 · Task 2–6）
 
+## 当前口径（截至本次修复）
+
+1. `src/core` 与 `src/engines` 是不依赖宿主环境的纯函数层：**零 DOM、零 `chrome.*`、零 Node 全局**，反向也不得 import `content`/`background`/`popup`/`options`——由 `tests/core/layering.test.ts` 机器守住。
+2. 缓存 key 的字段顺序是 `engineId → configHash → targetLang → glossaryHash → promptHash → text`，`configHash` = `hashString(JSON.stringify({ baseUrl, model }))`；**apiKey 不进哈希**（换 key 不该让全部缓存失效，密钥也不该成为哈希输入）。
+3. `shouldSkip` 在中文目标下靠 `detectHanVariant` 分辨简繁：**同变体才跳过**，异变体一律翻译（简繁互转就在这一步发生），整段没有简繁特征字时退回字符集判定（同分不跳过）；`HANT_TARGET` 一刀切规则已删除。
+
+> 以下第 1–8 节是**逐轮追加的历史留档**，每节只代表**写下当时**那个提交的状态：
+> 其中以「现状」「当前实现」口吻写下的描述都**不代表现在的实现**——例如 §1.1 与 §6 记的 `countRuns`、
+> §7.2 记的 `HANT_TARGET`，都已在本轮删除，只作记录。
+> 核对当前行为请以上面的三行摘要与 `src/`、`tests/` 为准。
+
 > 本文件是**留档**，不是任务书的一部分，也不参与实施。
 > 它记录一件事：`docs/superpowers/plans/units/wu2.md` 及其母本在提交 `9fa7623` 里被改过，
 > 以及为什么必须改、原文如何复原、验收基线有没有被放宽。任何关于 Task 2–6 的规格核对都应以本文件为入口。
@@ -418,3 +429,114 @@ npm run build       → exit 0（dist/background.js、dist/content.js、dist/man
 Task 3 的「实现备注」也随口径改写（原文描述的正是被否掉的按片段计分）。
 复核 wu2 的 10 个代码块：**本轮改过的 5 块与磁盘逐字节一致**；
 `src/core/hash.ts`、`src/engines/types.ts` 两块围栏内首行多一个空行（本轮未动这两个块，属既有格式差异）。
+
+---
+
+## 8. 第三轮修复（WU2 收口：缓存 key、简繁互转、分层守卫）
+
+对应提交：`fix(core): 缓存 key 纳入模型与接口地址，避免命中旧模型译文`、
+`fix(core): 简繁互转不再被 shouldSkip 整段跳过`、`test(core): 用分层守卫钉住 core/engines 不依赖宿主环境`、
+`docs: 收口 wu2 修复留档与任务书同步`（`git log --oneline` 可见）。
+
+### 8.1 任务 A：缓存 key 必须区分模型与接口地址
+
+`CacheKeyParts` 之前只有 `engineId / targetLang / glossaryHash / promptHash / text`，而 openai-compat 下
+用户可以随时改模型名（gpt-4o-mini → gpt-4o）与接口地址：这两项不进 key，就会**命中上一个模型的旧译文**。
+改法：`CacheKeyParts` 增加 `configHash`（位置紧接 `engineId`），`buildCacheKey` 把它拼进 key；
+`hash.test.ts` 的「任一字段变化都会改变 key」补一条 `configHash` 断言，原有 5 条一条未删。
+
+**`apiKey` 不进 `configHash`**，理由写进 `src/core/hash.ts` 的字段注释：换 key 不该让全部缓存失效；
+且哈希输入会落进 storage，密钥不该出现在缓存键的输入里——它只影响鉴权，不影响译文。
+
+### 8.2 任务 B：简繁互转不能再被整段跳过
+
+`HANT_TARGET` 只做了「目标是繁体时一概不跳过」这半边，目标是简体、文本是繁体时仍被判「已是目标语言」
+整段跳过，繁转简同样是静默 no-op。改法：
+
+- 新增 `detectHanVariant(text): 'hans' | 'hant' | 'unknown'`：两组各 51 个**只在一体出现**的高频字，
+  逐字计数、多者胜，相等或都为 0 返回 `unknown`（字表与规格逐位核对过，两组等长、组内无重复、两组无交集）。
+- 中文目标分支重写：先 `pickScript` 确认段落是中文（不是就照常翻译），再比「文本变体 vs 目标变体」——
+  同变体跳过、异变体翻译；`unknown` 时退回字符集判定（`!pick.tied`），保住既有的混排保守偏置。
+- 非中文目标的判据（目标字符集严格领先）与 `zh-Hans` 的纯中文快路径都没变。
+
+**唯一一处没有照字面做的地方——规格自相矛盾（异议，见本文件顶部三行摘要的新口径）：**
+任务 B 第 3 条要求「既有用例一条都不许删、不许放宽断言」，但 `tests/core/lang.test.ts` 里既有的
+
+```ts
+expect(shouldSkip('這是繁體中文', 'zh-Hant')).toBe(false);
+```
+
+钉的正是任务 B 第 2 条要删掉的 `HANT_TARGET` 一刀切规则：新口径下 `'這是繁體中文'` 的变体是 `hant`、
+目标 `zh-Hant` 也是 `hant`，只能是 `true`。两条要求互斥，无法同时满足。处理：以第 2 条（新口径）为准，
+把这一条断言改为 `true`，并在用例里写明原因与本文件出处；同组里 `'这是简体中文'` → `false` 依旧成立、未动。
+**除此之外既有断言一条未删、一条未放宽**（`git diff 5cedb7d^ 5cedb7d -- tests/core/lang.test.ts` 可逐行复核：
+只有 import、新增 describe 块、这一条断言与新增用例）。
+
+**同一节第 3 条还有第二处互斥：「文本 variant 为 `unknown` → 跳过（`true`）」不能字面照做。**
+既有断言里 `shouldSkip('你好 Hi', 'zh-Hans')` 与 `shouldSkip('你好世界 Hello', 'zh-Hans')` 都是 `false`
+（与其它字符集同分时按低置信度不跳过），而这两段的变体恰恰就是 `unknown`（`你好世界` 四个字都不在特征字表里）；
+字面照做会把它们打成 `true`。处理：`unknown` 时**退回字符集判定**——`!pick.tied` 返回 `true`，
+满足新增的 `shouldSkip('没有简繁特征的纯中文', 'zh-Hans') === true`；同分仍返回 `false`，保住既有两条。
+这样两条要求同时成立，且没有任何一条断言被放宽。
+
+### 8.3 任务 C：分层守卫 `tests/core/layering.test.ts`
+
+递归读 `src/core`、`src/engines` 下所有 `.ts`，断言：不出现 `document.` / `window.` / `chrome.` /
+`process.` / `Buffer` / `__dirname` / `navigator.`；import 不出现 `../content/`、`../background/`、
+`../popup/`、`../options/`；至少扫到 5 个文件（当前正好 5 个：core 4 + engines 1），且两个目录都扫到了。
+
+匹配口径写进文件头注释：按**源码字面量**匹配（含注释），宁可偶发误报也不漏报真实的越界使用；
+反「空转假通过」有两道——文件数下限，以及 `importSpecifiers` 提取器自己的合成样例断言。
+`tsconfig.json` 挡住的是 Node 全局，DOM 全局在 `src/` 下是允许的（内容脚本要用），所以这条只能靠测试守。
+
+阴性探针（本次实跑，探针写入后已 `git checkout` 复原，工作树干净）：
+
+```
+注入 src/core/pool.ts:  const el = document.querySelector('#x');
+  → FAIL tests/core/layering.test.ts > 不出现宿主全局 document.
+    "src/core/pool.ts:30: const el = document.querySelector('#x');"
+
+注入 src/core/pool.ts:  import '../content/index';
+  → FAIL tests/core/layering.test.ts > import 不得指向 content / background / popup / options 层
+    "src/core/pool.ts: ../content/index"
+
+注入 src/engines/types.ts:  const tabs = chrome.tabs;
+  → FAIL tests/core/layering.test.ts > 不出现宿主全局 chrome.
+    "src/engines/types.ts:68: const tabs = chrome.tabs;"
+```
+
+### 8.4 任务 D：口径收口
+
+- 本文件文首加「当前口径（截至本次修复）」三行摘要，并声明其下第 1–8 节为历史留档、不代表当前实现；
+  历史段落**一字未删**，只在文首注明哪些描述已失效（`countRuns`、`HANT_TARGET`）。
+- `src/core/lang.ts` 的 `shouldSkip` 注释补「已知限制」：**纯汉字、不含假名的日文**
+  （`'東京都港区赤坂'`）字符全落在 CJK 区间，`detectScript` 只能给出 `'zh'`，目标为中文时会被跳过
+  （`zh-Hant` 必跳，`zh-Hans` 下整段无特征字也跳）。单段文本层面不可判——汉字是简繁日共用的书写系统，
+  加什么启发式都只是换一种错法；唯一可靠的办法是文档级上下文（整页出现过假名就整页按日文处理）。
+  那要求 `shouldSkip` 拿到整页信息，而 Plan 1 的 core 是纯函数层、不持有页面状态，所以不做，
+  留给内容脚本接线时在**调用方**补页面级判定。
+
+### 8.5 本轮同步与复核（真实输出）
+
+```
+npm test            → Test Files 6 passed (6) / Tests 83 passed (83)     # 修复前 5 / 64
+npm run typecheck   → exit 0（tsconfig.json + tsconfig.node.json 各一遍）
+```
+
+任务书同步：母本 Task 2（`src/core/hash.ts`、`tests/core/hash.test.ts`）、Task 3（`src/core/lang.ts`、
+`tests/core/lang.test.ts` 与「实现备注」）、Task 13（`src/background/scheduler.ts`，WU5 待建）的代码块
+按磁盘重写，再跑 `scripts/split-plan.mjs`——`wu1`、`wu3`–`wu10` 逐字节未变，只有 `wu2.md`、`wu5.md` 变化。
+复核方式同 §7.7：抽出母本里带 `// 路径` 首行注释的代码块与磁盘比对，**core/engines 的 10 块全部一致**；
+3 块 DIFF（`service-worker.ts`、`content/index.ts`、`popup.ts`）与 22 块 MISSING 都是尚未实施的后续单元，
+与上轮相同。
+
+WU5 遗留提醒：Task 13 的测试块不依赖 key 的形状（只用假引擎、`cache.count()` 与结果数组），本轮无需改动；
+但它**没有**一条「换模型后不命中旧缓存」的用例——WU5 实施时建议补一条
+（同一 `cache`，`engineConfig.model` 从 A 换成 B，断言引擎被再调一次），否则 §8.1 这个 bug 只是被修掉、
+没有回归网。
+
+一处与任务 A 相关、但按「不动无关文件」没改的残留：设计规格
+`docs/superpowers/specs/2026-09-14-immersive-translate-extension-design.md:169` 的缓存 key 公式
+`sha1(engineId + targetLang + glossaryHash + systemPromptHash + text)` 既没有 `configHash`，
+也与实现（`hashString`，非 sha1）和字段名（`promptHash`，非 `systemPromptHash`）不符——
+属既有偏差，本轮只在留档里记录，未改该文件。
