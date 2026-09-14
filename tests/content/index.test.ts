@@ -557,7 +557,18 @@ describe('内容脚本编排：翻译整页', () => {
     expect(document.getElementById('jy-toast')).toBeNull();
   });
 
-  it('旧的一轮收尾不会清掉新一轮的守卫，也不会删掉新一轮的宿主', async () => {
+  /**
+   * 这条用例钉的是「跨世代不会互相破坏」这个**可观察结果**，不是 `if (mine === generation)`
+   * 那道守卫本身。
+   *
+   * 变异测试的结论要如实记下来：把 finally 改成无条件 `running = false`（即去掉世代判断）后，
+   * 这条用例**仍然通过**。插桩定位到的原因是——第三次触发必须与「还原后立即再触发」处于
+   * 同一个同步调用栈才会被 running 守卫拦住，而任何异步延迟都会让它先撞上 `renderer` 守卫
+   * （第二轮挂好宿主之后 renderer 恒非空）。也就是说在当前所有可达时序下，真正起作用的是
+   * renderer 守卫，世代号是**防御性**的：它防的是将来有人在 renderer 建好之前插入 await。
+   * 保留它是对的，但不要再声称某条用例「删掉守卫就会红」——那是没有证据的。
+   */
+  it('旧的一轮收尾不会破坏新一轮的状态与宿主（跨世代互不干扰）', async () => {
     mount('<p>Hello world</p>');
     const { worker, contentListener } = await loadContentScript();
     const releases = new Map<number, () => void>();
