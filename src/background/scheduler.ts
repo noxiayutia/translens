@@ -107,13 +107,26 @@ async function callEngineWithRetry(texts: string[], deps: BatchDeps): Promise<st
   throw last ?? new EngineError('UNKNOWN', '未知错误');
 }
 
-/** 引擎报文本过长时，把每条按句子切开分别翻译，再拼回一段。 */
-async function translateSplit(texts: string[], deps: BatchDeps): Promise<string[]> {
-  const out: string[] = [];
+/**
+ * 引擎报文本过长时，把每条按句子切开分别翻译，再拼回一段。
+ *
+ * 与 `translateOneByOne` 同形：逐条 try/catch，某条（或它切出的某一片）失败只把该条的
+ * `EngineError` 放进对应位置。整批抛出会让 `translateBatch` 把所有 missing 条目标成
+ * 同一个错误码——a 明明已经切分翻好了，却因为 b 的 AUTH 被连坐，连缓存都进不去。
+ */
+async function translateSplit(
+  texts: string[],
+  deps: BatchDeps,
+): Promise<Array<string | EngineError>> {
+  const out: Array<string | EngineError> = [];
   for (const text of texts) {
-    const pieces = splitBySentence(text, Math.max(SPLIT_MIN_LEN, Math.ceil(text.length / 2)));
-    const translated = await callEngineWithRetry(pieces, deps);
-    out.push(joinPieces(translated, deps.targetLang));
+    try {
+      const pieces = splitBySentence(text, Math.max(SPLIT_MIN_LEN, Math.ceil(text.length / 2)));
+      const translated = await callEngineWithRetry(pieces, deps);
+      out.push(joinPieces(translated, deps.targetLang));
+    } catch (raw) {
+      out.push(toEngineError(raw));
+    }
   }
   return out;
 }

@@ -116,6 +116,49 @@ describe('translateBatch', () => {
     expect(out[0].text).toBe('切分一。切分二。');
   });
 
+  it('切分降级中某条失败时，另一条的译文照常返回并进缓存', async () => {
+    // 切分路径也要逐条隔离：a 已经切分翻好了，不该因为 b 的 AUTH 被一起标成 AUTH、
+    // 也不该把 a 的译文丢掉（translateOneByOne 早就这么做了，两条降级路径必须同形）。
+    const cache = new TranslationCache(new MemoryStorage());
+    const longA = '第一句。'.repeat(200);
+    const longB = '第二句。'.repeat(200);
+    const calls: string[][] = [];
+    let cursor = 0;
+    const engine: Translator = {
+      id: 'fake',
+      name: 'Fake',
+      needsKey: false,
+      supportsGlossary: false,
+      async translate(request: TranslateRequest): Promise<string[]> {
+        calls.push([...request.texts]);
+        cursor += 1;
+        // 1) 整批报过长，进入切分降级；2) a 的切片翻好；3) b 的切片报鉴权失败。
+        if (cursor === 1) throw new EngineError('TOO_LONG', '过长');
+        if (cursor === 2) return request.texts.map((text) => `译:${text}`);
+        throw new EngineError('AUTH', 'Key 无效');
+      },
+    };
+
+    const out = await translateBatch(
+      [
+        { id: 'a', text: longA },
+        { id: 'b', text: longB },
+      ],
+      deps(engine, { cache }),
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(calls[1].length).toBeGreaterThan(1);
+    expect(out[0].text).toBe(calls[1].map((text) => `译:${text}`).join(''));
+    expect(out[1]).toMatchObject({ id: 'b', text: null, code: 'AUTH', message: 'Key 无效' });
+
+    // a 的译文已经写进缓存：重试只需再翻 b，不会再请求引擎。
+    await expect(cache.count()).resolves.toBe(1);
+    const again = await translateBatch([{ id: 'a', text: longA }], deps(engine, { cache }));
+    expect(again[0].text).toBe(out[0].text);
+    expect(calls).toHaveLength(3);
+  });
+
   it('返回条目数不符时降级为逐条翻译', async () => {
     const { engine, calls } = fakeEngine([['只有一条'], ['甲'], ['乙']]);
     const out = await translateBatch(
