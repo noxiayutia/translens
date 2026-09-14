@@ -18,8 +18,8 @@
   "type": "module",
   "description": "浸译 — 沉浸式网页翻译扩展",
   "scripts": {
-    "build": "tsc --noEmit && vite build && vite build --config vite.content.config.ts",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build && vite build --config vite.content.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:main": "vite build --watch",
@@ -34,7 +34,29 @@ Run: `npm i -D vite typescript vitest jsdom @types/chrome @types/node`
 
 Expected: 安装成功，`package.json` 的 `devDependencies` 出现这几项。
 
-- [ ] **Step 3: 创建 `tsconfig.json`**
+- [ ] **Step 3: 创建 `tsconfig.json`（只覆盖 `src/`，不含 Node 类型）**
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["chrome", "vite/client"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+```
+
+**为什么这里必须排除 `"node"`：** 内容脚本与 MV3 service worker 运行在浏览器里，没有 `process`、`Buffer`、`__dirname`、`require`。一旦把 Node 类型放进 `src/` 的作用域，类型系统就会替这些运行时必崩的调用背书，而 `src/core/` 恰恰是最容易被写出 `process.env` 的地方。`src/` 与"构建脚本 / 测试"必须用两份不同的 tsconfig 隔开。
+
+- [ ] **Step 3a: 创建 `tsconfig.node.json`（构建脚本与测试）**
 
 ```json
 {
@@ -50,9 +72,11 @@ Expected: 安装成功，`package.json` 的 `devDependencies` 出现这几项。
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src", "tests", "vite.config.ts", "vite.content.config.ts", "vitest.config.ts"]
+  "include": ["tests", "vite.config.ts", "vite.content.config.ts", "vitest.config.ts"]
 }
 ```
+
+测试里保留 `"chrome"` 是必需的：测试会 import `src/shared/settings.ts`，而它引用了 `chrome.storage` 类型。保留 `"DOM"` lib 也是必需的：jsdom 测试要用 `document`、`HTMLElement`。
 
 - [ ] **Step 4: 创建 `vitest.config.ts`**
 

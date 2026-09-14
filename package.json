@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "description": "浸译 — 沉浸式网页翻译扩展",
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
-    "build": "tsc --noEmit && vite build && vite build --config vite.content.config.ts",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build && vite build --config vite.content.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:main": "vite build --watch",
