@@ -1,0 +1,100 @@
+/* src/popup/popup.css */
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  width: 320px;
+  margin: 0;
+  padding: 12px 14px 16px;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.icon-button {
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.icon-button:hover {
+  background: rgba(127, 127, 127, 0.16);
+}
+
+.primary {
+  width: 100%;
+  padding: 9px 12px;
+  font: inherit;
+  font-weight: 500;
+  color: #fff;
+  background: #2b6cb0;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.primary:hover {
+  background: #24598f;
+}
+
+.primary[data-active="true"] {
+  background: #4a5568;
+}
+
+.status {
+  min-height: 1.4em;
+  margin: 8px 2px 12px;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.field > span {
+  flex: 0 0 auto;
+  font-size: 13px;
+  opacity: 0.86;
+}
+
+.field > select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, 0.4);
+  background: transparent;
+}
+
+.hint {
+  margin: 4px 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.7;
+}
+
+.hint.warn {
+  color: #b3261e;
+  opacity: 1;
+}

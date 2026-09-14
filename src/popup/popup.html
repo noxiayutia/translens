@@ -2,10 +2,30 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <link rel="stylesheet" href="./popup.css" />
     <title>浸译</title>
   </head>
-  <body style="width: 320px; font-family: system-ui, sans-serif">
-    <p>浸译 — 占位弹窗</p>
+  <body>
+    <header class="header">
+      <span class="brand">浸译</span>
+      <button id="open-options" class="icon-button" type="button" title="设置">⚙</button>
+    </header>
+
+    <button id="toggle" class="primary" type="button">翻译此页</button>
+    <p id="status" class="status"></p>
+
+    <label class="field">
+      <span>目标语言</span>
+      <select id="target-lang"></select>
+    </label>
+
+    <label class="field">
+      <span>翻译引擎</span>
+      <select id="engine"></select>
+    </label>
+
+    <p id="engine-hint" class="hint"></p>
+
     <script type="module" src="./popup.ts"></script>
   </body>
 </html>

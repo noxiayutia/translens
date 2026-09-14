@@ -12,7 +12,10 @@
  * - `runtime.onInstalled` / `runtime.onMessage`、`commands.onCommand`、
  *   `contextMenus.*`、`tabs.query` / `tabs.sendMessage`：可注册、可手动触发；
  * - `runtime.sendMessage`：**内容脚本侧**的发送端，把消息交给已注册的 `onMessage`
- *   监听器并把响应回给调用方（见 {@link StubRuntime.sendMessage}）。
+ *   监听器并把响应回给调用方（见 {@link StubRuntime.sendMessage}）；
+ * - `tabs.sendMessage`：**弹窗侧**的发送端，接收方由用例通过 {@link StubTabs.responder}
+ *   扮演（内容脚本不注册在 `tabs` 上，替身无从自动接上）；
+ * - `runtime.openOptionsPage`：只记调用次数（弹窗右上角的齿轮）。
  *
  * 存储 API 只覆盖 `core/cache.ts` 与 `shared/settings.ts` 用到的取法
  * （`null` / 字符串 / 字符串数组）；真机还接受对象形式的默认值，这里**不支持**，
@@ -129,6 +132,12 @@ export interface StubTabs {
   sent: SentTabMessage[];
   /** 置为 true 时 `sendMessage` 拒绝，模拟 chrome:// 等没有接收方的受限页面 */
   rejectSendMessage: boolean;
+  /**
+   * 标签页那一侧的接收方（真机上就是内容脚本的 `onMessage` 监听器）。未设置时
+   * `sendMessage` 兑现为 `undefined`——只看"消息有没有发出去"的用例不需要它；
+   * 弹窗要**按响应**渲染（`PageState`），由 `tests/popup` 决定回什么。
+   */
+  responder: ((tabId: number, message: unknown) => unknown) | null;
   query(queryInfo: unknown): Promise<StubTab[]>;
   sendMessage(tabId: number, message: unknown): Promise<unknown>;
 }
@@ -203,6 +212,9 @@ export interface StubRuntime {
   noReceiver: boolean;
   /** 每次 `sendMessage` 送出的消息，按调用顺序 */
   sentMessages: unknown[];
+  /** `openOptionsPage` 被调用的次数（弹窗右上角的齿轮）；真机上它打开设置页，替身只记账 */
+  openOptionsPageCalls: number;
+  openOptionsPage(): void;
   /** 触发 `onInstalled`（模拟安装 / 更新） */
   install(): void;
   /** 派发一条消息给全部 `onMessage` 监听器 */
@@ -284,6 +296,10 @@ function createRuntime(): StubRuntime {
     failSendResponse: false,
     noReceiver: false,
     sentMessages: [],
+    openOptionsPageCalls: 0,
+    openOptionsPage() {
+      runtime.openOptionsPageCalls += 1;
+    },
     install: () => void onInstalled.emit(),
     dispatchMessage: (message, sender = {}) => deliver(message, sender, runtime.failSendResponse),
     sendMessage(message) {
@@ -343,6 +359,7 @@ function createTabs(): StubTabs {
     queries: [],
     sent: [],
     rejectSendMessage: false,
+    responder: null,
     async query(queryInfo) {
       tabs.queries.push(queryInfo);
       return tabs.activeTabs.map((tab) => ({ ...tab }));
@@ -353,7 +370,8 @@ function createTabs(): StubTabs {
         // 真机在没有接收方（chrome://、未注入内容脚本的页面）时就是这个拒绝。
         throw new Error(`Could not establish connection. Receiving end does not exist.（tab ${tabId}）`);
       }
-      return undefined;
+      // `responder` 返回 promise 时由 async 函数自动等它——弹窗在飞期间的禁用态要靠这个。
+      return tabs.responder?.(tabId, message);
     },
   };
   return tabs;
@@ -384,9 +402,11 @@ export function createChromeStub(): ChromeStub {
       tabs.queries = [];
       tabs.sent = [];
       tabs.rejectSendMessage = false;
+      tabs.responder = null;
       stub.runtime.failSendResponse = false;
       stub.runtime.noReceiver = false;
       stub.runtime.sentMessages = [];
+      stub.runtime.openOptionsPageCalls = 0;
     },
   };
   return stub;
