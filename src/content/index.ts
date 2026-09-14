@@ -66,12 +66,16 @@ function isRetryable(code: TranslateItemResult['code']): boolean {
  * 而不是 `{ ok: false }`——`describeError` 那条路收不到它。没有这一层，用户只会看到满屏
  * 一模一样的错误标签，完全不知道发生了什么（规格 §8 要求的是「不重试；页面 toast + 弹窗红点」）。
  *
- * 只对"一次响应里全部条目都失败"生效：部分失败是正常的，逐个标注即可。
+ * 只对"这一批**每一条**都失败且错误码相同"生效：部分失败是正常的，逐个标注即可。
  * 返回 null 表示不该弹 toast。
+ *
+ * `batchSize` 必须显式传本批的条目数，不能拿 `failures.length === results.length` 代替：
+ * 调用方传进来的可能只有失败的那些条目（`applyResults` 就是这么调的），那样比较恒为真，
+ * 一条失败混在成功里也会弹出"整批失败"的提示。
  */
-function sameCodeFailureMessage(results: TranslateItemResult[]): string | null {
+function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: number): string | null {
   const failures = results.filter((result) => result.text === null);
-  if (failures.length === 0 || failures.length !== results.length) return null;
+  if (failures.length === 0 || failures.length !== batchSize) return null;
 
   const [first] = failures;
   if (first?.code === undefined) return null;
@@ -85,28 +89,74 @@ function sameCodeFailureMessage(results: TranslateItemResult[]): string | null {
 }
 
 /**
+ * 响应里的一个条目在**运行时**是不是 `TranslateItemResult`。
+ *
+ * 只校验身份字段 `id`：`text` 是不是 null 由后面按条目判断（null 是正常的条目级失败），
+ * 但 id 缺失/不是字符串时这条结果根本对不上任何一段，只能当它不存在。
+ */
+function isResultItem(value: unknown): value is TranslateItemResult {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    (value as { id: string }).id.length > 0
+  );
+}
+
+/** 形状不符的响应：整批收敛成失败态时给用户看的文案。 */
+const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
+
+/**
  * 落地一批条目级结果。
  *
  * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——重试多少次都是同一个结果
  * （`AUTH`）时不挂按钮，否则用户会拿到一排点了也没用的按钮。
  * 整个响应**全部失败且错误码相同**时，逐条标注之外再加一句整批提示，由调用方选时机弹。
  * 返回该提示（不需要时返回 null）。
+ *
+ * `results` 来自消息边界，类型断言拦不住它：`TranslateTextsResponse` 只是编译期声明，
+ * 后台版本不匹配、引擎适配器出错都可能回一个 `results: undefined` 或元素形状不对的响应
+ * （`Array.isArray` 收窄之后这里的参数其实已经是 `unknown`）。**形状不符按本批全部失败处理**
+ * （逐段失败态 + 重试），不抛异常：抛出去会逃出并发池、reject 掉整轮，把页面永久留在
+ * "翻译中…"——宿主停在 pending、renderer 守卫又让后续翻译变成空操作，用户既看不到失败
+ * 也重试不了（规格 §8：绝不静默失败）。
+ *
+ * 逐条对应而不是按下标对齐：坏的条目丢掉之后下标会错位，`id` 才是唯一的身份。
  */
-function applyResults(results: TranslateItemResult[]): string | null {
-  const message = sameCodeFailureMessage(results);
-
-  for (const result of results) {
-    if (result.text !== null) {
-      finished.add(result.id);
-      renderer?.update(result.id, result.text);
-      continue;
-    }
-
-    failedIds.add(result.id);
-    renderer?.fail(result.id, result.message ?? '翻译失败', isRetryable(result.code));
+function applyResults(batch: TextSegment[], results: unknown): string | null {
+  if (!Array.isArray(results)) {
+    failBatch(batch, MALFORMED_RESPONSE);
+    return MALFORMED_RESPONSE;
   }
 
-  return message;
+  // 按 id 建立索引再逐条对应：坏形状的条目被丢掉之后下标会错位，`id` 才是唯一的身份。
+  const byId = new Map<string, TranslateItemResult>();
+  for (const result of results) if (isResultItem(result)) byId.set(result.id, result);
+
+  const failures = new Map<string, TranslateItemResult>();
+  // 有没有哪一段**根本没拿到结果**（形状不符被丢掉，或后台漏了这一条）。
+  // 这与"部分条目翻译失败"是两回事：后者是正常的（`{ id, text: null, code }`），
+  // 前者说明这个响应的形状跟本批对不上，要额外给整批提示。
+  let missingResult = false;
+  for (const item of batch) {
+    const result = byId.get(item.id);
+    if (result !== undefined && result.text !== null) {
+      finished.add(item.id);
+      renderer?.update(item.id, result.text);
+      continue;
+    }
+    if (result === undefined) missingResult = true;
+    const marked = result ?? { id: item.id, text: null as null, message: MALFORMED_RESPONSE };
+    failures.set(item.id, marked);
+    // 单条渲染失败不拖垮这一批：`failSegment` 自己兜住异常（并且已经记进 failedIds），
+    // 循环必须把**剩下的每一条**都标完，否则没轮到的那些会永远停在"翻译中…"。
+    failSegment(item.id, marked.message ?? '翻译失败', isRetryable(marked.code));
+  }
+
+  // 整批同码提示只按**真的回来了的**那些条目算：没回来的条目没有 code 可比，
+  // 它们的提示由 MALFORMED_RESPONSE 负责。
+  if (missingResult) return MALFORMED_RESPONSE;
+  return sameCodeFailureMessage([...failures.values()], batch.length);
 }
 
 /**
@@ -118,9 +168,29 @@ function applyResults(results: TranslateItemResult[]): string | null {
  * 在整轮跑完后弹一次。
  */
 function failBatch(batch: TextSegment[], message: string): void {
-  for (const segment of batch) {
-    failedIds.add(segment.id);
-    renderer?.fail(segment.id, message);
+  for (const segment of batch) failSegment(segment.id, message);
+}
+
+/**
+ * 把一段标成失败态（记进 `failedIds` + 渲染）。**这一步自己绝不抛异常**：
+ * 它跑在并发池的任务里，`core/pool.ts` 的契约是"调用方负责在任务内部捕获"——
+ * 一个异常逃出去就会 reject 掉整轮，剩下的条目会永远停在"翻译中…"，
+ * 而 `if (lastError !== null) toast(...)` 那一行也永远到不了（页面静默卡死）。
+ *
+ * 第一次渲染失败就退回一句纯文本：连错误标签都挂不上去的宿主，也别再让它
+ * 以一个未捕获的异常收场。
+ */
+function failSegment(segmentId: string, message: string, canRetry = true): void {
+  failedIds.add(segmentId);
+  try {
+    renderer?.fail(segmentId, message, canRetry);
+  } catch {
+    try {
+      renderer?.fail(segmentId, '翻译失败');
+    } catch {
+      // 这一段的宿主已经彻底不可用：失败已经记进 failedIds（状态面板仍然对得上），
+      // 不再往上抛——整轮的其余条目还得继续。
+    }
   }
 }
 
@@ -169,37 +239,52 @@ async function translatePage(): Promise<void> {
         // 下一代，落笔只会把新的一轮搅乱（比如把新宿主标成失败）。
         if (mine !== generation) return;
 
-        let response: TranslateTextsResponse;
+        // 整个任务体都在 try/catch 里（不只是 sendMessage）：`core/pool.ts` 的契约是
+        // "调用方负责在任务内部捕获"——任何意外异常逃出去都会 reject 掉 runPool，
+        // 于是 applyResults 之后那一行 `if (lastError !== null) toast(...)` 被跳过、
+        // running 也在 finally 里被收走，页面就永久留在"翻译中…"（renderer 守卫还在，
+        // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
         try {
-          response = await sendToBackground({
-            type: MSG.TRANSLATE_TEXTS,
-            payload: {
-              items: batch.map((segment) => ({ id: segment.id, text: segment.text })),
-              targetLang: settings.targetLang,
-            },
-          });
-        } catch (raw) {
-          // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）。
-          // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
-          // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
+          let response: TranslateTextsResponse;
+          try {
+            response = await sendToBackground({
+              type: MSG.TRANSLATE_TEXTS,
+              payload: {
+                items: batch.map((segment) => ({ id: segment.id, text: segment.text })),
+                targetLang: settings.targetLang,
+              },
+            });
+          } catch (raw) {
+            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）。
+            // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
+            // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
+            if (mine !== generation) return;
+            const detail = raw instanceof Error ? raw.message : String(raw);
+            failBatch(batch, `无法连接后台：${detail}`);
+            return;
+          }
+
+          // 响应回来后这一轮可能已经被还原/被接管：这一批的结论属于上一代，丢掉。
           if (mine !== generation) return;
+
+          // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
+          // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
+          if (!response.ok) {
+            lastError = describeError(response);
+            failBatch(batch, response.message);
+            return;
+          }
+          // `applyResults` 自己校验响应形状：形状不符时整批进失败态，不抛异常。
+          const notice = applyResults(batch, response.results);
+          if (notice !== null) lastError = notice;
+        } catch (raw) {
+          // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
+          // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
           const detail = raw instanceof Error ? raw.message : String(raw);
-          failBatch(batch, `无法连接后台：${detail}`);
-          return;
+          if (mine !== generation) return;
+          lastError = `翻译失败：${detail}`;
+          failBatch(batch, MALFORMED_RESPONSE);
         }
-
-        // 响应回来后这一轮可能已经被还原/被接管：这一批的结论属于上一代，丢掉。
-        if (mine !== generation) return;
-
-        // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
-        // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
-        if (!response.ok) {
-          lastError = describeError(response);
-          failBatch(batch, response.message);
-          return;
-        }
-        const notice = applyResults(response.results);
-        if (notice !== null) lastError = notice;
       }),
       settings.concurrency,
     );
@@ -246,7 +331,8 @@ async function retrySegment(segmentId: string): Promise<void> {
     return;
   }
 
-  const [result] = response.results;
+  // 同 `applyResults`：`results` 来自消息边界，形状是运行时才成立的假设。
+  const [result] = Array.isArray(response.results) ? response.results.filter(isResultItem) : [];
   if (result && result.text !== null) {
     finished.add(segment.id);
     renderer?.update(segment.id, result.text);
@@ -254,7 +340,14 @@ async function retrySegment(segmentId: string): Promise<void> {
   }
   failedIds.add(segmentId);
   // 单条重试不再弹整批提示：用户就是看着这条错误点进来的，再弹一次是噪音。
-  renderer?.fail(segment.id, result?.message ?? '翻译失败', isRetryable(result?.code));
+  if (result === undefined) {
+    // 响应里没有这一条（形状不符/后台漏了它）：按可重试的失败态标注，别停在"翻译中…"。
+    // 注意 `result === undefined` 而不是 `result.text === null`：后者是正常的条目级失败，
+    // 走下面那行按原样标注。
+    renderer?.fail(segment.id, MALFORMED_RESPONSE);
+    return;
+  }
+  renderer?.fail(segment.id, result.message ?? '翻译失败', isRetryable(result.code));
 }
 
 function restorePage(): void {
