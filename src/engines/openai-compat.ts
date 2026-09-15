@@ -1,4 +1,5 @@
 import { hasHostPermission, originPattern } from '../shared/host-permission';
+import { describeHttpError, statusToErrorCode } from './api-error';
 import { EngineError, toEngineError, type EngineConfig, type Term, type TranslateRequest, type Translator } from './types';
 
 export interface ChatMessage {
@@ -109,7 +110,12 @@ export const openAiCompatEngine: Translator = {
     }
     if (response.status === 429) throw new EngineError('RATE_LIMIT', '接口限流，请稍后重试');
     if (response.status === 413) throw new EngineError('TOO_LONG', '文本过长');
-    if (!response.ok) throw new EngineError('NETWORK', `接口 HTTP ${response.status}`);
+    if (!response.ok) {
+      // 服务商把真正的原因写在响应体里（DeepSeek 对写错的模型名会说 "Model Not Exist"），
+      // 必须读出来给用户看，否则他只能对着一句"接口 HTTP 400"猜——这不是假想场景：
+      // 实测就是模型名填成 `deepseek`（正确值是 `deepseek-chat`）卡住的，而界面上只有 400。
+      throw new EngineError(statusToErrorCode(response.status), await describeHttpError(response));
+    }
 
     let data: unknown;
     try {

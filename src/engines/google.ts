@@ -1,4 +1,5 @@
 import { runPool } from '../core/pool';
+import { describeHttpError, statusToErrorCode } from './api-error';
 import { EngineError, toEngineError, type EngineConfig, type TranslateRequest, type Translator } from './types';
 
 const ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
@@ -52,7 +53,11 @@ export async function translateOne(text: string, to: string, signal: AbortSignal
   if (response.status === 429) throw new EngineError('RATE_LIMIT', '免费接口触发限流，请稍后重试或切换到自定义 API');
   if (response.status === 401 || response.status === 403) throw new EngineError('AUTH', '免费接口拒绝访问，请切换到自定义 API');
   if (response.status === 413) throw new EngineError('TOO_LONG', '文本过长');
-  if (!response.ok) throw new EngineError('NETWORK', `免费接口 HTTP ${response.status}`);
+  if (!response.ok) {
+    // 免费接口出错时也可能返回 HTML 或 JSON 正文；4xx 是"请求不对"，不该当成可重试的
+    // 网络故障让调度器白退避三次。
+    throw new EngineError(statusToErrorCode(response.status), await describeHttpError(response));
+  }
 
   let data: unknown;
   try {

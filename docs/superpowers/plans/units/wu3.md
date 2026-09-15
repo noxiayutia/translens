@@ -209,6 +209,7 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/engines/google.ts
 import { runPool } from '../core/pool';
+import { describeHttpError, statusToErrorCode } from './api-error';
 import { EngineError, toEngineError, type EngineConfig, type TranslateRequest, type Translator } from './types';
 
 const ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
@@ -262,7 +263,11 @@ export async function translateOne(text: string, to: string, signal: AbortSignal
   if (response.status === 429) throw new EngineError('RATE_LIMIT', '免费接口触发限流，请稍后重试或切换到自定义 API');
   if (response.status === 401 || response.status === 403) throw new EngineError('AUTH', '免费接口拒绝访问，请切换到自定义 API');
   if (response.status === 413) throw new EngineError('TOO_LONG', '文本过长');
-  if (!response.ok) throw new EngineError('NETWORK', `免费接口 HTTP ${response.status}`);
+  if (!response.ok) {
+    // 免费接口出错时也可能返回 HTML 或 JSON 正文；4xx 是"请求不对"，不该当成可重试的
+    // 网络故障让调度器白退避三次。
+    throw new EngineError(statusToErrorCode(response.status), await describeHttpError(response));
+  }
 
   let data: unknown;
   try {
@@ -347,7 +352,7 @@ git commit -m "feat(engines): 免费 Google 翻译接口"
 // tests/engines/openai-compat.test.ts
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildMessages, openAiCompatEngine, parseNumberedResponse } from '../../src/engines/openai-compat';
-import { EngineError } from '../../src/engines/types';
+import { EngineError, RETRYABLE_CODES } from '../../src/engines/types';
 
 function chatResponse(content: string, status = 200): Response {
   return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }), {
@@ -473,6 +478,47 @@ describe('openAiCompatEngine.translate', () => {
     await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'RATE_LIMIT' });
   });
 
+  it('400 抛 BAD_REQUEST，并把服务商给的原因原样带到文案里', async () => {
+    // 实测场景：模型名填成 `deepseek`（正确值是 `deepseek-chat`），DeepSeek 就是这么回应的。
+    // 之前这里归成 NETWORK、且正文被丢掉，用户只看到「接口 HTTP 400」，完全查不出原因。
+    //
+    // 必须用 mockImplementation 而不是 mockResolvedValue：后者每次返回**同一个** Response
+    // 对象，而响应体只能读一次，第二次调用会因为流已消费而拿不到正文。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ error: { message: 'Model Not Exist', type: 'invalid_request_error' } }), {
+            status: 400,
+          }),
+      ),
+    );
+
+    const error = await openAiCompatEngine.translate(request(['A']), CONFIG).catch((raw: unknown) => raw);
+    expect(error).toBeInstanceOf(EngineError);
+    expect((error as EngineError).code).toBe('BAD_REQUEST');
+    expect((error as EngineError).message).toContain('Model Not Exist');
+  });
+
+  it('400 不可重试：不该让调度器白退避三次，也不该给用户挂没用的重试按钮', () => {
+    expect(RETRYABLE_CODES.has('BAD_REQUEST')).toBe(false);
+  });
+
+  it('500 仍归 NETWORK（可重试），但同样带上正文原因', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        async () => new Response(JSON.stringify({ error: { message: 'upstream busy' } }), { status: 503 }),
+      ),
+    );
+
+    const error = await openAiCompatEngine.translate(request(['A']), CONFIG).catch((raw: unknown) => raw);
+    expect(error).toBeInstanceOf(EngineError);
+    expect((error as EngineError).code).toBe('NETWORK');
+    expect((error as EngineError).message).toContain('upstream busy');
+    expect(RETRYABLE_CODES.has('NETWORK')).toBe(true);
+  });
+
   it('响应缺少 content 抛 BAD_RESPONSE', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [] }), { status: 200 })));
     await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
@@ -546,6 +592,7 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/engines/openai-compat.ts
 import { hasHostPermission, originPattern } from '../shared/host-permission';
+import { describeHttpError, statusToErrorCode } from './api-error';
 import { EngineError, toEngineError, type EngineConfig, type Term, type TranslateRequest, type Translator } from './types';
 
 export interface ChatMessage {
@@ -656,7 +703,12 @@ export const openAiCompatEngine: Translator = {
     }
     if (response.status === 429) throw new EngineError('RATE_LIMIT', '接口限流，请稍后重试');
     if (response.status === 413) throw new EngineError('TOO_LONG', '文本过长');
-    if (!response.ok) throw new EngineError('NETWORK', `接口 HTTP ${response.status}`);
+    if (!response.ok) {
+      // 服务商把真正的原因写在响应体里（DeepSeek 对写错的模型名会说 "Model Not Exist"），
+      // 必须读出来给用户看，否则他只能对着一句"接口 HTTP 400"猜——这不是假想场景：
+      // 实测就是模型名填成 `deepseek`（正确值是 `deepseek-chat`）卡住的，而界面上只有 400。
+      throw new EngineError(statusToErrorCode(response.status), await describeHttpError(response));
+    }
 
     let data: unknown;
     try {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildMessages, openAiCompatEngine, parseNumberedResponse } from '../../src/engines/openai-compat';
-import { EngineError } from '../../src/engines/types';
+import { EngineError, RETRYABLE_CODES } from '../../src/engines/types';
 
 function chatResponse(content: string, status = 200): Response {
   return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }), {
@@ -124,6 +124,47 @@ describe('openAiCompatEngine.translate', () => {
   it('429 抛 RATE_LIMIT', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(chatResponse('', 429)));
     await expect(openAiCompatEngine.translate(request(['A']), CONFIG)).rejects.toMatchObject({ code: 'RATE_LIMIT' });
+  });
+
+  it('400 抛 BAD_REQUEST，并把服务商给的原因原样带到文案里', async () => {
+    // 实测场景：模型名填成 `deepseek`（正确值是 `deepseek-chat`），DeepSeek 就是这么回应的。
+    // 之前这里归成 NETWORK、且正文被丢掉，用户只看到「接口 HTTP 400」，完全查不出原因。
+    //
+    // 必须用 mockImplementation 而不是 mockResolvedValue：后者每次返回**同一个** Response
+    // 对象，而响应体只能读一次，第二次调用会因为流已消费而拿不到正文。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ error: { message: 'Model Not Exist', type: 'invalid_request_error' } }), {
+            status: 400,
+          }),
+      ),
+    );
+
+    const error = await openAiCompatEngine.translate(request(['A']), CONFIG).catch((raw: unknown) => raw);
+    expect(error).toBeInstanceOf(EngineError);
+    expect((error as EngineError).code).toBe('BAD_REQUEST');
+    expect((error as EngineError).message).toContain('Model Not Exist');
+  });
+
+  it('400 不可重试：不该让调度器白退避三次，也不该给用户挂没用的重试按钮', () => {
+    expect(RETRYABLE_CODES.has('BAD_REQUEST')).toBe(false);
+  });
+
+  it('500 仍归 NETWORK（可重试），但同样带上正文原因', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        async () => new Response(JSON.stringify({ error: { message: 'upstream busy' } }), { status: 503 }),
+      ),
+    );
+
+    const error = await openAiCompatEngine.translate(request(['A']), CONFIG).catch((raw: unknown) => raw);
+    expect(error).toBeInstanceOf(EngineError);
+    expect((error as EngineError).code).toBe('NETWORK');
+    expect((error as EngineError).message).toContain('upstream busy');
+    expect(RETRYABLE_CODES.has('NETWORK')).toBe(true);
   });
 
   it('响应缺少 content 抛 BAD_RESPONSE', async () => {
