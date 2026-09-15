@@ -1,6 +1,6 @@
 // src/options/options.ts
 //
-// 设置页：界面是原生 DOM（不引框架），逻辑只有三件事——引擎配置、目标语言、清缓存。
+// 设置页：界面是原生 DOM（不引框架），逻辑只有四件事——引擎配置、目标语言、显示模式、清缓存。
 //
 // 关于密钥：设置页是**扩展自身的受信页面**（`chrome-extension://` 同源），所以这里用
 // `loadSettings()` 读完整设置是正当的（要显示用户自己填的 API Key）；内容脚本那条路才必须
@@ -16,7 +16,7 @@ import {
   originPattern,
   requestHostPermission,
 } from '../shared/host-permission';
-import { isAllowedBaseUrl, loadSettings, saveSettings, type Settings } from '../shared/settings';
+import { isAllowedBaseUrl, loadSettings, saveSettings, type DisplayMode, type Settings } from '../shared/settings';
 
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
@@ -29,6 +29,16 @@ const testButton = document.getElementById('test-connection') as HTMLButtonEleme
 const engineStatus = document.getElementById('engine-status') as HTMLParagraphElement;
 
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
+const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
+
+/**
+ * 显示模式的选项。与弹窗里那一份**逐字一致**（同一件事在两处给出不同的说法，
+ * 用户会以为它们不是同一个设置）。
+ */
+const DISPLAY_MODES: Array<{ value: DisplayMode; label: string }> = [
+  { value: 'translated-only', label: '仅译文' },
+  { value: 'bilingual', label: '双语对照' },
+];
 
 const clearCacheButton = document.getElementById('clear-cache') as HTMLButtonElement;
 const cacheStatus = document.getElementById('cache-status') as HTMLParagraphElement;
@@ -74,6 +84,7 @@ interface EngineFormValues {
   apiKey: string;
   model: string;
   targetLang: string;
+  displayMode: DisplayMode;
 }
 
 /** 表单当前的原始值。保存与测试连接共用它，保证两条路走的是同一份输入。 */
@@ -84,6 +95,7 @@ function readForm(): EngineFormValues {
     apiKey: apiKeyInput.value,
     model: modelInput.value.trim(),
     targetLang: targetLangSelect.value,
+    displayMode: displayModeSelect.value as DisplayMode,
   };
 }
 
@@ -183,6 +195,7 @@ async function handleSave(): Promise<void> {
     engineId: values.engineId,
     engineConfig: { apiKey: values.apiKey, baseUrl: values.baseUrl, model: values.model },
     targetLang: values.targetLang,
+    displayMode: values.displayMode,
   };
 
   try {
@@ -303,6 +316,7 @@ async function start(): Promise<void> {
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
     loaded.targetLang,
   );
+  fillSelect(displayModeSelect, DISPLAY_MODES, loaded.displayMode);
   baseUrlInput.value = loaded.engineConfig.baseUrl;
   apiKeyInput.value = loaded.engineConfig.apiKey;
   modelInput.value = loaded.engineConfig.model;

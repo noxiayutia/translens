@@ -45,13 +45,14 @@ let chromeStub: ChromeStub;
 interface PopupUi {
   toggle: HTMLButtonElement;
   status: HTMLParagraphElement;
+  displayMode: HTMLSelectElement;
   targetLang: HTMLSelectElement;
   engine: HTMLSelectElement;
   hint: HTMLParagraphElement;
   optionsButton: HTMLButtonElement;
 }
 
-/** `popup.html` 里的六个控件；按 id 取，取不到直接失败。 */
+/** `popup.html` 里的七个控件；按 id 取，取不到直接失败。 */
 function ui(): PopupUi {
   const pick = <T extends HTMLElement>(id: string): T => {
     const found = document.getElementById(id);
@@ -61,6 +62,7 @@ function ui(): PopupUi {
   return {
     toggle: pick<HTMLButtonElement>('toggle'),
     status: pick<HTMLParagraphElement>('status'),
+    displayMode: pick<HTMLSelectElement>('display-mode'),
     targetLang: pick<HTMLSelectElement>('target-lang'),
     engine: pick<HTMLSelectElement>('engine'),
     hint: pick<HTMLParagraphElement>('engine-hint'),
@@ -149,7 +151,7 @@ describe('popup.html 结构', () => {
     expect(script?.getAttribute('type')).toBe('module');
     expect(script?.getAttribute('src')).toBe('./popup.ts');
     // 测试靠这些 id 取控件；HTML 里少一个，上面 `ui()` 就会失败——这里再钉一次更直白的原因。
-    expect(parsed.querySelectorAll('[id]').length).toBe(6);
+    expect(parsed.querySelectorAll('[id]').length).toBe(7);
   });
 });
 
@@ -502,6 +504,88 @@ describe('语言与引擎选择的持久化', () => {
     await waitFor(() => status.textContent.includes('重新翻译此页生效'));
     expect(status.textContent).toBe('目标语言已更新，重新翻译此页生效。');
     expect((await storedSettings()).targetLang).toBe('fr');
+  });
+});
+
+describe('显示模式', () => {
+  it('选项就是「仅译文 / 双语对照」，并按存储里的值选中', async () => {
+    await seedSettings({ displayMode: 'bilingual' });
+    await loadPopup();
+
+    const { displayMode } = ui();
+    expect(Array.from(displayMode.options).map((option) => [option.value, option.textContent])).toEqual([
+      ['translated-only', '仅译文'],
+      ['bilingual', '双语对照'],
+    ]);
+    expect(displayMode.value).toBe('bilingual');
+  });
+
+  it('默认选中「仅译文」（用户要的就是这个）', async () => {
+    await seedSettings({});
+    await loadPopup();
+    expect(ui().displayMode.value).toBe('translated-only');
+  });
+
+  it('切换显示模式写进存储，其它字段原样保留', async () => {
+    await seedSettings({ displayMode: 'translated-only', targetLang: 'ja', engineId: 'google' });
+    await loadPopup();
+
+    const { displayMode } = ui();
+    displayMode.value = 'bilingual';
+    displayMode.dispatchEvent(new Event('change'));
+
+    await waitFor(async () => (await storedSettings()).displayMode === 'bilingual');
+    const stored = await storedSettings();
+    expect(stored.displayMode).toBe('bilingual');
+    // 整份回写：别的字段不能被这次改动抹掉。
+    expect(stored.targetLang).toBe('ja');
+    expect(stored.engineId).toBe('google');
+  });
+
+  it('页面已翻译时如实提示"重新翻译此页生效"，不假装立即生效', async () => {
+    await seedSettings({ displayMode: 'translated-only' });
+    respondWithState(() => pageState({ translated: true, total: 2, done: 2 }));
+    await loadPopup();
+
+    const { displayMode, status } = ui();
+    expect(status.textContent).toBe('已翻译 2 / 2 段');
+
+    displayMode.value = 'bilingual';
+    displayMode.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('重新翻译此页生效'));
+    expect(status.textContent).toBe('显示模式已更新，重新翻译此页生效。');
+    // 只写设置：弹窗不顺手重译、也不还原页面（那会把已经译好的内容丢掉）。
+    expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE]);
+  });
+
+  it('页面还没翻译时不打扰用户（不出现"重新翻译"这句）', async () => {
+    await seedSettings({ displayMode: 'translated-only' });
+    respondWithState(() => pageState());
+    await loadPopup();
+
+    const { displayMode, status } = ui();
+    displayMode.value = 'bilingual';
+    displayMode.dispatchEvent(new Event('change'));
+
+    await waitFor(async () => (await storedSettings()).displayMode === 'bilingual');
+    expect(status.textContent).toBe('按 Alt+T 也可以快速开关。');
+  });
+
+  it('保存被拒绝时说明原因并回滚下拉，不留下"改了其实没生效"', async () => {
+    await seedSettings({ displayMode: 'translated-only' });
+    await loadPopup();
+
+    const { displayMode, status } = ui();
+    // 真实可达：存储里的版本高于本代码时 saveSettings 明确拒绝（用户回退过版本）。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1 } });
+
+    displayMode.value = 'bilingual';
+    displayMode.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('设置未能保存'));
+    expect(displayMode.value).toBe('translated-only');
+    expect(status.textContent).toContain('已跳过保存');
   });
 });
 

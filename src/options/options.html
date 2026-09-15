@@ -41,12 +41,19 @@
       </section>
 
       <section class="card">
-        <h2>目标语言</h2>
+        <h2>语言与显示</h2>
         <label class="field">
           <span>把网页翻译成</span>
           <select id="target-lang"></select>
         </label>
-        <p id="target-hint" class="hint">改完记得点上面的「保存」。</p>
+        <label class="field">
+          <span>显示模式</span>
+          <select id="display-mode"></select>
+        </label>
+        <p id="target-hint" class="hint">
+          「仅译文」只显示译文（原文被隐藏，段落里的链接点不了，按 Alt+T 可还原）；「双语对照」在每段原文下方插入译文。
+          改完记得点上面的「保存」；已经翻译过的页面要重新翻译才会换过来。
+        </p>
       </section>
 
       <section class="card">

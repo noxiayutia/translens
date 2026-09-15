@@ -43,6 +43,7 @@ interface OptionsUi {
   test: HTMLButtonElement;
   engineStatus: HTMLParagraphElement;
   targetLang: HTMLSelectElement;
+  displayMode: HTMLSelectElement;
   clearCache: HTMLButtonElement;
   cacheStatus: HTMLParagraphElement;
 }
@@ -65,6 +66,7 @@ function ui(): OptionsUi {
     test: pick<HTMLButtonElement>('test-connection'),
     engineStatus: pick<HTMLParagraphElement>('engine-status'),
     targetLang: pick<HTMLSelectElement>('target-lang'),
+    displayMode: pick<HTMLSelectElement>('display-mode'),
     clearCache: pick<HTMLButtonElement>('clear-cache'),
     cacheStatus: pick<HTMLParagraphElement>('cache-status'),
   };
@@ -138,11 +140,12 @@ afterEach(() => {
 });
 
 describe('设置页：初始化', () => {
-  it('用存储里的设置填好引擎、目标语言、接口地址、Key 与模型', async () => {
+  it('用存储里的设置填好引擎、目标语言、显示模式、接口地址、Key 与模型', async () => {
     await seedSettings({
       engineId: 'openai-compat',
       engineConfig: { apiKey: 'sk-seeded', baseUrl: CUSTOM_BASE_URL, model: 'gpt-4o-mini' },
       targetLang: 'ja',
+      displayMode: 'bilingual',
     });
 
     const page = await loadOptions();
@@ -156,9 +159,23 @@ describe('设置页：初始化', () => {
     );
     expect(page.engine.value).toBe('openai-compat');
     expect(page.targetLang.value).toBe('ja');
+    expect(page.displayMode.value).toBe('bilingual');
     expect(page.baseUrl.value).toBe(CUSTOM_BASE_URL);
     expect(page.apiKey.value).toBe('sk-seeded');
     expect(page.model.value).toBe('gpt-4o-mini');
+  });
+
+  it('显示模式的两项与默认值与弹窗一致：仅译文 / 双语对照，默认仅译文', async () => {
+    await seedSettings();
+    const page = await loadOptions();
+
+    expect(Array.from(page.displayMode.options).map((option) => [option.value, option.textContent])).toEqual([
+      ['translated-only', '仅译文'],
+      ['bilingual', '双语对照'],
+    ]);
+    expect(page.displayMode.value).toBe('translated-only');
+    // 设置页也要如实说明"仅译文"的代价：段落里的链接点不了。
+    expect(document.getElementById('target-hint')?.textContent).toContain('链接点不了');
   });
 
   it('API Key 以 password 呈现，显示 / 隐藏按钮可切换且不动值', async () => {
@@ -202,6 +219,7 @@ describe('设置页：保存', () => {
     page.apiKey.value = 'sk-typed';
     page.model.value = 'deepseek-chat';
     page.targetLang.value = 'en';
+    page.displayMode.value = 'bilingual';
 
     page.save.click();
     await waitFor(() => page.engineStatus.dataset.kind !== undefined);
@@ -211,6 +229,8 @@ describe('设置页：保存', () => {
     expect(stored.engineId).toBe('openai-compat');
     expect(stored.engineConfig).toEqual({ apiKey: 'sk-typed', baseUrl: CUSTOM_BASE_URL, model: 'deepseek-chat' });
     expect(stored.targetLang).toBe('en');
+    // 显示模式也归这一页管：不写进去的话，下拉看着改了、其实下次打开还是旧值。
+    expect(stored.displayMode).toBe('bilingual');
   });
 
   /**

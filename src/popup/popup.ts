@@ -2,7 +2,7 @@
 import { LANGUAGES } from '../core/lang';
 import { ENGINES, getEngine } from '../engines/registry';
 import { MSG, type PageState } from '../shared/messages';
-import { loadSettings, saveSettings, type Settings } from '../shared/settings';
+import { loadSettings, saveSettings, type DisplayMode, type Settings } from '../shared/settings';
 
 /**
  * 按钮的三种态：不知道页面状态（`pageState === null`，初始与失败后）、
@@ -13,10 +13,20 @@ import { loadSettings, saveSettings, type Settings } from '../shared/settings';
  */
 const toggleButton = document.getElementById('toggle') as HTMLButtonElement;
 const statusText = document.getElementById('status') as HTMLParagraphElement;
+const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
 const optionsButton = document.getElementById('open-options') as HTMLButtonElement;
+
+/**
+ * 显示模式的两个选项。`translated-only` 放在最前面——它是默认值，也是用户最常想改的那一项
+ * （双语对照会把原文和译文叠在一页上，长文里很挤）。
+ */
+const DISPLAY_MODES: Array<{ value: DisplayMode; label: string }> = [
+  { value: 'translated-only', label: '仅译文' },
+  { value: 'bilingual', label: '双语对照' },
+];
 
 /** 发消息的兜底超时：内容脚本**可能永远不回**（见 `requestPageState` 的注释）。 */
 const TOGGLE_TIMEOUT_MS = 30_000;
@@ -40,9 +50,10 @@ function fillSelect(select: HTMLSelectElement, entries: Array<{ value: string; l
   }
 }
 
-/** 用存储里的设置填两个下拉，并把 hint 算对；保存失败回滚时也走这里。 */
+/** 用存储里的设置填三个下拉，并把 hint 算对；保存失败回滚时也走这里。 */
 function applySettings(next: Settings): void {
   settings = next;
+  fillSelect(displayModeSelect, DISPLAY_MODES, settings.displayMode);
   fillSelect(
     targetLangSelect,
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
@@ -261,7 +272,7 @@ async function saveSettingsOrReport(
   next: Settings,
   previous: Settings,
   control: HTMLSelectElement,
-  field: 'targetLang' | 'engineId',
+  field: 'targetLang' | 'engineId' | 'displayMode',
 ): Promise<void> {
   try {
     await saveSettings(next);
@@ -289,6 +300,24 @@ function onTargetLangChange(): void {
   });
 }
 
+/**
+ * 切换显示模式：**只写设置，当场不重译**。
+ *
+ * 显示模式是渲染时读的（内容脚本 `translatePage` 从设置里取一次），改完不会回头重画
+ * 已经译好的页面。这里如实告诉用户"要重新翻译才生效"，而不是假装立即生效——
+ * 页面纹丝不动而弹窗说"已生效"，用户只会以为功能坏了。
+ */
+function onDisplayModeChange(): void {
+  const previous = settings;
+  const next: Settings = { ...settings, displayMode: displayModeSelect.value as DisplayMode };
+  void saveSettingsOrReport(next, previous, displayModeSelect, 'displayMode').then(() => {
+    if (settings !== next) return;
+    if (pageState?.translated) {
+      statusText.textContent = '显示模式已更新，重新翻译此页生效。';
+    }
+  });
+}
+
 function onEngineChange(): void {
   const previous = settings;
   const next: Settings = { ...settings, engineId: engineSelect.value };
@@ -312,6 +341,7 @@ function init(): void {
     runSafely('操作失败', handleToggleClick);
   });
   targetLangSelect.addEventListener('change', onTargetLangChange);
+  displayModeSelect.addEventListener('change', onDisplayModeChange);
   engineSelect.addEventListener('change', onEngineChange);
   optionsButton.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
