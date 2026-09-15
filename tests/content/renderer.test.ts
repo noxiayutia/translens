@@ -161,6 +161,38 @@ describe('DomRenderer 状态与还原', () => {
     expect(host.shadowRoot?.querySelector('.jy-retry')).not.toBeNull();
   });
 
+  /**
+   * 实测渲染成「接口限流，请稍后重试重试」：`margin-left` 只是**视觉**分隔，
+   * 文本层面错误文案与按钮的「重试」直接相连——复制译文连着"重试"、读屏念"重试重试"、
+   * 禁用样式时挤成一团。要在按钮前补一个真正的空格文本节点，双语与仅译文两套样式都要。
+   */
+  it('双语模式：错误文案与重试按钮之间有空格文本节点（复制/读屏不粘连）', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '接口限流，请稍后重试');
+
+    const host = document.querySelector('jy-translation') as Element;
+    // textContent 是"复制/读屏"看到的整体文本：两个"重试"之间必须有分隔的空格。
+    expect(bodyTextOf(host)).toBe('接口限流，请稍后重试 重试');
+    // 不挂按钮的失败（canRetry:false）不许多出这个空格。
+    const plain = paragraph('Second text');
+    const plainRenderer = new DomRenderer(document, 'bilingual');
+    plainRenderer.mount(plain, 'pending');
+    plainRenderer.fail(plain.id, '缺少 API Key', false);
+    expect(bodyTextOf(document.querySelectorAll('jy-translation')[1] as Element)).toBe('缺少 API Key');
+  });
+
+  it('仅译文模式：同样以空格文本节点分隔错误文案与重试按钮', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '接口限流，请稍后重试');
+
+    const host = segment.element.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toBe('接口限流，请稍后重试 重试');
+  });
+
   it('点击重试按钮触发回调', () => {
     const segment = paragraph('Hello world');
     const onRetry = vi.fn();

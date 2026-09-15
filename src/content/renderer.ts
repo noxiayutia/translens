@@ -334,6 +334,14 @@ export class DomRenderer {
       body.classList.add('jy-error');
       body.textContent = text ?? '翻译失败';
       if (!canRetry) return;
+      /**
+       * 真正的空格文本节点，而不是只靠 CSS 的 `margin-left`：
+       * 实测「接口限流，请稍后重试」+ 按钮「重试」在文本层面连成"重试重试"——
+       * 复制走的就是这串文本、读屏逐字念出来、按钮被禁用样式压掉间距时直接在页面上
+       * 贴成一团。两套译文样式（双语/仅译文）共用这条路径，所以补一次两边都好。
+       * 不可重试的分支在上面就 return 了，不挂按钮也就不会多出这个空格。
+       */
+      body.append(this.document.createTextNode(' '));
       const button = this.document.createElement('button');
       button.className = 'jy-retry';
       button.type = 'button';
