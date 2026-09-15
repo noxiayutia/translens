@@ -167,6 +167,58 @@ function isEditable(element: Element): boolean {
 }
 
 /**
+ * 「什么算一段」的**向上**判据：从给定元素出发，找最近的叶子文本块。
+ * 悬停翻译用它，整页翻译（{@link collectSegments}）按同一批底层谓词向下切段——
+ * 两处各写一份判据迟早会漂移，所以这些谓词（{@link isBlockBoundary}、{@link inlineText}、
+ * {@link isHidden}、{@link isSkippedForText}）只此一份，谁要用谁就 import。
+ *
+ * 一个元素是"叶子文本块"，当且仅当：
+ * 1. 它自己不在被跳过的范围里（`[data-jy-root]` 子树、`SKIP_TAGS`、可编辑区域）——
+ *    命中即**直接返回 null**：右键/悬停落在按钮或输入框上不是"段落没找到"，是"这里不该翻译"；
+ * 2. 它内部没有块级边界子元素（有就是容器，块级子元素各自成段，见 collectSegments 的注释）；
+ * 3. 它的可见文本可翻译（{@link isTranslatableText}，与采集端同一条判据）；
+ * 4. 它是"块"——自身是块级边界（{@link isBlockBoundary}），或其父是 body
+ *    （采集以 `document.body` 为根，它的直接子元素一律会被 visitBlock，行内也算）。
+ *    少了这条，`<p>Hello <b>world</b></p>` 里悬停 `<b>` 会把 `world` 单独当一段，
+ *    而采集端认定的是整段 `Hello world`——判据就漂移了。
+ *
+ * 不满足 2~4 的元素（隐藏元素、容器、行内包裹）继续向上找；到根还没有就返回 null。
+ *
+ * 已知边界：混合容器（`<div>Intro<p>Body</p></div>` 的 Intro）在采集端是松散文本段，
+ * 但它**有**块级子元素，本函数按上面的判据返回 null——指针停在容器留白上时没有可悬停的
+ * 整段。这是刻意收紧：宁可少翻一处，也不在悬停路径上重做一遍 textRun 的落点判定。
+ */
+export function findLeafTextAncestor(element: Element | null): HTMLElement | null {
+  const styleOf = createStyleLookup();
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    // 1. 命中即停：这些区域不是"还没找到段落"，是"这里永远不翻译"。
+    if (node.closest('[data-jy-root]') !== null) return null;
+    if (SKIP_TAGS.has(node.tagName) || isEditable(node)) return null;
+    // 隐藏元素本身没有可悬停的字面（display:none 不产生盒），但它的可见祖先照常是段落，
+    // 所以不返回、继续向上。（aria-hidden 的可见节点走到下面的正常判定。）
+    if (isHidden(node, styleOf)) continue;
+    // 2. 含块级边界 → 容器，不是叶子。
+    if (hasBlockBoundaryChild(node, styleOf)) continue;
+    // 3. 可见文本判据与采集端逐字相同。
+    if (!isTranslatableText(inlineText(node, styleOf))) continue;
+    // 4. "块"身份判据与 visitBlock 的入口一致。
+    const parent = node.parentElement;
+    if (parent === null || parent === document.body || isBlockBoundary(node, styleOf, 0)) {
+      return node instanceof HTMLElement ? node : null;
+    }
+  }
+  return null;
+}
+
+function hasBlockBoundaryChild(element: Element, styleOf: StyleLookup): boolean {
+  for (const child of Array.from(element.children)) {
+    if (isSkippedForText(child) || child.nodeName === 'BR') continue;
+    if (isBlockBoundary(child, styleOf, 0)) return true;
+  }
+  return false;
+}
+
+/**
  * 一个子元素算不算**块级边界**（即：父元素的文本到此为止，这块自己成段）：
  * 1. 它的 computed display 在白名单里；或者
  * 2. 它是透明包裹（inline-block / inline-flex / inline-grid / contents）**并且**内部存在块级后代。
