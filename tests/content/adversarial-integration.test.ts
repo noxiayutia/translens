@@ -111,8 +111,11 @@ describe('核验 6：存储里的模式真的被渲染器采纳', () => {
     expect(p.nextElementSibling).toBeNull();
   });
 
-  it("存储 displayMode='bilingual' → 宿主是段落的兄弟节点，不隐藏任何原文", async () => {
-    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'bilingual' } });
+  it("存储 v2 + displayMode='bilingual' → 宿主是段落的兄弟节点，不隐藏任何原文", async () => {
+    // 必须写 version: 2。v1 存储里的 'bilingual' 是当时的默认值被 saveSettings 冻结下来的
+    // （v1 没有任何界面能改显示模式），升级时会被迁移成 translated-only；
+    // v2 里的 'bilingual' 才是用户在界面上真的选过的，必须被尊重。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: 2, displayMode: 'bilingual' } });
     document.body.innerHTML = '<article><p id="p">Click <a href="/x">here</a> now</p><p id="q">Second text here</p></article>';
     const p = document.getElementById('p') as HTMLElement;
     const { worker, listener } = await loadContentScript();

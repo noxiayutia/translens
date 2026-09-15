@@ -108,6 +108,41 @@ describe('显示模式（默认值、迁移）', () => {
     await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'replace' } });
     expect((await loadSettings(area)).displayMode).toBe('translated-only');
   });
+
+  describe('v1 → v2：冻结的 displayMode 要迁到新默认', () => {
+    /**
+     * 这一条是实测踩出来的：用户配完 DeepSeek（点过保存）之后升级到「仅译文」，
+     * 页面上却还是双语。原因是 `saveSettings` 是**整份覆盖**——那次保存把当时的默认值
+     * `bilingual` 一起冻结进了存储，而它是个合法值，程序没有理由覆盖它。
+     *
+     * v1 时代设置页与弹窗都没有改显示模式的界面，所以存储里的 `bilingual` 一定是冻结的
+     * 默认值，不是用户的选择。因此按版本号迁移是安全的，也是唯一能让老用户拿到新默认的办法。
+     */
+    it('v1 存储里的 bilingual 迁成 translated-only', async () => {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'bilingual' } });
+      expect((await loadSettings(area)).displayMode).toBe('translated-only');
+    });
+
+    it('v2 存储里的 bilingual 是用户真的选过的，不能动', async () => {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: { version: 2, displayMode: 'bilingual' } });
+      expect((await loadSettings(area)).displayMode).toBe('bilingual');
+    });
+
+    it('迁移只看版本号，v1 里已经是 translated-only 的保持不动', async () => {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'translated-only' } });
+      expect((await loadSettings(area)).displayMode).toBe('translated-only');
+    });
+
+    it('读完之后版本号被标成当前版本，不会每次加载都再迁一遍', async () => {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'bilingual' } });
+      const settings = await loadSettings(area);
+      expect(settings.version).toBe(CURRENT_VERSION);
+    });
+  });
 });
 
 describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {

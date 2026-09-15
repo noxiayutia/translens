@@ -63,7 +63,7 @@ export interface Settings {
 export const SETTINGS_KEY = 'jinyi:settings';
 
 /** 当前设置 schema 版本；改动字段语义时递增。 */
-export const CURRENT_VERSION = 1;
+export const CURRENT_VERSION = 2;
 
 export const DEFAULT_SETTINGS: Settings = {
   version: CURRENT_VERSION,
@@ -256,11 +256,35 @@ function resolveArea(area?: StorageArea): StorageArea {
  * 真正需要结构上隔离的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
  * 那个类型里根本没有 `apiKey` 字段。密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
  *
- * 这里也是**迁移入口**（规格 §7.3）：版本号必须从存储里真实读出来，否则将来
- * 无从判断该按哪一版语义解释老数据。当前只有 v1，所以 v1 数据只需逐字段补齐；
- * v0 之类的历史版本号今天不可能出现；读到**比本代码更新**的版本号说明用户装过
- * 新版扩展后又回退了，此时按 v1 语义解释 v2 数据会得出错误结果，因此明确拒绝，
- * 而不是静默降级。将来新增 v2 时，在这个分支里按 `storedVersion` 补迁移步骤。
+ * 这里也是**迁移入口**（规格 §7.3），具体步骤见 `migrate`。
+ */
+/**
+ * 按**存储里的真实版本号**迁移老数据。新增一版就在这里加一步。
+ *
+ * **v1 → v2：`displayMode` 的 `'bilingual'` 迁到 `'translated-only'`。**
+ * v1 时代设置页与弹窗都**没有**改显示模式的界面（那个开关是 v2 才加的），所以存储里的
+ * `displayMode` 一定是当时的默认值被 `saveSettings` 整份覆盖时**冻结**下来的——用户只要
+ * 配过一次引擎或改过目标语言，就会把它一起写进去——不可能是用户的选择。
+ * 不迁的话，所有配过引擎的老用户升级后仍然看到双语，而他们从来没选过双语
+ * （实测就是这么发生的：用户配完 DeepSeek 后升级，页面还是双语）。
+ *
+ * 只动 `'bilingual'`：`'replace'` 交给 `pickDisplayMode` 映射，其余脏值交给它兜底。
+ * v2 及以后存储里的 `'bilingual'` 是用户真的在界面上选过的，**不能动**。
+ */
+function migrate(raw: unknown, storedVersion: number): unknown {
+  if (storedVersion >= 2) return raw;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  if (record.displayMode !== 'bilingual') return raw;
+  return { ...record, displayMode: 'translated-only' };
+}
+
+/**
+ * 读出扩展设置。**这是迁移入口**（规格 §7.3）：版本号必须从存储里真实读出来，
+ * 否则无从判断该按哪一版语义解释老数据。
+ *
+ * 读到**比本代码更新**的版本号说明用户装过新版扩展后又回退了，此时按旧语义解释新数据
+ * 会得出错误结果，因此明确拒绝，而不是静默降级。
  */
 export async function loadSettings(area?: StorageArea): Promise<Settings> {
   const target = resolveArea(area);
@@ -270,7 +294,7 @@ export async function loadSettings(area?: StorageArea): Promise<Settings> {
   if (storedVersion > CURRENT_VERSION) {
     throw new Error(`设置版本 ${storedVersion} 高于当前支持的 ${CURRENT_VERSION}，请更新扩展`);
   }
-  return mergeSettings(stored, CURRENT_VERSION);
+  return mergeSettings(migrate(stored, storedVersion), CURRENT_VERSION);
 }
 
 /** 不带 API Key 的设置投影，供**内容脚本**使用（它跑在网页进程里）。 */
