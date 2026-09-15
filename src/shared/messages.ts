@@ -1,5 +1,6 @@
 // src/shared/messages.ts
 import type { EngineErrorCode } from '../engines/types';
+import type { DisplayMode } from './settings';
 
 export const MSG = {
   /** 内容脚本 → SW：请求翻译一批文本 */
@@ -44,7 +45,8 @@ export type TranslateTextsResponse =
 
 export interface PageState {
   translated: boolean;
-  mode: 'bilingual' | 'replace';
+  /** 这一轮翻译用的是哪种显示方式（弹窗按它告诉用户当前页面处于什么状态）。 */
+  mode: DisplayMode;
   total: number;
   done: number;
   failed: number;

@@ -76,6 +76,40 @@ describe('mergeSettings', () => {
   });
 });
 
+describe('显示模式（默认值、迁移）', () => {
+  it('默认是「仅译文」', () => {
+    expect(DEFAULT_SETTINGS.displayMode).toBe('translated-only');
+    expect(mergeSettings({}).displayMode).toBe('translated-only');
+    expect(mergeSettings({ targetLang: 'ja' }).displayMode).toBe('translated-only');
+  });
+
+  it('保留用户明确选过的双语', () => {
+    expect(mergeSettings({ displayMode: 'bilingual' }).displayMode).toBe('bilingual');
+    expect(mergeSettings({ displayMode: 'translated-only' }).displayMode).toBe('translated-only');
+  });
+
+  it("把老数据里的 'replace' 迁移成 'translated-only'，而不是回落", () => {
+    // 老用户的存储里就是 'replace'（v1 时代的"整页替换"）。当成未知值处理会退回**默认值**，
+    // 于是默认值哪天再变一次，他们就会莫名其妙地被切回双语——那正是他们当年特意改掉的默认行为。
+    // 所以映射写死成 'translated-only'，与当前的默认值是不是它无关（这条断言不引用
+    // DEFAULT_SETTINGS，正是为了在默认值改变时仍然有意义）。
+    expect(mergeSettings({ displayMode: 'replace' }).displayMode).toBe('translated-only');
+    expect(mergeSettings({ displayMode: 'replace', version: 1 }).displayMode).toBe('translated-only');
+  });
+
+  it('不认识的显示模式退回默认值', () => {
+    for (const raw of ['nope', '', null, 42, {}, []]) {
+      expect(mergeSettings({ displayMode: raw }).displayMode).toBe(DEFAULT_SETTINGS.displayMode);
+    }
+  });
+
+  it('loadSettings 读到老数据时就完成迁移（不需要用户再改一次设置）', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'replace' } });
+    expect((await loadSettings(area)).displayMode).toBe('translated-only');
+  });
+});
+
 describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
   const baseUrlOf = (value: unknown): string =>
     mergeSettings({ engineConfig: { baseUrl: value } }).engineConfig.baseUrl;
