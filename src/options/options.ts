@@ -292,18 +292,27 @@ async function handleTest(): Promise<void> {
 }
 
 /**
- * 清除翻译缓存：删掉存储里全部 `jt:` 前缀的键。
+ * 清除翻译缓存：删掉**两层**（持久层 + 会话层）全部 `jt:` 前缀的键。
  *
  * 用 `TranslationCache` 而不是自己拼 `jt:` 前缀：缓存的键名、元数据键、形状坏掉的残留
  * 都归它管（`clear()` 就是为这件事写的），设置页不该再维护一份关于缓存内部结构的假设。
- * 报出来的条数是**真实条目数**（`count()` 走全量扫描，不含计数元数据与坏记录）。
+ *
+ * **会话层必须一起清**：翻译读取走 `TieredCache`（先查会话层）。只清持久层的话，
+ * 用户点完"清除"立刻重译页面照样零请求命中——按钮看起来失灵，报出的条数也系统性少报。
+ * 设置页是扩展自身的受信页面（`chrome-extension://` 同源），可以直接访问
+ * `chrome.storage.session`（其默认可见级别正是 TRUSTED_CONTEXTS），不需要绕道后台消息。
+ *
+ * 报出来的条数是**两层各自真实条目数之和**（`count()` 走全量扫描，不含计数元数据与
+ * 形状坏掉的残留）。
  */
 async function handleClearCache(): Promise<void> {
-  const area = chromeArea(chrome.storage.local);
-  const cache = new TranslationCache(area, settings?.cacheMaxEntries);
-  const before = await cache.count();
-  await cache.clear();
-  setStatus(cacheStatus, 'ok', before === 0 ? '缓存本来就是空的' : `已清除 ${before} 条翻译缓存`);
+  const maxEntries = settings?.cacheMaxEntries;
+  const persistent = new TranslationCache(chromeArea(chrome.storage.local), maxEntries);
+  const session = new TranslationCache(chromeArea(chrome.storage.session), maxEntries);
+  const [persistentBefore, sessionBefore] = await Promise.all([persistent.count(), session.count()]);
+  await Promise.all([persistent.clear(), session.clear()]);
+  const cleared = persistentBefore + sessionBefore;
+  setStatus(cacheStatus, 'ok', cleared === 0 ? '缓存本来就是空的' : `已清除 ${cleared} 条翻译缓存`);
 }
 
 /** 显示 / 隐藏 API Key。只改 `type` 与按钮文案，值不动（更不会复制到别处）。 */

@@ -63,7 +63,10 @@
 
       <section class="card">
         <h2>翻译缓存</h2>
-        <p class="hint">缓存里存的是原文与译文，不含 API Key。清除后所有页面都需要重新翻译一次。</p>
+        <p class="hint">
+          缓存里存的是原文与译文，不含 API Key。「清除」会<strong>同时清掉会话层与持久层</strong>两层缓存，
+          清完后所有页面都要重新翻译一次（报出的条数是两层合计）。
+        </p>
         <button id="clear-cache" class="ghost" type="button">清除翻译缓存</button>
         <p id="cache-status" class="status" role="status" aria-live="polite"></p>
       </section>

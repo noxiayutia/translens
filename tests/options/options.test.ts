@@ -610,7 +610,14 @@ describe('设置页：服务商预设', () => {
 });
 
 describe('设置页：清除翻译缓存', () => {
-  it('删掉全部 jt: 前缀的键并报出清掉的条数', async () => {
+  /**
+   * **行为修正记录**：这条用例原先钉的是「清除只动持久层、不碰 session」——当时是
+   * 有意的界面决策，测试忠实记录了它。但 `TieredCache.getMany` 先查会话层：点完"清除"
+   * 立刻重译页面照样零请求命中，按钮看起来失灵；报出的条数也系统性少报。按钮的语义
+   * （「清除翻译缓存」）覆盖两层，界面承诺 > 旧决策，于是断言从「钉住当时的设计」改成
+   * 「钉住修正后的行为」：两层一起清、计数报两层合计。
+   */
+  it('持久层与会话层一并清掉，计数报两层合计；非缓存键一律不动', async () => {
     await seedSettings({ targetLang: 'ja' });
     await chromeStub.storage.local.set({
       'jt:aaa': { v: '译文一', t: 1 },
@@ -618,22 +625,39 @@ describe('设置页：清除翻译缓存', () => {
       'jt:meta': { n: 2 },
       'other:key': 'keep-me',
     });
-    // session 里的缓存不属于本按钮的职责（它随浏览器会话消失），这里顺手钉住不动它。
-    await chromeStub.storage.session.set({ 'jt:session': { v: '会话层', t: 3 } });
+    await chromeStub.storage.session.set({
+      'jt:session': { v: '会话层', t: 3 },
+      'other:session-key': 'keep-me-too',
+    });
 
     const page = await loadOptions();
     page.clearCache.click();
     await waitFor(() => page.cacheStatus.dataset.kind !== undefined);
 
     expect(page.cacheStatus.dataset.kind).toBe('ok');
-    expect(page.cacheStatus.textContent).toContain('已清除 2 条翻译缓存');
+    // 持久层 2 条 + 会话层 1 条：少报的那一条正是"清完仍命中缓存"的来源。
+    expect(page.cacheStatus.textContent).toContain('已清除 3 条翻译缓存');
 
     const left = await chromeStub.storage.local.keys();
     expect(left.filter((key) => key.startsWith('jt:'))).toEqual([]);
-    // 非缓存键一律不动。
+    // 非缓存键一律不动（两层都是）。
     expect(left).toContain('other:key');
     expect(left).toContain(SETTINGS_KEY);
-    expect(await chromeStub.storage.session.keys()).toEqual(['jt:session']);
+    const sessionLeft = await chromeStub.storage.session.keys();
+    expect(sessionLeft.filter((key) => key.startsWith('jt:'))).toEqual([]);
+    expect(sessionLeft).toEqual(['other:session-key']);
+  });
+
+  it('只有会话层有条目时也报数并清掉（重译不再零请求）', async () => {
+    await seedSettings();
+    await chromeStub.storage.session.set({ 'jt:only-session': { v: '会话层独苗', t: 1 } });
+
+    const page = await loadOptions();
+    page.clearCache.click();
+    await waitFor(() => page.cacheStatus.dataset.kind !== undefined);
+
+    expect(page.cacheStatus.textContent).toContain('已清除 1 条翻译缓存');
+    expect((await chromeStub.storage.session.keys()).filter((key) => key.startsWith('jt:'))).toEqual([]);
   });
 
   it('缓存本来就是空的时候如实说明，而不是报「已清除 0 条」', async () => {
