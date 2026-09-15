@@ -358,6 +358,52 @@ describe('DomRenderer 仅译文模式', () => {
   });
 });
 
+describe('译文样式：两种模式的诉求相反', () => {
+  /** 宿主 Shadow DOM 里实际注入的那份样式表。 */
+  const injectedCss = (): string =>
+    document.querySelector('jy-translation')?.shadowRoot?.querySelector('style')?.textContent ?? '';
+
+  it('仅译文模式对排版透明：不写死颜色、不加边框内边距、不撑成块', () => {
+    // 回归的是实测 bug：apple.com 的小按钮（<a class="button">Learn more</a>，白字蓝底、
+    // 写死行高与 nowrap）在仅译文下变宽、变高、字号与颜色都变了。根因全在我们自己
+    // 注入的译文样式里——那套区分性样式在双语模式是特性，在替代原文时是破坏。
+    const segment = paragraph('Learn more');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '了解更多');
+
+    const css = injectedCss();
+    expect(css.length).toBeGreaterThan(0);
+
+    // 硬编码颜色会让白字按钮上的译文变成"蓝底上的深蓝字"，几乎看不见。
+    expect(css).toContain('color: inherit');
+    expect(css).not.toContain('#2b6cb0');
+    // 左边框 + 左内边距给按钮凭空加了约 11px 宽（用户报的「变长了」）。
+    expect(css).not.toContain('border-left');
+    expect(css).toContain('border: 0');
+    // 0.97em 让字号与周围文字脱节；line-height 1.6 撑高行盒（用户报的「大小变了」）。
+    expect(css).not.toContain('0.97em');
+    expect(css).toContain('font: inherit');
+    // 块级盒子会把行内按钮里的文字撑成两行。
+    expect(css).toContain('display: inline');
+    expect(css).not.toContain('display: block');
+    // 按钮常写 white-space:nowrap，我们若强行 pre-wrap 就会把它撑开。
+    expect(css).toContain('white-space: inherit');
+  });
+
+  it('双语模式保留区分性样式：译文要看得出是译文', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '你好世界');
+
+    const css = injectedCss();
+    expect(css).toContain('#2b6cb0');
+    expect(css).toContain('border-left');
+    expect(css).toContain('display: block');
+  });
+});
+
 describe('DomRenderer 仅译文模式：失败态', () => {
   it('失败时显示错误文案与重试按钮，不是静默', () => {
     const segment = paragraph('Hello world');

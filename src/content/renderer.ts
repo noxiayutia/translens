@@ -1,7 +1,7 @@
 import type { ExtractedSegment } from './extractor';
 import { createStyleLookup, inlineText, isBlockDisplay } from './extractor';
 import type { DisplayMode } from '../shared/settings';
-import { TRANSLATION_CSS } from './styles';
+import { TRANSLATION_CSS, TRANSLATION_INLINE_CSS } from './styles';
 
 export type { DisplayMode };
 
@@ -309,7 +309,9 @@ export class DomRenderer {
 
     const shadow = host.attachShadow({ mode: 'open' });
     const style = this.document.createElement('style');
-    style.textContent = TRANSLATION_CSS;
+    // 双语模式要"看得出这是译文"，仅译文模式要"看不出这不是原文"——两套诉求相反，
+    // 共用一份样式就会互相破坏（详见 styles.ts 里 TRANSLATION_INLINE_CSS 的注释）。
+    style.textContent = this.mode === 'translated-only' ? TRANSLATION_INLINE_CSS : TRANSLATION_CSS;
     const body = this.document.createElement('span');
     body.className = 'jy-body';
     shadow.append(style, body);

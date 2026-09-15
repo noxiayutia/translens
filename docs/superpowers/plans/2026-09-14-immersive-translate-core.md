@@ -6179,6 +6179,52 @@ export const TRANSLATION_CSS = `
     cursor: pointer;
   }
 `;
+
+/**
+ * 「仅译文」模式的译文样式：**刻意做到样式透明**。
+ *
+ * 这个模式下译文是**替代**原文的，所以它必须长得和原文一模一样。上面那套区分性样式
+ * 在这里每一条都是破坏，而且是实测踩出来的（apple.com 的小按钮）：
+ *
+ * - 硬编码 `color` 会盖掉元素自己的颜色 —— `.button` 是白字蓝底，译文变成蓝底上的深蓝字，
+ *   几乎看不见；
+ * - `border-left` + `padding-left` 给按钮凭空加了约 11px 宽（用户报的「变长了」）；
+ * - `margin` 与 `line-height: 1.6` 撑高行盒（用户报的「大小变了」）；
+ * - `font-size: 0.97em` 让字号与周围文字脱节（用户报的「字体大小变了」）；
+ * - `display: block` 把 `<a class="button">` 里的行内文字撑成块，直接换行。
+ *
+ * 所以这里一律走 `inherit`，并用 `display: inline` 让文字回到原来的行内流里。
+ * `white-space` 也必须继承：按钮常写 `nowrap`，我们若强行 `pre-wrap` 就会让它撑成两行。
+ *
+ * 只有**错误态**保留颜色 —— 那是有意要跳出来的信号，不是排版。
+ */
+export const TRANSLATION_INLINE_CSS = `
+  :host { display: inline; }
+  .jy-body {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    font: inherit;
+    line-height: inherit;
+    color: inherit;
+    white-space: inherit;
+    overflow-wrap: break-word;
+  }
+  .jy-body.jy-pending { opacity: 0.55; }
+  .jy-body.jy-error { color: #b3261e; }
+  .jy-retry {
+    margin-left: 0.4em;
+    padding: 0 0.4em;
+    font: inherit;
+    font-size: 0.85em;
+    color: inherit;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+`;
 ```
 
 - [ ] **Step 2: 写失败的测试**
@@ -6545,6 +6591,52 @@ describe('DomRenderer 仅译文模式', () => {
   });
 });
 
+describe('译文样式：两种模式的诉求相反', () => {
+  /** 宿主 Shadow DOM 里实际注入的那份样式表。 */
+  const injectedCss = (): string =>
+    document.querySelector('jy-translation')?.shadowRoot?.querySelector('style')?.textContent ?? '';
+
+  it('仅译文模式对排版透明：不写死颜色、不加边框内边距、不撑成块', () => {
+    // 回归的是实测 bug：apple.com 的小按钮（<a class="button">Learn more</a>，白字蓝底、
+    // 写死行高与 nowrap）在仅译文下变宽、变高、字号与颜色都变了。根因全在我们自己
+    // 注入的译文样式里——那套区分性样式在双语模式是特性，在替代原文时是破坏。
+    const segment = paragraph('Learn more');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '了解更多');
+
+    const css = injectedCss();
+    expect(css.length).toBeGreaterThan(0);
+
+    // 硬编码颜色会让白字按钮上的译文变成"蓝底上的深蓝字"，几乎看不见。
+    expect(css).toContain('color: inherit');
+    expect(css).not.toContain('#2b6cb0');
+    // 左边框 + 左内边距给按钮凭空加了约 11px 宽（用户报的「变长了」）。
+    expect(css).not.toContain('border-left');
+    expect(css).toContain('border: 0');
+    // 0.97em 让字号与周围文字脱节；line-height 1.6 撑高行盒（用户报的「大小变了」）。
+    expect(css).not.toContain('0.97em');
+    expect(css).toContain('font: inherit');
+    // 块级盒子会把行内按钮里的文字撑成两行。
+    expect(css).toContain('display: inline');
+    expect(css).not.toContain('display: block');
+    // 按钮常写 white-space:nowrap，我们若强行 pre-wrap 就会把它撑开。
+    expect(css).toContain('white-space: inherit');
+  });
+
+  it('双语模式保留区分性样式：译文要看得出是译文', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '你好世界');
+
+    const css = injectedCss();
+    expect(css).toContain('#2b6cb0');
+    expect(css).toContain('border-left');
+    expect(css).toContain('display: block');
+  });
+});
+
 describe('DomRenderer 仅译文模式：失败态', () => {
   it('失败时显示错误文案与重试按钮，不是静默', () => {
     const segment = paragraph('Hello world');
@@ -6857,7 +6949,7 @@ Expected: FAIL — 模块不存在。
 import type { ExtractedSegment } from './extractor';
 import { createStyleLookup, inlineText, isBlockDisplay } from './extractor';
 import type { DisplayMode } from '../shared/settings';
-import { TRANSLATION_CSS } from './styles';
+import { TRANSLATION_CSS, TRANSLATION_INLINE_CSS } from './styles';
 
 export type { DisplayMode };
 
@@ -7165,7 +7257,9 @@ export class DomRenderer {
 
     const shadow = host.attachShadow({ mode: 'open' });
     const style = this.document.createElement('style');
-    style.textContent = TRANSLATION_CSS;
+    // 双语模式要"看得出这是译文"，仅译文模式要"看不出这不是原文"——两套诉求相反，
+    // 共用一份样式就会互相破坏（详见 styles.ts 里 TRANSLATION_INLINE_CSS 的注释）。
+    style.textContent = this.mode === 'translated-only' ? TRANSLATION_INLINE_CSS : TRANSLATION_CSS;
     const body = this.document.createElement('span');
     body.className = 'jy-body';
     shadow.append(style, body);
