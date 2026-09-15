@@ -15,6 +15,14 @@ export const MSG = {
   GET_PAGE_STATE: 'jinyi:get-page-state',
   /** 右键菜单 → 内容脚本：翻译选中文本 */
   TRANSLATE_SELECTION: 'jinyi:translate-selection',
+  /**
+   * 弹窗 → 内容脚本：「悬停翻译 / 划词翻译」开关改了。
+   *
+   * 这两个开关控制的是**监听器挂没挂**，只写进设置不会让当前页面已经挂上/缺席的监听
+   * 自己出现或消失——弹窗必须把改动推给内容脚本，让它当场重新挂/摘，
+   * 否则用户拨了开关、页面却纹丝不动（规格 §7.1 要求"改动即时生效"）。
+   */
+  APPLY_SETTINGS: 'jinyi:apply-settings',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];

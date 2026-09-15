@@ -226,6 +226,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
   }
 }
 
+/** 让已经排队的微任务链（替身的即时响应 → 浮层渲染）跑完。 */
+async function settle(rounds = 3): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /**
  * 参照实现：与 `core/lang.ts` 的 `isTranslatableText` 无关地算一遍"这段文字值不值得翻"，
  * 用来在用例里独立算出期望的段落集合（含 `\p{N}`，见那边 2 个字母/数字的门槛）。
@@ -831,7 +836,13 @@ describe('内容脚本编排：消息接口', () => {
     expect(state).toEqual({ translated: false, mode: 'translated-only', total: 0, done: 0, failed: 0 });
   });
 
-  it('TRANSLATE_SELECTION 被忽略：不报错、不发请求、不改页面', async () => {
+  /**
+   * 右键菜单的选区消息从 Plan 1 的"有意忽略"变成实际实现（WU·Plan2 划词单元）：
+   * 内容脚本接管并回执 `{ok:true}`；读不到选区时用菜单带来的 payload.text 兜底
+   * （jsdom 的 `window.getSelection().rangeCount` 恒为 0，正是这条路径），
+   * 发一条正常的 TRANSLATE_TEXTS 请求，结果进浮层，不动页面。
+   */
+  it('TRANSLATE_SELECTION 走划词路径：兜底文本发起一次翻译并显示在气泡里', async () => {
     mount('<p>Hello world</p>');
     const { worker, contentListener } = await loadContentScript();
     worker.mockImplementation(autoReply());
@@ -840,14 +851,18 @@ describe('内容脚本编排：消息接口', () => {
       type: MSG.TRANSLATE_SELECTION,
       payload: { text: 'Hello world' },
     });
-
-    // Plan 1 没有划词气泡：内容脚本不接管这条消息（返回 false 即"没人处理"），
-    // 也不会响应——后台那边的 tabs.sendMessage 照常收尾，不会变成未处理的拒绝。
     expect(result.returned).toBe(false);
-    expect(result.responded).toBe(false);
-    expect(translateRequests(worker)).toHaveLength(0);
+    expect(result.responded).toBe(true);
+    await settle();
+
+    const batches = sentBatches(worker);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((item) => item.text)).toEqual(['Hello world']);
+    const bubble = document.querySelector('[data-jy-tooltip]');
+    expect(bubble?.shadowRoot?.textContent).toContain('译:Hello world');
+    // 浮层挂 documentElement：页面内容一个字节都不动。
+    expect(document.body.innerHTML).toBe('<p>Hello world</p>');
     expect(hosts()).toHaveLength(0);
-    expect(document.getElementById('jy-toast')).toBeNull();
   });
 
   it('只处理自己的消息，陌生的 type 不会被误当成翻译请求', async () => {
