@@ -145,6 +145,17 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
   }
 
   /**
+   * 该元素是否落在某个**已翻译过的整元素段落**里面（含自身）。
+   *
+   * extractor 的 `data-jy-translated` 短路只查元素**自身**，整页采集自顶向下走、
+   * 祖先被短路就等于子树被短路；而增量是从子孙节点切入的，会绕过那道闸。
+   * 所以候选根这一侧必须自己查祖先，否则会把已译内容连着一段新文本重新译一遍。
+   */
+  function insideTranslatedBlock(element: Element): boolean {
+    return element.closest('[data-jy-translated]') !== null;
+  }
+
+  /**
    * 「混合容器」：既有非空白直接文本、又有块级直接子元素（`<div>Intro<p>…</p>Outro</div>`
    * 的 Intro/Outro 那种松散文本段形态）。新增节点长在它里面时**必须改扫父容器**：
    * 只扫新增元素本身，那段直接文本会被漏掉（它不属于任何新增元素）。
@@ -176,8 +187,15 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
     for (const node of nodes) {
       if (node.nodeType === Node.TEXT_NODE) {
         // 新增的是裸文本节点：它自己成不了段（没有可挂的落点语义），只能扫它的父元素。
+        //
+        // 但父元素（或它的某个祖先）可能**本身就是上一轮翻好的整元素段落**：
+        // `<div>Hello <span>one</span> readers</div>` 整段译完后往里追加一个裸文本节点，
+        // 扫父元素会得到一段**包含已译内容**的文本，于是旧词被再译一遍、并多挂一个宿主，
+        // 与已有的那个宿主并存。extractor 的 `data-jy-translated` 短路只查元素**自身**，
+        // 整页路径自顶向下天然被祖先挡住，而增量路径是从子孙切入的，绕过了它——所以这里补上
+        // 祖先检查。这属于"改动了已译段落"，与"只管新增"的既定范围一致：不重译、也不重复译。
         const parent = (node as Text).parentElement;
-        if (parent !== null && parent.isConnected) roots.add(parent);
+        if (parent !== null && parent.isConnected && !insideTranslatedBlock(parent)) roots.add(parent);
         continue;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
@@ -227,13 +245,18 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         dirty = false;
 
         // —— 自变更防护窗口：先 disconnect 再写，最后一步才重新 observe。
-        //    两个动作各挡一种泄漏，一律不许拆（变异实验结论钉在测试「溢出补轮」用例注释里）：
-        //    - disconnect：写入期间注销观察者，自写入不进队列；规范上还顺带丢弃
-        //      「已检测到但未投递」的积压记录（MDN disconnect() 的 Note），所以紧随其后的
-        //      takeRecords 在合规宿主里是双保险——保留它是为了队列语义哪天偏离规范时，
-        //      循环当场红在测试里，而不是上线才炸。
-        //    - 写后的 takeRecords：挡「注册态开轮」的情形——溢出补轮由定时器直接唤起、
-        //      中间没有投递注销，挂载写入会进队列；这批记录必须死在重新 observe 之前。
+        //
+        // 按规范与实测，**真正起作用的是 disconnect 这一个动作**：写入发生在注销态，
+        // 记录根本不会入队（jsdom 的 `disconnect()` 同时清空 `_recordQueue`）。
+        // 两处 `takeRecords()` 因此是双保险而不是承重结构——变异实验证实：单独拆掉任一处
+        // takeRecords 全绿，一起拆掉 disconnect + takeRecords 才红（钉在测试「溢出补轮」
+        // 那条用例的注释里，含完整数据）。
+        //
+        // 保留双保险的理由：如果某个宿主实现偏离规范（注销后仍入队、或写入落在注册窗口里），
+        // 循环会当场红在测试里，而不是等上线才炸。
+        //
+        // 不要把它理解成"回调投递时规范会顺带注销观察者，所以回调触发的轮次天然安全"——
+        // 规范投递只清空记录队列、**不注销注册**，注册态开轮是真会自触发的。
         observer.disconnect();
         observer.takeRecords();
 

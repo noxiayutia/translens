@@ -363,10 +363,16 @@ describe('增量翻译：自变更防护（不循环、不风暴）', () => {
 
   /**
    * 真正考验防护窗口的轮次：**观察者处于注册态时开轮**。
-   * 回调触发的轮次天然安全（DOM 规范规定投递回调时顺带注销观察者，下一轮从注销态起步）；
-   * 而溢出补轮（finally 里重新排防抖的那一轮）启动时观察者还挂着——它的自写入
-   * 会进队列，只有 `disconnect() + takeRecords()` 窗口能挡住。
-   * 删掉轮内的 disconnect/takeRecords（一起），这一条必须红：补轮挂载 4 段宿主的
+   *
+   * 溢出补轮（finally 里重新排防抖的那一轮）启动时观察者还挂着，它自己的写入会真的
+   * 进记录队列——只有轮内那道 `disconnect() + takeRecords()` 窗口能挡住。
+   *
+   * 别把这里理解成"回调投递时规范会顺带注销观察者，所以回调触发的轮次天然安全"：
+   * 规范的投递算法只清空该观察者的记录队列、**不注销注册**（jsdom 的投递 helper 里
+   * 那个 `filter(source !== mo)` 只对 `takeRecords` 之类的路径生效，对 `observe()`
+   * 推入的条目是 no-op）。也就是说注册态开轮真的会自触发，这正是本条要防的东西。
+   *
+   * 删掉轮内的 disconnect/takeRecords（一起拆），这一条必须红：补轮挂载 4 段宿主的
    * childList 记录会投递给回调、滚成第三轮对自家宿主的无效扫描。
    */
   it('溢出补轮从注册态开轮：自写入被防护窗口挡下，不滚出下一轮扫描', async () => {
@@ -461,6 +467,34 @@ describe('增量翻译：扫描范围（只扫新增子树）', () => {
     await runDebounceWindow();
     // anchor 是行内元素：扫它自己（父不是混合容器），Loose addition text 随 anchor 成段。
     expect(sentTexts(worker)).toEqual(['Loose addition text']);
+  });
+
+  /**
+   * 回归的是增量路径特有的一个绕过：extractor 的 `data-jy-translated` 短路只查元素**自身**，
+   * 整页采集自顶向下走、祖先被短路等于整棵子树被短路；而增量是从子孙节点切入的，
+   * 那道闸就被绕过了。实测过的形态：`<div>Hello <span>one</span> readers</div>` 整段译完之后
+   * 往 `<span>` 里追加一个裸文本节点，扫父元素会得到一段**包含已译内容**的文本
+   * （`"one two"`），于是旧词被再译一遍、并多挂一个宿主，与已有宿主并存。
+   *
+   * 这属于"改动了已译段落"，与"只管新增、不管改动"的既定范围一致：不重译、也不重复译。
+   */
+  it('往已译段落的行内后代追加裸文本：不把已译内容重新译一遍、不多挂宿主', async () => {
+    await chromeStub.storage.local.set({ 'jinyi:settings': { version: 2, displayMode: 'bilingual' } });
+    mount('<div id="mixed">Hello <span id="inner">one</span> readers</div>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // 整段已经作为 "Hello one readers" 译完，#mixed 上带着 data-jy-translated。
+    const hostsBefore = document.querySelectorAll('jy-translation').length;
+    (document.getElementById('inner') as HTMLElement).append(document.createTextNode(' two'));
+    await runDebounceWindow();
+
+    // 不能再有任何一段文本把已译内容包进去。
+    expect(sentTexts(worker).some((text) => text.includes('one'))).toBe(false);
+    // 宿主数不增：一个段落不会多出第二个译文。
+    expect(document.querySelectorAll('jy-translation')).toHaveLength(hostsBefore);
   });
 
   it('同一父容器被多次触发只扫一次（候选根去重）', async () => {
