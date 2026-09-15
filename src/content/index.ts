@@ -393,7 +393,60 @@ async function translatePage(): Promise<void> {
   incremental.enable(segments);
 
   const textSegments: TextSegment[] = segments.map((s) => ({ id: s.id, text: s.text, order: s.order }));
-  const batches = planBatches(textSegments, {
+  /**
+   * **页内文本去重**（分批之前）：同一页面里字面相同的段落归并成一个请求单元。
+   *
+   * 调度器（`background/scheduler.ts`）只在**单批内**按文本去重，而批次之间互相看不见：
+   * 导航/页脚/"Learn more"这类重复文本按 12 段一批切到 5 个批次上，仍会重发 5 次
+   * （实测 apple.com 首页「Store」出现 59 次）。并发在飞时后面的批次也看不到前面批次
+   * 正在飞的请求，缓存来不及救。归并放到内容脚本这一层，因为它看得见**整页**。
+   *
+   * 省下的只是请求，不是段落：渲染、失败态、重试与 `finished`/`failedIds` 计数都
+   * 按段算（结果摊回给组内每一段，见 `expandBatch` / `expandResults`）；重试走
+   * `retrySegment` 的单段链路，**不**连带重译同文本的其他段。
+   * 缓存粒度不受影响（缓存 key 本来就按文本算，见 scheduler 的 uniqueTexts 注释）。
+   * 增量翻译路径有意不做这套——它有 (容器, 文本) 账本与单轮上限，另成体系。
+   */
+  const membersByText = new Map<string, TextSegment[]>();
+  for (const segment of textSegments) {
+    const group = membersByText.get(segment.text);
+    if (group === undefined) membersByText.set(segment.text, [segment]);
+    else group.push(segment);
+  }
+  /** 代表段 id → 同文本的全部段（含代表段自己）。代表段取每组**首次出现**的那一段。 */
+  const membersByRepId = new Map<string, TextSegment[]>();
+  const representatives: TextSegment[] = [];
+  for (const group of membersByText.values()) {
+    const representative = group[0] as TextSegment;
+    representatives.push(representative);
+    membersByRepId.set(representative.id, group);
+  }
+  /** 本批的全部落地段：代表段摊回同文本组（失败标注、形状兜底都按这个全集算）。 */
+  const expandBatch = (batch: TextSegment[]): TextSegment[] =>
+    batch.flatMap((representative) => membersByRepId.get(representative.id) ?? [representative]);
+  /**
+   * 响应条目按代表段 id 回来，逐条复制给组内每一段（换掉 id、其余原样）。
+   * 认不出 id 的条目（形状不符/不属于任何组）原样交给 `applyResults` 的既有防线。
+   */
+  const expandResults = (results: unknown): unknown => {
+    if (!Array.isArray(results)) return results;
+    const out: unknown[] = [];
+    for (const result of results) {
+      if (!isResultItem(result)) {
+        out.push(result);
+        continue;
+      }
+      const group = membersByRepId.get(result.id);
+      if (group === undefined) {
+        out.push(result);
+        continue;
+      }
+      for (const member of group) out.push({ ...result, id: member.id });
+    }
+    return out;
+  };
+
+  const batches = planBatches(representatives, {
     maxBatchChars: settings.maxBatchChars,
     maxSegmentsPerBatch: settings.maxSegmentsPerBatch,
   });
@@ -410,6 +463,8 @@ async function translatePage(): Promise<void> {
         // 于是收尾那句 toast 被跳过、
         // running 也在 finally 里被收走，页面就永久留在"翻译中…"（renderer 守卫还在，
         // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
+        // 本批的代表段摊回的全集：请求只发 `batch`（去重后的代表段），**落地**按全集逐段算。
+        const fullBatch = expandBatch(batch);
         try {
           let response: TranslateTextsResponse;
           try {
@@ -424,9 +479,9 @@ async function translatePage(): Promise<void> {
             // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
             // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
-            // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
+            // `fullBatch` 含同文本的全部段：一个代表段炸了，摊到的每一段都进失败态。
             if (mine !== generation) return;
-            failBatch(batch, describeTransportError(raw));
+            failBatch(fullBatch, describeTransportError(raw));
             return;
           }
 
@@ -437,11 +492,12 @@ async function translatePage(): Promise<void> {
           // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
           if (!response.ok) {
             pageErrors.record({ code: response.code, message: describeError(response) });
-            failBatch(batch, response.message);
+            failBatch(fullBatch, response.message);
             return;
           }
           // `applyResults` 自己校验响应形状：形状不符时整批进失败态，不抛异常。
-          const notice = applyResults(batch, response.results);
+          // 响应按代表段的 id 回来，先摊回全集再落地（逐段渲染/计数，见上方去重注释）。
+          const notice = applyResults(fullBatch, expandResults(response.results));
           if (notice !== null) pageErrors.record(notice);
         } catch (raw) {
           // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
@@ -449,7 +505,7 @@ async function translatePage(): Promise<void> {
           const detail = raw instanceof Error ? raw.message : String(raw);
           if (mine !== generation) return;
           pageErrors.record({ code: undefined, message: `翻译失败：${detail}` });
-          failBatch(batch, MALFORMED_RESPONSE);
+          failBatch(fullBatch, MALFORMED_RESPONSE);
         }
       }),
       settings.concurrency,

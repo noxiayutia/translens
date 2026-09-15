@@ -1251,3 +1251,109 @@ describe('内容脚本编排：页面级提示按错误码优先级择一', () =
     expect(toastText()).not.toContain('socket hang up');
   });
 });
+
+/**
+ * 整页翻译的**页内文本去重**（分批之前归并，见 translatePage）：
+ *
+ * 调度器只在单批内按文本去重，批次之间互相看不见——实测 apple.com 首页「Store」出现
+ * 59 次、「Learn more」9 次，按默认 12 段/批要发 5 次重复请求。这里要求内容脚本在
+ * **分批之前**按文本归并：唯一文本只请求一次，结果摊回给所有同文本段。
+ *
+ * 注意两条不变式（同样是断言的一部分）：
+ * - 渲染、失败态、`finished`/`failedIds` 计数都按**段**算——去重省的是请求，不是段落；
+ * - 重试只重试被点的那一段，不连带把同文本的其他段一起重译。
+ */
+describe('内容脚本编排：同一页面的重复文本去重到一次请求', () => {
+  it('60 段相同 + 2 段不同：唯一文本各请求一次，62 段全部落地译文，计数按段算', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i += 1) lines.push('<p>Learn more</p>');
+    lines.push('<p>Unique one</p>', '<p>Unique two</p>');
+    mount(lines.join(''));
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    const texts = sentBatches(worker).flat().map((item) => item.text);
+    // 每个唯一文本恰好一次——60 段 'Learn more' 不再摊成 5 批重发。
+    expect(texts.filter((text) => text === 'Learn more')).toHaveLength(1);
+    expect(texts.filter((text) => text === 'Unique one')).toHaveLength(1);
+    expect(texts.filter((text) => text === 'Unique two')).toHaveLength(1);
+    // 3 个唯一文本远不到 12 段/批的上限：整页恰好一个请求。
+    expect(sentBatches(worker)).toHaveLength(1);
+    // 统计按段：62 段全部完成，不是"去重后 3 段"。
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 62, done: 62, failed: 0 });
+    expect(hosts()).toHaveLength(62);
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('Learn more'))).toHaveLength(60);
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('Unique one'))).toHaveLength(1);
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('Unique two'))).toHaveLength(1);
+  });
+
+  it('同文本段全部进失败态；点其中一段的重试只重译那一段', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i += 1) lines.push('<p>Dup text</p>');
+    lines.push('<p>Unique one</p>');
+    mount(lines.join(''));
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({
+        ok: true,
+        results: items.map((item) =>
+          item.text === 'Dup text' ? failure(item.id, 'NETWORK', '网络抖动') : { id: item.id, text: translate(item.text) },
+        ),
+      });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    // 去重后整页只有 2 个唯一文本 → 一个请求；但失败计数仍是 60 段。
+    expect(sentBatches(worker)).toHaveLength(1);
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 61, done: 1, failed: 60 });
+    const broken = hosts().filter((host) => bodyTextOf(host).includes('网络抖动'));
+    expect(broken).toHaveLength(60);
+    for (const host of broken) expect(hasRetryButton(host)).toBe(true);
+
+    // 重试那一段**之前**先把对端换成回成功：只有被点的那一段会重发。
+    worker.mockImplementation(autoReply());
+    worker.mockClear();
+    const firstBroken = broken[0]?.shadowRoot?.querySelector('.jy-retry') as HTMLButtonElement | null;
+    expect(firstBroken).not.toBeNull();
+    firstBroken?.click();
+    await settle();
+
+    const requests = translateRequests(worker);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].payload.items).toHaveLength(1);
+    expect(requests[0].payload.items[0]?.text).toBe('Dup text');
+    // 只那一段有了译文；其余 59 段仍停在失败态（**没有**被连带重译）。
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('Dup text'))).toHaveLength(1);
+    expect(hosts().filter((host) => bodyTextOf(host).includes('网络抖动'))).toHaveLength(59);
+    const after = await dispatch(contentListener, MSG.GET_PAGE_STATE);
+    expect(after).toEqual({ translated: true, mode: 'translated-only', total: 61, done: 2, failed: 59 });
+  });
+
+  it('同文本段的重试各自独立：再点另一段也只重发那一段', async () => {
+    mount('<p>Dup text</p><p>Dup text</p><p>Dup text</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(engineErrorReply('NETWORK', '网络抖动'));
+
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    expect(sentBatches(worker).flat().map((item) => item.text)).toEqual(['Dup text']);
+
+    worker.mockImplementation(autoReply());
+    worker.mockClear();
+    const buttons = hosts().map((host) => host.shadowRoot?.querySelector('.jy-retry') as HTMLButtonElement | null);
+    buttons[2]?.click();
+    await settle();
+
+    expect(translateRequests(worker)).toHaveLength(1);
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('Dup text'))).toHaveLength(1);
+    expect(hosts().filter((host) => bodyTextOf(host).includes('网络抖动'))).toHaveLength(2);
+    // 前两段仍可各自点重试（互不牵连）。
+    expect(hasRetryButton(hosts().find((host) => bodyTextOf(host).includes('网络抖动')) as Element)).toBe(true);
+    void buttons;
+  });
+});
