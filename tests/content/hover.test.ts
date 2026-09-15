@@ -204,6 +204,25 @@ describe('安全闸门：只响应真实用户手势（isTrusted）', () => {
     expect(highlightHost()).toBeNull();
   });
 
+  /**
+   * 这条单独钉 keydown 那道闸门——上面两条负例（合成+合成、真实+合成）其实都只把住了
+   * mouseover 那一道：把 `onKeyDown` 里的 isTrusted 检查删掉，那两条仍然全绿。
+   *
+   * 攻击场景是真实的：页面合成一个 keydown(Shift) 把 `shiftDown` 抬成 true，之后
+   * **用户自己的任意一次真实悬停**就会被劫持去发请求、烧用户付费引擎的额度——
+   * 页面全程没有能力触发 mouseover，所以这道闸门不能只靠 mouseover 侧兜。
+   */
+  it('合成 keydown 抬起 Shift 状态、mouseover 是真实手势：仍然零请求（keydown 闸门独立承重）', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    syntheticPressShift();
+    enter('one');
+    await settle();
+
+    expect(translate).not.toHaveBeenCalled();
+    expect(highlightHost()).toBeNull();
+  });
+
   it('成对断言：keydown 与 mouseover 都是真实手势 → 到点发请求（否则上面两条只是「永远拒绝」的假通过）', async () => {
     const translate = autoTranslate();
     givenHover(translate);
