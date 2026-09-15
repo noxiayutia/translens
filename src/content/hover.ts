@@ -170,6 +170,16 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
   }
 
   function onMouseover(event: Event): void {
+    /**
+     * **只响应真实用户手势**（与 `selection.ts` 的 onMouseup 同一个闸门、同一套理由）：
+     * 页面脚本合成 keydown(Shift) + mouseover 就能指定段落、让扩展带着用户的 API Key 去
+     * 打用户自己付费的引擎，并把译文写进页面 JS 读得到的 open Shadow DOM。
+     * **keydown 与 mouseover 两个入口都必须把门**——只把住 keydown，等用户真的按住 Shift
+     * （本功能的正常用法）时，合成的 mouseover 依然能替它选段发请求。
+     * 反过来，keyup/blur/scroll 不 gating：它们只会撤销状态、清掉描边——fail 的方向是
+     * 安全方向，被伪造最坏也只是让悬停提前失效，不会送任何文本出网络。
+     */
+    if (!event.isTrusted) return;
     if (!shiftDown) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -188,6 +198,9 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
   }
 
   function onKeyDown(event: KeyboardEvent): void {
+    // Shift 状态只认真键盘（isTrusted）：合成 keydown 能骗开的闸门等于整条悬停链路
+    // 都没有闸门——见 onMouseover 的注释。
+    if (!event.isTrusted) return;
     if (event.key === 'Shift') shiftDown = true;
   }
 

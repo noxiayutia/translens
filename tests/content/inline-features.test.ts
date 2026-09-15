@@ -13,6 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
+import { dispatchTrusted } from '../helpers/trusted-events';
 import { MSG } from '../../src/shared/messages';
 import { SETTINGS_KEY } from '../../src/shared/settings';
 
@@ -119,6 +120,7 @@ function mockSelection(text: string | null): void {
             rangeCount: text === '' ? 0 : 1,
             toString: () => text,
             anchorNode: document.body,
+            focusNode: document.body,
             getRangeAt: () => ({
               getBoundingClientRect: () => ({ top: 120, left: 340, width: 100, height: 16 }),
             }),
@@ -126,18 +128,23 @@ function mockSelection(text: string | null): void {
   });
 }
 
+/**
+ * 划词/悬停入口只响应真实用户手势（isTrusted 安全闸门，见 selection.ts / hover.ts）。
+ * 本文件测接线正路，派发一律走 {@link dispatchTrusted}；合成事件被拒的负路在
+ * selection/hover 各自的测试里成对覆盖。
+ */
 function mouseup(): void {
-  document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+  dispatchTrusted(document.body, new MouseEvent('mouseup', { bubbles: true, button: 0 }));
 }
 
 function pressShift(): void {
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift' }));
+  dispatchTrusted(window, new KeyboardEvent('keydown', { key: 'Shift' }));
 }
 
 function enter(id: string): void {
   const node = document.getElementById(id);
   if (node === null) throw new Error(`没有 #${id}`);
-  node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  dispatchTrusted(node, new MouseEvent('mouseover', { bubbles: true }));
 }
 
 async function seedSettings(patch: Record<string, unknown>): Promise<void> {
@@ -443,15 +450,16 @@ describe('验收重点：布局不变式', () => {
     await settle();
     const before = document.body.innerHTML;
 
-    // 悬停一整个来回：进入、出结果、换段、离开、松 Shift。
+    // 悬停一整个来回：进入、出结果、换段、离开、松 Shift。（事件一律真实手势；keyup 不是
+    // 请求入口、只做状态清理，保持普通派发。）
     pressShift();
     const h1 = document.querySelector('h1') as HTMLElement;
-    h1.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    dispatchTrusted(h1, new MouseEvent('mouseover', { bubbles: true }));
     await afterHoverDelay();
     const li = document.querySelector('li') as HTMLElement;
-    li.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    dispatchTrusted(li, new MouseEvent('mouseover', { bubbles: true }));
     await afterHoverDelay();
-    document.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    dispatchTrusted(document, new MouseEvent('mouseover', { bubbles: true }));
     window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift' }));
     expect(bubbleText()).toContain('译:');
 

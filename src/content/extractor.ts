@@ -174,8 +174,12 @@ function isSkippedForText(element: Element): boolean {
  * 2. 宿主没实现该属性时（老引擎、测试环境）退回按最近的 `[contenteditable]` 祖先判定，
  *    显式的 `contenteditable="false"` 会把它自己与子树重新变回不可编辑（所见即所得编辑器
  *    用它嵌只读片段），`inherit` 则继续往上找。
+ *
+ * **导出**：划词选区（`selection.ts` 的 `readSelection`）判 anchor/focus 所在祖先时
+ * 复用这一份——"什么算可编辑区域"整页采集与划词必须同一口径（README 对两者承诺同一件事），
+ * 两处各写一份必然随改动漂移。
  */
-function isEditable(element: Element): boolean {
+export function isEditable(element: Element): boolean {
   if ((element as HTMLElement).isContentEditable === true) return true;
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     const value = node.getAttribute('contenteditable');

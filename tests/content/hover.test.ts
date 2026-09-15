@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHoverTranslator, type HoverController } from '../../src/content/hover';
 import { hideTooltip } from '../../src/content/tooltip';
+import { dispatchSynthetic, dispatchTrusted } from '../helpers/trusted-events';
 import type { InlineTranslation } from '../../src/content/inline-types';
 
 /**
@@ -42,16 +43,30 @@ function highlightHost(): HTMLElement | null {
   return document.querySelector('[data-jy-hover-highlight]');
 }
 
+/**
+ * 「真实用户手势」与合成事件走同一派发路径，唯一区别是 {@link dispatchTrusted} 会把
+ * isTrusted 翻成 true（jsdom 下这个不可配置访问器改不动，见 helper 的注释）。
+ * 正负成对：只测「合成事件被拒」会掩盖「永远拒绝」的假通过。
+ */
 function pressShift(): void {
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift' }));
+  dispatchTrusted(window, new KeyboardEvent('keydown', { key: 'Shift' }));
 }
 
+/** keyup 不是请求入口（只做状态清理），不受闸门管辖：普通派发即可。 */
 function releaseShift(): void {
   window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift' }));
 }
 
 function enter(id: string): void {
-  byId(id).dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  dispatchTrusted(byId(id), new MouseEvent('mouseover', { bubbles: true }));
+}
+
+function syntheticPressShift(): void {
+  dispatchSynthetic(window, new KeyboardEvent('keydown', { key: 'Shift' }));
+}
+
+function syntheticEnter(id: string): void {
+  dispatchSynthetic(byId(id), new MouseEvent('mouseover', { bubbles: true }));
 }
 
 let live: HoverController[] = [];
@@ -162,6 +177,42 @@ describe('Shift 状态跟踪', () => {
     enter('two');
     await settle();
     expect(translate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('安全闸门：只响应真实用户手势（isTrusted）', () => {
+  it('合成 keydown(Shift) + 合成 mouseover：不请求、不描边、不出气泡', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    syntheticPressShift();
+    syntheticEnter('one');
+    await settle();
+
+    expect(translate).not.toHaveBeenCalled();
+    expect(bubble()).toBeNull();
+    expect(highlightHost()).toBeNull();
+  });
+
+  it('真实按下 Shift、但 mouseover 是页面合成的：仍然零请求（两个入口各自都把门）', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    syntheticEnter('one');
+    await settle();
+
+    expect(translate).not.toHaveBeenCalled();
+    expect(highlightHost()).toBeNull();
+  });
+
+  it('成对断言：keydown 与 mouseover 都是真实手势 → 到点发请求（否则上面两条只是「永远拒绝」的假通过）', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    enter('one');
+    await settle();
+
+    expect(translate).toHaveBeenCalledWith('First paragraph');
+    expect(bubbleText()).toBe('译文:First paragraph');
   });
 });
 

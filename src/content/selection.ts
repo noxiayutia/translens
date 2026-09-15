@@ -1,5 +1,6 @@
 // src/content/selection.ts
 import { normalizeText } from '../core/lang';
+import { isEditable } from './extractor';
 import { hideTooltip, isTooltipVisible, showTooltip, type TooltipRect } from './tooltip';
 import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './inline-types';
 
@@ -43,6 +44,12 @@ function viewportCenter(): TooltipRect {
   return { top: window.innerHeight / 2, left: window.innerWidth / 2, width: 0, height: 0 };
 }
 
+/** 选区端点（anchor/focus）所在（或紧邻）的元素；拿不到就返回 null（不判、不误伤）。 */
+function selectionEndpointElement(node: Node | null | undefined): Element | null {
+  if (node === null || node === undefined) return null;
+  return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+}
+
 /** 从 window.getSelection() 读出一份可翻译的划词；不合法返回 null。 */
 function readSelection(): { text: string; rect: TooltipRect } | null {
   const selection = window.getSelection();
@@ -50,9 +57,18 @@ function readSelection(): { text: string; rect: TooltipRect } | null {
   const text = normalizeText(selection.toString());
   if (text === '' || text.length > MAX_CHARS) return null;
   // 选区起点落在插件自己的浮层里（气泡文本被顺手划中）：那不是页面内容，不翻。
-  const anchorNode = selection.anchorNode;
-  const anchorElement = anchorNode?.nodeType === Node.ELEMENT_NODE ? (anchorNode as Element) : anchorNode?.parentElement;
+  const anchorElement = selectionEndpointElement(selection.anchorNode);
   if (anchorElement?.closest('[data-jy-root]')) return null;
+  /**
+   * 可编辑区域（contenteditable 子树）里的文本是用户**正在写、还没保存**的草稿——隐私，
+   * 不是页面内容。整页采集早就不采它（extractor 的 isSkippedForText），划词必须同一口径，
+   * 否则恶意页面（或一次不经意的划选）就能把 Gmail/Notion 的正文草稿送进用户自己付费的接口。
+   * anchor 与 focus **两端各判一次**（isEditable 内部会向上走祖先，继承与
+   * `contenteditable="false"` 的回落语义都复用 extractor 那一份实现，不另写一套）。
+   */
+  const focusElement = selectionEndpointElement(selection.focusNode);
+  if (anchorElement !== null && isEditable(anchorElement)) return null;
+  if (focusElement !== null && isEditable(focusElement)) return null;
   const range = selection.getRangeAt(0);
   return { text, rect: rectFromRange(range) };
 }
@@ -130,6 +146,14 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
   }
 
   function onMouseup(event: MouseEvent): void {
+    /**
+     * **只响应真实用户手势。** 页面脚本可以 `window.getSelection().addRange(...)` 把任意
+     * DOM 文本（甚至用户正在写的草稿）选起来，再派发一个合成的 mouseup——没有这道闸门，
+     * 扩展就成了任意页面的"翻译代理 + 翻译 oracle"：合成事件驱动 → 带用户的 API Key 打
+     * 用户自己付费的引擎 → 译文写进页面 JS 读得到的 open Shadow DOM，额度还能被烧穿。
+     * `isTrusted` 只有浏览器引擎自己能置 true，页面脚本伪造不了（这正是它存在的全部意义）。
+     */
+    if (!event.isTrusted) return;
     // 只认主键：右键的 mouseup 属于上下文菜单，走菜单消息那条路径，不该在这里抢跑。
     if (event.button !== 0) return;
     const selection = readSelection();
@@ -155,6 +179,11 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
       hideTooltip();
     },
     translateFromMenu(fallbackText: unknown) {
+      // **这里不需要（也拿不到）isTrusted 检查**：这条路径的触发源是 Chrome 自己的
+      // `contextMenus.onClicked`——用户在浏览器 UI 里真的点了菜单项，页面脚本既派发不了
+      // 也伪造不了这次点击（它连菜单什么时候弹、用户点没点都无从干预）。文本来源同样在
+      // 浏览器一侧：优先读真实选区（readSelection 带着可编辑区域闸门），兜底用菜单消息
+      // 带过来的 `info.selectionText`——那是浏览器引擎报告的选择状态，不是页面投递的参数。
       const selection = readSelection();
       if (selection !== null) {
         run(selection.text, selection.rect);

@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSelectionTranslator, type SelectionController } from '../../src/content/selection';
 import { hideTooltip, showTooltip } from '../../src/content/tooltip';
+import { dispatchSynthetic, dispatchTrusted } from '../helpers/trusted-events';
 import type { InlineTranslation } from '../../src/content/inline-types';
 
 /**
@@ -22,7 +23,9 @@ const RECT = { top: 120, left: 340, width: 100, height: 16 };
 const originalGetSelection = window.getSelection;
 let live: SelectionController[] = [];
 
-function mockSelection(value: { text: string; rect?: typeof RECT; anchor?: Node | null } | null): void {
+function mockSelection(
+  value: { text: string; rect?: typeof RECT; anchor?: Node | null; focus?: Node | null } | null,
+): void {
   Object.defineProperty(window, 'getSelection', {
     configurable: true,
     writable: true,
@@ -34,6 +37,8 @@ function mockSelection(value: { text: string; rect?: typeof RECT; anchor?: Node 
             rangeCount: value.text === '' ? 0 : 1,
             toString: () => value.text,
             anchorNode: value.anchor === undefined ? document.body : value.anchor,
+            focusNode:
+              value.focus === undefined ? (value.anchor === undefined ? document.body : value.anchor) : value.focus,
             getRangeAt: () => ({
               // 真 jsdom 下 getBoundingClientRect 返回全 0——这里默认给一个有位置的矩形，
               // 定位断言才有意义；全 0 的容忍度由单独用例覆盖。
@@ -72,8 +77,18 @@ function clickButton(labelPrefix: string): HTMLButtonElement | undefined {
   return button instanceof HTMLButtonElement ? button : undefined;
 }
 
+/**
+ * 「真实用户手势」与合成事件走同一派发路径，唯一区别是 {@link dispatchTrusted} 会把
+ * isTrusted 翻成 true（jsdom 下这个不可配置访问器改不动，见 helper 的注释）。
+ * 两条成对出现：只有「伪造成 true 会请求」也绿，「合成事件被拒」那条才算数
+ * （否则「永远拒绝」的实现同样能让负向用例假通过）。
+ */
 function mouseup(button = 0): void {
-  document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button }));
+  dispatchTrusted(document.body, new MouseEvent('mouseup', { bubbles: true, button }));
+}
+
+function syntheticMouseup(button = 0): void {
+  dispatchSynthetic(document.body, new MouseEvent('mouseup', { bubbles: true, button }));
 }
 
 async function settle(): Promise<void> {
@@ -251,6 +266,89 @@ describe('划词触发（mouseup 路径）', () => {
     queued.resolveNext({ ok: true, text: '第二次的结果' });
     await settle();
     expect(bubbleText()).toBe('第二次的结果');
+  });
+});
+
+describe('安全闸门：只响应真实用户手势（isTrusted）', () => {
+  it('合成 mouseup（isTrusted=false）即便选区有效也零请求、不出气泡', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    mockSelection({ text: 'Hello world' });
+
+    syntheticMouseup();
+    await settle();
+    expect(calls).toEqual([]);
+    expect(bubble()).toBeNull();
+  });
+
+  it('成对断言：同一现场把 isTrusted 伪造成 true → 请求照常发出（证明上一条不是「永远拒绝」的假通过）', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    mockSelection({ text: 'Hello world' });
+
+    mouseup();
+    await settle();
+    expect(calls).toEqual(['Hello world']);
+    expect(bubbleText()).toBe('译文:Hello world');
+  });
+});
+
+describe('安全闸门：划词不采集可编辑区域（与整页采集口径对齐）', () => {
+  it('选区锚点在 contenteditable 草稿里 + 真实手势：零请求', async () => {
+    document.body.innerHTML = '<div id="draft" contenteditable="true">Unsaved private draft</div>';
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    mockSelection({ text: 'Unsaved private draft', anchor: document.getElementById('draft') });
+
+    mouseup();
+    await settle();
+    expect(calls).toEqual([]);
+    expect(bubble()).toBeNull();
+  });
+
+  it('锚点在正文、焦点落在 contenteditable 里：同样零请求（anchor/focus 两端都判）', async () => {
+    document.body.innerHTML =
+      '<p id="page">Some page text</p><div id="draft" contenteditable="true">Unsaved private draft</div>';
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    mockSelection({
+      text: 'Some page text Unsaved private draft',
+      anchor: document.getElementById('page'),
+      focus: document.getElementById('draft'),
+    });
+
+    mouseup();
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+  it('可编辑性继承给后代：锚在草稿内部的普通 <p> 也算可编辑区域', async () => {
+    document.body.innerHTML =
+      '<div contenteditable="true"><p id="inner">Draft nested paragraph text</p></div>';
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    mockSelection({ text: 'Draft nested paragraph text', anchor: document.getElementById('inner') });
+
+    mouseup();
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+  it('成对断言：同一页面里选普通文本 + 真实手势 → 照常翻译（闸门没有把手势校验做过头）', async () => {
+    document.body.innerHTML =
+      '<p id="page">Regular page sentence</p><div id="draft" contenteditable="true">Unsaved private draft</div>';
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    mockSelection({
+      text: 'Regular page sentence',
+      anchor: document.getElementById('page'),
+      focus: document.getElementById('page'),
+    });
+
+    mouseup();
+    await settle();
+    expect(calls).toEqual(['Regular page sentence']);
+    expect(bubbleText()).toBe('译文:Regular page sentence');
   });
 });
 
