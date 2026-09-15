@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LANGUAGES } from '../../src/core/lang';
 import { ENGINES } from '../../src/engines/registry';
 import { MSG, type PageState } from '../../src/shared/messages';
-import { CURRENT_VERSION, SETTINGS_KEY } from '../../src/shared/settings';
+import { CURRENT_VERSION, DISPLAY_MODES, SETTINGS_KEY } from '../../src/shared/settings';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 
 /**
@@ -513,10 +513,10 @@ describe('显示模式', () => {
     await loadPopup();
 
     const { displayMode } = ui();
-    expect(Array.from(displayMode.options).map((option) => [option.value, option.textContent])).toEqual([
-      ['translated-only', '仅译文'],
-      ['bilingual', '双语对照'],
-    ]);
+    // 选项清单来自 shared/settings 的那一份（弹窗与设置页共用），不手抄。
+    expect(Array.from(displayMode.options).map((option) => [option.value, option.textContent])).toEqual(
+      DISPLAY_MODES.map((mode) => [mode.value, mode.label]),
+    );
     expect(displayMode.value).toBe('bilingual');
   });
 

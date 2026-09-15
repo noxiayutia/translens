@@ -156,7 +156,13 @@ body {
 import { LANGUAGES } from '../core/lang';
 import { ENGINES, getEngine } from '../engines/registry';
 import { MSG, type PageState } from '../shared/messages';
-import { loadSettings, saveSettings, type DisplayMode, type Settings } from '../shared/settings';
+import {
+  DISPLAY_MODES,
+  loadSettings,
+  saveSettings,
+  type DisplayMode,
+  type Settings,
+} from '../shared/settings';
 
 /**
  * 按钮的三种态：不知道页面状态（`pageState === null`，初始与失败后）、
@@ -173,15 +179,6 @@ const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
 const optionsButton = document.getElementById('open-options') as HTMLButtonElement;
 
-/**
- * 显示模式的两个选项。`translated-only` 放在最前面——它是默认值，也是用户最常想改的那一项
- * （双语对照会把原文和译文叠在一页上，长文里很挤）。
- */
-const DISPLAY_MODES: Array<{ value: DisplayMode; label: string }> = [
-  { value: 'translated-only', label: '仅译文' },
-  { value: 'bilingual', label: '双语对照' },
-];
-
 /** 发消息的兜底超时：内容脚本**可能永远不回**（见 `requestPageState` 的注释）。 */
 const TOGGLE_TIMEOUT_MS = 30_000;
 
@@ -193,7 +190,11 @@ function errorText(prefix: string, raw: unknown): string {
   return `${prefix}：${raw instanceof Error ? raw.message : String(raw)}`;
 }
 
-function fillSelect(select: HTMLSelectElement, entries: Array<{ value: string; label: string }>, value: string): void {
+function fillSelect(
+  select: HTMLSelectElement,
+  entries: ReadonlyArray<{ value: string; label: string }>,
+  value: string,
+): void {
   select.textContent = '';
   for (const entry of entries) {
     const option = document.createElement('option');

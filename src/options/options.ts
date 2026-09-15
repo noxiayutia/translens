@@ -16,7 +16,14 @@ import {
   originPattern,
   requestHostPermission,
 } from '../shared/host-permission';
-import { isAllowedBaseUrl, loadSettings, saveSettings, type DisplayMode, type Settings } from '../shared/settings';
+import {
+  DISPLAY_MODES,
+  isAllowedBaseUrl,
+  loadSettings,
+  saveSettings,
+  type DisplayMode,
+  type Settings,
+} from '../shared/settings';
 
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
@@ -30,15 +37,6 @@ const engineStatus = document.getElementById('engine-status') as HTMLParagraphEl
 
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
-
-/**
- * 显示模式的选项。与弹窗里那一份**逐字一致**（同一件事在两处给出不同的说法，
- * 用户会以为它们不是同一个设置）。
- */
-const DISPLAY_MODES: Array<{ value: DisplayMode; label: string }> = [
-  { value: 'translated-only', label: '仅译文' },
-  { value: 'bilingual', label: '双语对照' },
-];
 
 const clearCacheButton = document.getElementById('clear-cache') as HTMLButtonElement;
 const cacheStatus = document.getElementById('cache-status') as HTMLParagraphElement;
@@ -67,7 +65,11 @@ function describe(raw: unknown): string {
   return raw instanceof Error ? raw.message : String(raw);
 }
 
-function fillSelect(select: HTMLSelectElement, entries: Array<{ value: string; label: string }>, value: string): void {
+function fillSelect(
+  select: HTMLSelectElement,
+  entries: ReadonlyArray<{ value: string; label: string }>,
+  value: string,
+): void {
   select.textContent = '';
   for (const entry of entries) {
     const option = document.createElement('option');

@@ -1183,6 +1183,18 @@ export interface EngineConfigSettings {
  */
 export type DisplayMode = 'bilingual' | 'translated-only';
 
+/**
+ * 显示模式的界面选项（弹窗与设置页**共用这一份**）。
+ *
+ * 与 `core/lang.ts` 的 LANGUAGES 同一个道理：两处各写一份时，同一个设置在两个界面上会
+ * 给出不同的说法（"仅译文" / "只要译文"），用户会以为它们不是同一个东西。
+ * 数组顺序就是界面顺序：默认的「仅译文」在最前——它是用户最可能想改的一项。
+ */
+export const DISPLAY_MODES: ReadonlyArray<{ value: DisplayMode; label: string }> = [
+  { value: 'translated-only', label: '仅译文' },
+  { value: 'bilingual', label: '双语对照' },
+];
+
 export interface Settings {
   version: number;
   engineId: string;
