@@ -24,7 +24,9 @@ npm run build
 3. 点 **加载已解压的扩展程序**
 4. 选择本仓库的 **`dist` 目录**（注意是 `dist`，不是仓库根目录）
 
-加载成功后工具栏会出现「浸译」图标。`dist/` 只在 `npm run build` 之后才存在，且已被 `.gitignore` 忽略。
+加载成功后扩展会出现在扩展管理列表与工具栏的拼图菜单里，名字是「浸译」。
+**当前版本没有自定义图标素材**（manifest 未声明 `icons`），Chrome 显示的是通用拼图占位图标——
+按名字认出它即可。`dist/` 只在 `npm run build` 之后才存在，且已被 `.gitignore` 忽略。
 
 > `npm run build` 的最后一步会自动运行 `npm run verify:dist`（见下文「验证」），
 > 它不通过时构建会以非零退出码失败——所以 **「构建成功」就等于「产物可加载」**。
@@ -212,7 +214,7 @@ node scripts/verify-dist.mjs --dist some/other/dist   # 校验别的目录
 ```bash
 npm install
 
-npm test              # 单元测试（vitest，当前 566 个用例）
+npm test              # 单元测试（vitest，数百个用例；精确数字随迭代浮动，以运行输出为准）
 npm run typecheck     # 类型检查（tsc --noEmit）
 npm run build         # 类型检查 → 打包 → verify:dist
 npm run zip           # 把 dist/ 打成 jinyi-<version>.zip（需先 build）
