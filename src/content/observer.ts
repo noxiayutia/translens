@@ -90,8 +90,10 @@ function globalRegistry(): InternalHandle[] {
  * 三条骨架规则，各自钉着一类真实事故（细节与测试对应见各方法注释）：
  * 1. **自变更防护**：我们每译一段都会写 DOM（宿主、仅译文模式的隐藏 span），这些插入
  *    本身会触发 MutationObserver。轮次全程在 `disconnect()` 的窗口里写、写完
- *    `takeRecords()` 丢弃攒下的记录、最后一步才重新 `observe()`——只 disconnect 不
- *    takeRecords 不够：旧记录可能还躺在队列里，下次回调就会看到它们。
+ *    `takeRecords()` 丢弃攒下的记录、最后一步才重新 `observe()`。两者的分工经实测钉过
+ *    （见 `process()` 内注释与测试的变异结论）：disconnect 让自写入不进队列并丢弃未投递
+ *    积压；写后的 takeRecords 兜住「注册态开轮」（溢出补轮从定时器直接起步）时漏进队列的
+ *    那批记录——两个一起拆，第二轮无效扫描当场可见；只拆任何一个，另一个都还兜得住。
  * 2. **只扫新增子树**：候选根取自 `addedNodes`（新增元素的父容器是混合容器时改扫父容器），
  *    绝不重跑整页采集——3000 段的页面上每次变动都 O(整页) 会把主线程打满。
  * 3. **(容器元素, 段文本) 去重**：松散文本段不带「已处理」标记，重扫必然再采到；
@@ -224,8 +226,14 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         }
         dirty = false;
 
-        // —— 自变更防护窗口：先断开并清空队列，本轮所有页面写入都发生在断开期间，
-        //    写完 takeRecords 丢弃「这段时间」攒下的记录，最后一步才重新 observe。
+        // —— 自变更防护窗口：先 disconnect 再写，最后一步才重新 observe。
+        //    两个动作各挡一种泄漏，一律不许拆（变异实验结论钉在测试「溢出补轮」用例注释里）：
+        //    - disconnect：写入期间注销观察者，自写入不进队列；规范上还顺带丢弃
+        //      「已检测到但未投递」的积压记录（MDN disconnect() 的 Note），所以紧随其后的
+        //      takeRecords 在合规宿主里是双保险——保留它是为了队列语义哪天偏离规范时，
+        //      循环当场红在测试里，而不是上线才炸。
+        //    - 写后的 takeRecords：挡「注册态开轮」的情形——溢出补轮由定时器直接唤起、
+        //      中间没有投递注销，挂载写入会进队列；这批记录必须死在重新 observe 之前。
         observer.disconnect();
         observer.takeRecords();
 

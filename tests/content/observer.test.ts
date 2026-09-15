@@ -360,6 +360,42 @@ describe('增量翻译：自变更防护（不循环、不风暴）', () => {
     expect(subtreeCollect.mock.calls.length).toBe(scans);
     expect(translateRequests(worker).length).toBe(requests);
   });
+
+  /**
+   * 真正考验防护窗口的轮次：**观察者处于注册态时开轮**。
+   * 回调触发的轮次天然安全（DOM 规范规定投递回调时顺带注销观察者，下一轮从注销态起步）；
+   * 而溢出补轮（finally 里重新排防抖的那一轮）启动时观察者还挂着——它的自写入
+   * 会进队列，只有 `disconnect() + takeRecords()` 窗口能挡住。
+   * 删掉轮内的 disconnect/takeRecords（一起），这一条必须红：补轮挂载 4 段宿主的
+   * childList 记录会投递给回调、滚成第三轮对自家宿主的无效扫描。
+   */
+  it('溢出补轮从注册态开轮：自写入被防护窗口挡下，不滚出下一轮扫描', async () => {
+    mount('<article id="feed"><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+    const feed = document.getElementById('feed') as HTMLElement;
+
+    // 攒出「第一轮吃满上限 + 第二轮溢出」的形状——第二轮正是从注册态起步的那一轮。
+    const total = INCREMENTAL_MAX_SEGMENTS_PER_ROUND + 4;
+    for (let i = 0; i < total; i += 1) appendParagraph(feedText('overflow', i), feed);
+
+    await runDebounceWindow(); // 第一轮：上限 60 段
+    await runDebounceWindow(); // 第二轮：溢出的 4 段（注册态开轮）
+
+    const scans = subtreeCollect.mock.calls.length;
+    // 恰好两轮：60 个 root + 4 个 root。若补轮的自写入污染了队列，这里会多出扫自家宿主的轮次。
+    expect(scans).toBe(total);
+    expect(sentTexts(worker)).toHaveLength(total);
+
+    for (let i = 0; i < 4; i += 1) {
+      await flushMicrotasks();
+      await runDebounceWindow();
+    }
+    expect(subtreeCollect.mock.calls.length).toBe(total);
+    expect(sentTexts(worker)).toHaveLength(total);
+  });
 });
 
 describe('增量翻译：扫描范围（只扫新增子树）', () => {
