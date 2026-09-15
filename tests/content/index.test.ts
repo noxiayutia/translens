@@ -1082,3 +1082,172 @@ describe('内容脚本编排：失败与边界', () => {
     expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('设置版本');
   });
 });
+
+/**
+ * 页面级提示的**择一**规则：`AUTH` > `RATE_LIMIT` > 其它。
+ *
+ * 反例（曾经的行为）：`lastError` 是无条件覆盖——第 1 批 AUTH（用户该去设置页填 Key）、
+ * 第 5 批 NETWORK（瞬时抖动）时，最后弹出的是 NETWORK 那条。最需要用户采取行动
+ * 的提示恰好最容易被后到的批次顶掉。以下用例两个方向都钉：把先后反过来，弹出的
+ * **仍然**必须是优先级高的那条——证明判据是错误码，不是写入顺序。
+ *
+ * 每段独立成批（maxSegmentsPerBatch: 1）且并发 1：批次按文档顺序**依次**跑完，
+ * "先到/后到"才由用例说了算，不是竞速的偶然结果。
+ */
+describe('内容脚本编排：页面级提示按错误码优先级择一', () => {
+  const AUTH_MESSAGE = '尚未填写 API Key，请在设置中配置';
+  const NETWORK_MESSAGE = '免费接口请求失败：socket hang up';
+  const RATE_LIMIT_MESSAGE = '请求过于频繁（429），已暂停写入';
+
+  /** 逐条失败（条目级，后台 translateBatch 的真实形状）；映射外的文本回成功。 */
+  function codedFailureReply(
+    byText: Record<string, { code: TranslateItemResult['code']; message: string }>,
+  ): FakeWorker {
+    return (message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({
+        ok: true,
+        results: items.map((item) => {
+          const entry = byText[item.text];
+          return entry === undefined
+            ? { id: item.id, text: translate(item.text) }
+            : failure(item.id, entry.code, entry.message);
+        }),
+      });
+      return true;
+    };
+  }
+
+  async function serialSingleSegmentBatches(): Promise<void> {
+    await chromeStub.storage.local.set({
+      'jinyi:settings': { version: 1, maxSegmentsPerBatch: 1, concurrency: 1 },
+    });
+  }
+
+  function toastText(): string {
+    return document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '';
+  }
+
+  /** 跑一整轮并返回 toast 文案；结束后还原并清掉节点，供同一个用例做正反两轮。 */
+  async function round(contentListener: MessageListener): Promise<string> {
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    const text = toastText();
+    await dispatch(contentListener, MSG.RESTORE_PAGE);
+    clearToast();
+    return text;
+  }
+
+  it('AUTH 优先于 NETWORK：无论谁先到（NETWORK 文案绝不吞掉填 Key 的提示）', async () => {
+    await serialSingleSegmentBatches();
+    mount('<p>Alpha text</p><p>Beta text</p>');
+    const { worker, contentListener } = await loadContentScript();
+
+    // 正向：第 1 批 AUTH、第 2 批 NETWORK——旧实现弹出的是后写入的 NETWORK。
+    worker.mockImplementation(
+      codedFailureReply({
+        'Alpha text': { code: 'AUTH', message: AUTH_MESSAGE },
+        'Beta text': { code: 'NETWORK', message: NETWORK_MESSAGE },
+      }),
+    );
+    const forward = await round(contentListener);
+    expect(forward).toContain('尚未填写 API Key');
+    expect(forward).not.toContain('socket hang up');
+
+    // 反向：第 1 批 NETWORK、第 2 批 AUTH——弹出的仍然是 AUTH。
+    // 两条合在一起证明"弹哪条"不由批次先后决定。
+    worker.mockImplementation(
+      codedFailureReply({
+        'Alpha text': { code: 'NETWORK', message: NETWORK_MESSAGE },
+        'Beta text': { code: 'AUTH', message: AUTH_MESSAGE },
+      }),
+    );
+    const backward = await round(contentListener);
+    expect(backward).toContain('尚未填写 API Key');
+    expect(backward).not.toContain('socket hang up');
+  });
+
+  it('AUTH 优先于 NETWORK 且整轮只弹一次（同码多条也只在收尾弹一条）', async () => {
+    await serialSingleSegmentBatches();
+    mount('<p>Alpha text</p><p>Beta text</p><p>Gamma text</p>');
+    const { worker, contentListener } = await loadContentScript();
+    const toasts = watchToastInserts();
+    worker.mockImplementation(
+      codedFailureReply({
+        'Alpha text': { code: 'AUTH', message: AUTH_MESSAGE },
+        'Beta text': { code: 'NETWORK', message: NETWORK_MESSAGE },
+        'Gamma text': { code: 'NETWORK', message: NETWORK_MESSAGE },
+      }),
+    );
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(state.failed).toBe(3);
+    expect(toastText()).toContain('尚未填写 API Key');
+    expect(toastText()).not.toContain('socket hang up');
+    // 三个批次都有页面级候选，弹出次数仍然只有 1。
+    expect(toasts.count()).toBe(1);
+    toasts.stop();
+  });
+
+  it('RATE_LIMIT 优先于 NETWORK（但低于 AUTH）：两个方向都钉', async () => {
+    await serialSingleSegmentBatches();
+    mount('<p>Alpha text</p><p>Beta text</p>');
+    const { worker, contentListener } = await loadContentScript();
+
+    // 限流先到、网络抖动后到：弹限流。
+    worker.mockImplementation(
+      codedFailureReply({
+        'Alpha text': { code: 'RATE_LIMIT', message: RATE_LIMIT_MESSAGE },
+        'Beta text': { code: 'NETWORK', message: NETWORK_MESSAGE },
+      }),
+    );
+    const forward = await round(contentListener);
+    expect(forward).toContain('429');
+    expect(forward).not.toContain('socket hang up');
+
+    // 反过来：仍然弹限流。
+    worker.mockImplementation(
+      codedFailureReply({
+        'Alpha text': { code: 'NETWORK', message: NETWORK_MESSAGE },
+        'Beta text': { code: 'RATE_LIMIT', message: RATE_LIMIT_MESSAGE },
+      }),
+    );
+    const backward = await round(contentListener);
+    expect(backward).toContain('429');
+    expect(backward).not.toContain('socket hang up');
+
+    // AUTH 高于 RATE_LIMIT：限流先到也要被鉴权失败顶掉。
+    worker.mockImplementation(
+      codedFailureReply({
+        'Alpha text': { code: 'RATE_LIMIT', message: RATE_LIMIT_MESSAGE },
+        'Beta text': { code: 'AUTH', message: AUTH_MESSAGE },
+      }),
+    );
+    const withAuth = await round(contentListener);
+    expect(withAuth).toContain('尚未填写 API Key');
+    expect(withAuth).not.toContain('429');
+  });
+
+  it('响应级失败（ok: false）也参与优先级：后到的 ok:false NETWORK 不顶掉先到的条目级 AUTH', async () => {
+    await serialSingleSegmentBatches();
+    mount('<p>Alpha text</p><p>Beta text</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      if (items[0]?.text === 'Alpha text') {
+        sendResponse({ ok: true, results: items.map((item) => failure(item.id, 'AUTH', AUTH_MESSAGE)) });
+        return true;
+      }
+      sendResponse({ ok: false, code: 'NETWORK', message: NETWORK_MESSAGE });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(state.failed).toBe(2);
+    expect(toastText()).toContain('尚未填写 API Key');
+    expect(toastText()).not.toContain('socket hang up');
+  });
+});

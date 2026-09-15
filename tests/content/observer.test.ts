@@ -739,6 +739,75 @@ describe('增量翻译：失败处理与布局不变式', () => {
   });
 });
 
+describe('增量翻译：页面级提示与整页同一套判择逻辑', () => {
+  /** 逐条失败按文本给错误码（条目级形状，同整页路径）；映射外的文本回成功。 */
+  function codedFailureReply(
+    byText: Record<string, { code: TranslateItemResult['code']; message: string }>,
+  ): FakeWorker {
+    return (message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({
+        ok: true,
+        results: items.map((item) => {
+          const entry = byText[item.text];
+          return entry === undefined
+            ? { id: item.id, text: translate(item.text) }
+            : { id: item.id, text: null, code: entry.code, message: entry.message };
+        }),
+      });
+      return true;
+    };
+  }
+
+  /**
+   * 已翻译页面上两个新段落各成一轮失败（1 段 1 批 + 并发 1：先后由文档顺序决定），
+   * 返回整轮跑完后的 toast 文案。每个方向各自占一条用例——模块状态（renderer、
+   * 增量账本）不跨用例复用，beforeEach 负责从零重建。
+   */
+  async function incrementalNoticeRound(
+    first: { code: TranslateItemResult['code']; message: string },
+    second: { code: TranslateItemResult['code']; message: string },
+  ): Promise<string> {
+    await chromeStub.storage.local.set({
+      'jinyi:settings': { version: 1, maxSegmentsPerBatch: 1, concurrency: 1 },
+    });
+    mount('<article id="a"><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    worker.mockImplementation(
+      codedFailureReply({
+        'Increment first text': first,
+        'Increment second text': second,
+      }),
+    );
+    const feed = document.getElementById('a') as HTMLElement;
+    appendParagraph('Increment first text', feed);
+    appendParagraph('Increment second text', feed);
+    await runDebounceWindow();
+
+    return document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '';
+  }
+
+  const AUTH = { code: 'AUTH' as const, message: '尚未填写 API Key，请在设置中配置' };
+  const NETWORK = { code: 'NETWORK' as const, message: '免费接口请求失败：socket hang up' };
+
+  it('增量轮里后到的 NETWORK 不顶掉先到的 AUTH（与整页同一条优先级）', async () => {
+    const toastText = await incrementalNoticeRound(AUTH, NETWORK);
+    expect(toastText).toContain('尚未填写 API Key');
+    expect(toastText).not.toContain('socket hang up');
+  });
+
+  it('反向先后同样弹 AUTH：判据是错误码，不是写入顺序', async () => {
+    const toastText = await incrementalNoticeRound(NETWORK, AUTH);
+    expect(toastText).toContain('尚未填写 API Key');
+    expect(toastText).not.toContain('socket hang up');
+  });
+});
+
 describe('增量翻译：无限滚动模拟（X/Twitter 型验收）', () => {
   it(
     '50 轮 × 每轮 20 段：请求线性于段落数、同一文本恰好请求一次、宿主不重复',
