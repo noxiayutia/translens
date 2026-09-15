@@ -5799,6 +5799,58 @@ function isEditable(element: Element): boolean {
 }
 
 /**
+ * 「什么算一段」的**向上**判据：从给定元素出发，找最近的叶子文本块。
+ * 悬停翻译用它，整页翻译（{@link collectSegments}）按同一批底层谓词向下切段——
+ * 两处各写一份判据迟早会漂移，所以这些谓词（{@link isBlockBoundary}、{@link inlineText}、
+ * {@link isHidden}、{@link isSkippedForText}）只此一份，谁要用谁就 import。
+ *
+ * 一个元素是"叶子文本块"，当且仅当：
+ * 1. 它自己不在被跳过的范围里（`[data-jy-root]` 子树、`SKIP_TAGS`、可编辑区域）——
+ *    命中即**直接返回 null**：右键/悬停落在按钮或输入框上不是"段落没找到"，是"这里不该翻译"；
+ * 2. 它内部没有块级边界子元素（有就是容器，块级子元素各自成段，见 collectSegments 的注释）；
+ * 3. 它的可见文本可翻译（{@link isTranslatableText}，与采集端同一条判据）；
+ * 4. 它是"块"——自身是块级边界（{@link isBlockBoundary}），或其父是 body
+ *    （采集以 `document.body` 为根，它的直接子元素一律会被 visitBlock，行内也算）。
+ *    少了这条，`<p>Hello <b>world</b></p>` 里悬停 `<b>` 会把 `world` 单独当一段，
+ *    而采集端认定的是整段 `Hello world`——判据就漂移了。
+ *
+ * 不满足 2~4 的元素（隐藏元素、容器、行内包裹）继续向上找；到根还没有就返回 null。
+ *
+ * 已知边界：混合容器（`<div>Intro<p>Body</p></div>` 的 Intro）在采集端是松散文本段，
+ * 但它**有**块级子元素，本函数按上面的判据返回 null——指针停在容器留白上时没有可悬停的
+ * 整段。这是刻意收紧：宁可少翻一处，也不在悬停路径上重做一遍 textRun 的落点判定。
+ */
+export function findLeafTextAncestor(element: Element | null): HTMLElement | null {
+  const styleOf = createStyleLookup();
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    // 1. 命中即停：这些区域不是"还没找到段落"，是"这里永远不翻译"。
+    if (node.closest('[data-jy-root]') !== null) return null;
+    if (SKIP_TAGS.has(node.tagName) || isEditable(node)) return null;
+    // 隐藏元素本身没有可悬停的字面（display:none 不产生盒），但它的可见祖先照常是段落，
+    // 所以不返回、继续向上。（aria-hidden 的可见节点走到下面的正常判定。）
+    if (isHidden(node, styleOf)) continue;
+    // 2. 含块级边界 → 容器，不是叶子。
+    if (hasBlockBoundaryChild(node, styleOf)) continue;
+    // 3. 可见文本判据与采集端逐字相同。
+    if (!isTranslatableText(inlineText(node, styleOf))) continue;
+    // 4. "块"身份判据与 visitBlock 的入口一致。
+    const parent = node.parentElement;
+    if (parent === null || parent === document.body || isBlockBoundary(node, styleOf, 0)) {
+      return node instanceof HTMLElement ? node : null;
+    }
+  }
+  return null;
+}
+
+function hasBlockBoundaryChild(element: Element, styleOf: StyleLookup): boolean {
+  for (const child of Array.from(element.children)) {
+    if (isSkippedForText(child) || child.nodeName === 'BR') continue;
+    if (isBlockBoundary(child, styleOf, 0)) return true;
+  }
+  return false;
+}
+
+/**
  * 一个子元素算不算**块级边界**（即：父元素的文本到此为止，这块自己成段）：
  * 1. 它的 computed display 在白名单里；或者
  * 2. 它是透明包裹（inline-block / inline-flex / inline-grid / contents）**并且**内部存在块级后代。
@@ -7438,7 +7490,11 @@ import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
+import { createHoverTranslator, type HoverController } from './hover';
+import type { InlineTranslation } from './inline-types';
 import { DomRenderer } from './renderer';
+import { createSelectionTranslator, type SelectionController } from './selection';
+import { hideTooltip } from './tooltip';
 import { toast } from './toast';
 
 /**
@@ -7729,6 +7785,8 @@ async function translatePage(): Promise<void> {
 
   lastError = null;
   displayMode = settings.displayMode;
+  // 朗读的目标语言跟着这一轮翻译用的一次刷新（翻译请求本身不依赖它，见 translateInline）。
+  inlineTargetLang = settings.targetLang;
   finished.clear();
   failedIds.clear();
   segments = collected;
@@ -7861,6 +7919,88 @@ async function retrySegment(segmentId: string): Promise<void> {
   renderer?.fail(segment.id, result.message ?? '翻译失败', isRetryable(result.code));
 }
 
+/**
+ * 悬停/划词的翻译入口：仍是"一条正常的 `TRANSLATE_TEXTS` 请求"，走后台——
+ * 缓存、引擎选择、重试、超时全在 `background/scheduler.ts` 那一份实现里，这里不另起炉灶。
+ * `targetLang` 故意**不传**：后台会用它当场读到的设置（永远比内容脚本手里的新鲜）。
+ */
+async function translateInline(text: string): Promise<InlineTranslation> {
+  let response: TranslateTextsResponse;
+  try {
+    response = await sendToBackground({
+      type: MSG.TRANSLATE_TEXTS,
+      payload: { items: [{ id: 'jy-inline', text }] },
+    });
+  } catch (raw) {
+    return { ok: false, message: describeTransportError(raw) };
+  }
+  if (!response.ok) return { ok: false, message: describeError(response) };
+  const [result] = Array.isArray(response.results) ? response.results.filter(isResultItem) : [];
+  if (result === undefined) return { ok: false, message: MALFORMED_RESPONSE };
+  if (result.text !== null) return { ok: true, text: result.text };
+  return { ok: false, message: result.message ?? '翻译失败' };
+}
+
+// ------------------------------------------------------------------
+// 悬停 / 划词（Plan 2）：两个模块各持一个控制器，监听器挂不挂由设置说了算。
+// 整页翻译进行中它们照常可用——独立浮层，与 renderer 的宿主注入互不相干。
+// ------------------------------------------------------------------
+
+export interface FeatureSettings {
+  hoverTranslate: boolean;
+  selectionTranslate: boolean;
+  /** 可选携带：弹窗改动任何一项时都顺带报一次当前目标语言，朗读的语种跟着刷新。 */
+  targetLang?: string;
+}
+
+let hover: HoverController | null = null;
+let selection: SelectionController | null = null;
+/** 朗读语言缓存；来源同 `displayMode`——读一次设置，翻译请求本身不受它影响（见 translateInline）。 */
+let inlineTargetLang: string = DEFAULT_SETTINGS.targetLang;
+/** 上一次实际应用的两项开关：APPLY_SETTINGS 允许只带一半字段，缺的按现状保持。 */
+let appliedFeatures: { hoverTranslate: boolean; selectionTranslate: boolean } = {
+  hoverTranslate: DEFAULT_SETTINGS.hoverTranslate,
+  selectionTranslate: DEFAULT_SETTINGS.selectionTranslate,
+};
+
+function controllers(): { hover: HoverController; selection: SelectionController } {
+  if (hover === null || selection === null) {
+    hover = createHoverTranslator({ translate: translateInline });
+    selection = createSelectionTranslator({
+      translate: translateInline,
+      targetLang: () => inlineTargetLang,
+    });
+  }
+  return { hover, selection };
+}
+
+/**
+ * 应用「悬停翻译 / 划词翻译」开关：重新挂/摘监听器。
+ * 导出给测试钉行为；生产路径是弹窗的 `MSG.APPLY_SETTINGS`（开关即时生效）
+ * 与启动时读的那一次设置。
+ */
+export function applyFeatureSettings(next: FeatureSettings): void {
+  const pair = controllers();
+  if (typeof next.targetLang === 'string' && next.targetLang !== '') inlineTargetLang = next.targetLang;
+  appliedFeatures = { hoverTranslate: next.hoverTranslate, selectionTranslate: next.selectionTranslate };
+  if (next.hoverTranslate) pair.hover.enable();
+  else pair.hover.disable();
+  if (next.selectionTranslate) pair.selection.enable();
+  else pair.selection.disable();
+}
+
+/** 启动时读一次设置（投影，密钥不进网页进程）。读不出来按默认值挂监听——翻译路径会另行报告设置损坏。 */
+function initFeatureSettings(): void {
+  void loadUiSettings().then(
+    (settings) => {
+      inlineTargetLang = settings.targetLang;
+      applyFeatureSettings(settings);
+    },
+    () => applyFeatureSettings(DEFAULT_SETTINGS),
+  );
+}
+initFeatureSettings();
+
 function restorePage(): void {
   renderer?.restore();
   renderer = null;
@@ -7868,6 +8008,11 @@ function restorePage(): void {
   finished.clear();
   failedIds.clear();
   lastError = null;
+  // 还原是一个明确的"都给我撤掉"信号：浮层气泡关掉、悬停描边撤掉、
+  // 在飞的悬停/划词结果作废（监听器保持原样——用户接下来还要用）。
+  hideTooltip();
+  hover?.reset();
+  selection?.reset();
   // 世代 +1 接管在飞的那一轮（它随后在每个 await 后安静退出），并**当场释放守卫**：
   // 还原之后紧接着的一次翻译（Alt+T 连按两下、或还原后点右键菜单）必须真的跑起来，
   // 不能被一个还在飞的上一轮挡住；上一轮跑完时也不会再动这一轮的状态。
@@ -7878,13 +8023,13 @@ function restorePage(): void {
 /**
  * 响应弹窗/快捷键/右键菜单的入口。
  *
- * `TRANSLATE_SELECTION`（右键菜单的"翻译选中文本"）在 Plan 1 没有对应的划词气泡，
- * **有意不处理**：这里返回 false 表示"内容脚本不管这条消息"，后台那边的
- * `tabs.sendMessage(...).catch(...)` 照常收尾，不会变成未处理的拒绝。
- * 它是 Plan 2 划词翻译的接口预留（气泡与 `selectionTranslate` 开关一起做）。
+ * `TRANSLATE_SELECTION`（右键菜单的"翻译选中文本"）走划词的同一条路径：内容脚本自己读
+ * 选区取文本与定位，读不到就用菜单带来的 `payload.text` 兜底、视口中央定位。菜单是用户
+ * 逐次明确点击的动作，所以它**不受 `selectionTranslate` 开关管辖**（那个开关只管自动的
+ * mouseup 气泡）。
  *
- * 带响应的两条分支都要兜住异常：`translatePage` 失败（设置版本高于本代码、存储坏了）
- * 时如果不响应，弹窗就会一直等到消息端口超时——用户看到的是一个没反应的按钮而不是原因。
+ * 带响应的分支都要兜住异常：`translatePage` 失败（设置版本高于本代码、存储坏了）时如果
+ * 不响应，弹窗就会一直等到消息端口超时——用户看到的是一个没反应的按钮而不是原因。
  */
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const type = (message as { type?: string } | null)?.type;
@@ -7918,6 +8063,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (type === MSG.GET_PAGE_STATE) {
     sendResponse(currentState());
+    return false;
+  }
+  if (type === MSG.TRANSLATE_SELECTION) {
+    // 菜单文本由后台带过来；定位靠内容脚本自己读的选区，读不到会退回视口中央。
+    const payload = (message as { payload?: { text?: unknown } } | null)?.payload;
+    controllers().selection.translateFromMenu(payload?.text);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (type === MSG.APPLY_SETTINGS) {
+    const raw = (message as { payload?: Partial<FeatureSettings> } | null)?.payload ?? {};
+    applyFeatureSettings({
+      hoverTranslate: typeof raw.hoverTranslate === 'boolean' ? raw.hoverTranslate : appliedFeatures.hoverTranslate,
+      selectionTranslate:
+        typeof raw.selectionTranslate === 'boolean' ? raw.selectionTranslate : appliedFeatures.selectionTranslate,
+      targetLang: typeof raw.targetLang === 'string' ? raw.targetLang : undefined,
+    });
+    sendResponse({ ok: true });
     return false;
   }
   return false;
