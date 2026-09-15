@@ -88,6 +88,12 @@ export interface Settings {
   displayMode: DisplayMode;
   hoverTranslate: boolean;
   selectionTranslate: boolean;
+  /**
+   * ⚠ **这个字段目前没有任何消费者**：只有类型声明、默认值与 `mergeSettings` 的夹取，
+   * 全仓没有任何代码读它来触发自动翻译——自动翻译功能本身尚未实现（属下一阶段）。
+   * 在存储里把它设成多少都**不会有任何效果**，别以为改这里就能调延时。
+   * 接功能时记得同时补界面（README 已按"无界面、无行为"如实描述）。
+   */
   autoTranslateDelay: number;
   concurrency: number;
   maxBatchChars: number;
