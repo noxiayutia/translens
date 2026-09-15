@@ -14,6 +14,7 @@ import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 import { MSG, type PageState, type TranslateItemResult } from '../../src/shared/messages';
+import { CURRENT_VERSION, SETTINGS_KEY } from '../../src/shared/settings';
 
 /** 从生产消息类型里取"内容脚本发出的那一条"的形状，不手抄 payload 结构。 */
 type SentMessage = { type: string; payload: { items: Array<{ id: string; text: string }>; targetLang?: string } };
@@ -1436,5 +1437,59 @@ describe('内容脚本编排：含假名页面的纯汉字段落不再被跳过'
     } finally {
       scan.restore();
     }
+  });
+});
+
+/**
+ * 重试的语言来源（一致性问题）：整页与增量都吃 `pageSnapshot`——"中途改语言，
+ * 本页面要重来才生效"是快照写明的语义。重试若改用**当前**设置，用户改过目标语言后
+ * 点某个旧失败段的重试，就会出现"那一段新语言、其余旧语言"的一语双语墙。
+ * 另一半分工（Key / 接口配置走最新值）由 `tests/background/service-worker.test.ts`
+ * 钉：后台每条消息现读设置，内容脚本这条路上本来就不携带任何凭据。
+ */
+describe('内容脚本编排：重试语言跟随页面快照', () => {
+  it('翻译时快照 zh-Hans、之后设置改成 ja：点失败段的重试仍按 zh-Hans 发请求', async () => {
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: { version: CURRENT_VERSION, targetLang: 'zh-Hans' },
+    });
+    mount('<p>First broken paragraph</p><p>Second fine paragraph</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      sendResponse({
+        ok: true,
+        results: items.map((item) =>
+          item.text === 'First broken paragraph'
+            ? failure(item.id, 'NETWORK', '网络抖动')
+            : { id: item.id, text: translate(item.text) },
+        ),
+      });
+      return true;
+    });
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    expect(state.failed).toBe(1);
+    // 整页那一批带的是快照语言。
+    expect(translateRequests(worker)[0]?.payload.targetLang).toBe('zh-Hans');
+
+    // 用户去设置页把目标语言改成 ja。
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: { version: CURRENT_VERSION, targetLang: 'ja' },
+    });
+
+    // 点失败那一段的「重试」。
+    const retry = hosts()
+      .find((host) => bodyTextOf(host).includes('网络抖动'))
+      ?.shadowRoot?.querySelector('.jy-retry') as HTMLButtonElement | null;
+    expect(retry).not.toBeNull();
+    retry?.click();
+    await settle();
+
+    const requests = translateRequests(worker);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.payload.items.map((item) => item.text)).toEqual(['First broken paragraph']);
+    // 承重断言：重试的语言仍是**页面快照**的 zh-Hans，不是当前设置里的 ja。
+    expect(requests[1]?.payload.targetLang).toBe('zh-Hans');
   });
 });

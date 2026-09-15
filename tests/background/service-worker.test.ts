@@ -144,6 +144,37 @@ describe('runtime.onMessage 消息路由', () => {
     expect(calls[1].searchParams.get('tl')).toBe('ja');
   });
 
+  /**
+   * 与「重试语言走页面快照」互补的另一半分工（见 content/index.test.ts）：
+   * **语言由内容脚本带进来（或回落当前设置），凭据永远现读当前设置**。
+   * 用户点重试往往正是刚去设置页填好 Key 回来——后台要是拿着旧快照，那次重试
+   * 还会用旧凭据失败。这条钉的是"每条消息各读一次设置"，不是缓存掉的长驻配置。
+   */
+  it('引擎配置（含 API Key）逐条消息现读：中途保存新 Key，下一条消息直接用新 Key', async () => {
+    const authHeaders: Array<string | null> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      authHeaders.push(new Headers(init?.headers).get('authorization'));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 译文' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.openai.com/*');
+    const configFor = (apiKey: string) => ({
+      engineId: 'openai-compat',
+      engineConfig: { apiKey, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+    });
+
+    await useSettings(configFor('sk-old'));
+    await translateTexts({ items: [{ id: 'a', text: 'First text' }], targetLang: 'en' }).response();
+
+    // 用户中途去设置页保存了新 Key。
+    await useSettings(configFor('sk-new'));
+    await translateTexts({ items: [{ id: 'b', text: 'Second text' }], targetLang: 'en' }).response();
+
+    expect(authHeaders).toEqual(['Bearer sk-old', 'Bearer sk-new']);
+  });
+
   it('引擎报错（缺 API Key）时把 AUTH 记在条目上，不抛错也不发请求', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);

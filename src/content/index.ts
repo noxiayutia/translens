@@ -544,9 +544,18 @@ async function translatePage(): Promise<void> {
 async function retrySegment(segmentId: string): Promise<void> {
   const segment = segments.find((s) => s.id === segmentId);
   if (!segment) return;
-  // 重试要按**当前**设置走：用户点了重试按钮，往往正是刚去设置页填完 API Key 回来。
-  // 同样是投影（见 translatePage）：重试路径也不该把密钥读进网页进程。
-  const settings = await loadUiSettings();
+  /**
+   * 两个来源要分开满足，别一锅烩：
+   * - **语言走页面快照**（`pageSnapshot.targetLang`，与整页/增量同一口径）：快照的语义是
+   *   "中途改语言，本页面要还原重来才生效"。重试若现读设置，用户改过目标语言后点某个
+   *   旧失败段的重试，那一段会变新语言、其余还是旧语言——一语双语墙。
+   *   （`pageSnapshot === null` 只在"上一帧刚被还原、按钮点击恰好排队进来"的夹缝里可达，
+   *    那时不带 targetLang、让后台按当前设置兜底，见 service-worker 的 `payload.targetLang ?? …`。）
+   * - **Key 与接口配置走当前设置**：用户点重试往往正是刚去设置页填好 Key 回来，重试必须
+   *   用上新凭据。这一半不需要内容脚本读任何东西——凭据归后台，`handleTranslateTexts`
+   *   每条消息现读一次设置（`tests/background/service-worker.test.ts` 钉着这条分工）。
+   */
+  const targetLang = pageSnapshot?.targetLang;
 
   failedIds.delete(segmentId);
   renderer?.mount(segment, 'pending');
@@ -555,7 +564,7 @@ async function retrySegment(segmentId: string): Promise<void> {
   try {
     response = await sendToBackground({
       type: MSG.TRANSLATE_TEXTS,
-      payload: { items: [{ id: segment.id, text: segment.text }], targetLang: settings.targetLang },
+      payload: { items: [{ id: segment.id, text: segment.text }], targetLang },
     });
   } catch (raw) {
     failedIds.add(segmentId);
