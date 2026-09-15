@@ -3567,19 +3567,33 @@ function pickBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 /**
+ * 认不出来的值回落到哪个模式。
+ *
+ * 单独拎成一个常量而不是直接写 `DEFAULT_SETTINGS.displayMode`，是为了让「兜底」与
+ * 「`'replace'` 的迁移目标」成为两个可以分别演进的概念：默认值将来若改成双语，
+ * `'replace'` 仍然应该映射成"只要译文"。
+ *
+ * **现状要如实说明**：今天两者恰好都是 `translated-only`，所以把 `pickDisplayMode` 里的
+ * 迁移分支删掉，全部测试依然通过——兜底补上了同一个结果。也就是说那条迁移目前
+ * **没有测试守得住**，它只在默认值改变之后才成为承重代码。变异测试证实过这一点
+ * （删掉 `|| value === 'replace'`，426 个用例全绿）。不要以为有测试保护它。
+ */
+const FALLBACK_DISPLAY_MODE: DisplayMode = 'translated-only';
+
+/**
  * 显示模式的读取与**迁移**。
  *
  * 存储里已有的 `'replace'`（v1 时代的"整页替换"）必须映射成 `translated-only`：
  * 老用户升级后不能被当成"值不认识"而回落——回落的结果是显示模式悄悄变回双语，
  * 而那正是用户当初特意改掉的默认行为。
  *
- * 映射写死成 `translated-only` 而不是"当前的默认值"是有意的：默认值以后再变一次时，
+ * 迁移目标与兜底都写死成 `translated-only` 而不是"当前的默认值"：默认值以后再变一次时，
  * `'replace'` 的语义仍然是"只要译文"，不该跟着新默认值漂走。
  */
 function pickDisplayMode(value: unknown): DisplayMode {
   if (value === 'bilingual') return 'bilingual';
   if (value === 'translated-only' || value === 'replace') return 'translated-only';
-  return DEFAULT_SETTINGS.displayMode;
+  return FALLBACK_DISPLAY_MODE;
 }
 
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
@@ -6492,6 +6506,32 @@ describe('DomRenderer 仅译文模式：失败态', () => {
     expect(onRetry).toHaveBeenCalledWith('jy-1');
   });
 
+  it('失败时把原文放回来，重试时再藏起来', () => {
+    // 这条守的是一个很容易被忽略的可用性后果：整页失败（没填 Key、断网、限流）时，
+    // 如果原文还藏着，页面上就只剩一片红字——用户连想读的原文都看不见，得先按 Alt+T。
+    // 那比"遮挡"更糟：遮挡只是多了一倍文字，这个是把内容整个拿走了。
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+
+    const span = originalsOf(segment.element);
+    expect(span.style.display).toBe('none'); // 进行中：原文藏着，让位给"翻译中…"
+
+    renderer.fail(segment.id, '网络错误');
+    expect(span.style.display).not.toBe('none'); // 失败：原文必须看得见
+    expect(visibleText(segment.element)).toContain('Hello world');
+    expect(visibleText(segment.element)).toContain('网络错误');
+
+    // 用户点重试 → 重新进入进行中，原文再藏起来。
+    renderer.mount(segment, 'pending');
+    expect(span.style.display).toBe('none');
+
+    // 重试成功 → 保持藏着，显示译文。
+    renderer.update(segment.id, '你好世界');
+    expect(span.style.display).toBe('none');
+    expect(visibleText(segment.element)).toBe('你好世界');
+  });
+
   it('不可重试的失败只给原因，不挂按钮', () => {
     const segment = paragraph('Hello world');
     const renderer = new DomRenderer(document, 'translated-only');
@@ -6873,7 +6913,10 @@ export class DomRenderer {
 
   update(segmentId: string, text: string): void {
     const host = this.hosts.get(segmentId);
-    if (host) this.setContent(host, 'done', text);
+    if (!host) return;
+    // 重试成功：原文重新藏起来，让位给译文（失败时曾被放回来，见 fail）。
+    this.setOriginalsHidden(segmentId, true);
+    this.setContent(host, 'done', text);
   }
 
   /**
@@ -6888,7 +6931,19 @@ export class DomRenderer {
   fail(segmentId: string, message: string, canRetry = true): void {
     const host = this.hosts.get(segmentId);
     if (!host) return;
+    // **失败时把原文放回来。** 仅译文模式下原文本来是藏着的，一旦整页失败（没填 Key、
+    // 断网、限流），页面上就只剩一片红字——用户连想读的原文都看不见，得先按 Alt+T 才能读。
+    // 那比"遮挡"更糟：遮挡只是多了一倍文字，这个是把内容整个拿走了。
+    // 重试成功时 update() 会重新藏起来。
+    this.setOriginalsHidden(segmentId, false);
     this.setContent(host, 'error', message, canRetry);
+  }
+
+  /** 仅译文模式下原文的显隐。双语模式没有这条记录，调用是空操作。 */
+  private setOriginalsHidden(segmentId: string, hidden: boolean): void {
+    const record = this.hiddenOriginals.get(segmentId);
+    if (record === undefined) return;
+    record.span.style.display = hidden ? 'none' : '';
   }
 
   /**
@@ -6908,6 +6963,8 @@ export class DomRenderer {
   private mountTranslatedOnly(segment: ExtractedSegment, state: RenderState, text?: string): void {
     const existing = this.hosts.get(segment.id);
     if (existing !== undefined) {
+      // 重新进入"进行中"（用户点了重试）时把原文重新藏起来。
+      this.setOriginalsHidden(segment.id, true);
       this.setContent(existing, state, text);
       return;
     }

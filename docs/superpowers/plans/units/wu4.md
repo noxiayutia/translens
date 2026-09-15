@@ -1252,19 +1252,33 @@ function pickBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 /**
+ * 认不出来的值回落到哪个模式。
+ *
+ * 单独拎成一个常量而不是直接写 `DEFAULT_SETTINGS.displayMode`，是为了让「兜底」与
+ * 「`'replace'` 的迁移目标」成为两个可以分别演进的概念：默认值将来若改成双语，
+ * `'replace'` 仍然应该映射成"只要译文"。
+ *
+ * **现状要如实说明**：今天两者恰好都是 `translated-only`，所以把 `pickDisplayMode` 里的
+ * 迁移分支删掉，全部测试依然通过——兜底补上了同一个结果。也就是说那条迁移目前
+ * **没有测试守得住**，它只在默认值改变之后才成为承重代码。变异测试证实过这一点
+ * （删掉 `|| value === 'replace'`，426 个用例全绿）。不要以为有测试保护它。
+ */
+const FALLBACK_DISPLAY_MODE: DisplayMode = 'translated-only';
+
+/**
  * 显示模式的读取与**迁移**。
  *
  * 存储里已有的 `'replace'`（v1 时代的"整页替换"）必须映射成 `translated-only`：
  * 老用户升级后不能被当成"值不认识"而回落——回落的结果是显示模式悄悄变回双语，
  * 而那正是用户当初特意改掉的默认行为。
  *
- * 映射写死成 `translated-only` 而不是"当前的默认值"是有意的：默认值以后再变一次时，
+ * 迁移目标与兜底都写死成 `translated-only` 而不是"当前的默认值"：默认值以后再变一次时，
  * `'replace'` 的语义仍然是"只要译文"，不该跟着新默认值漂走。
  */
 function pickDisplayMode(value: unknown): DisplayMode {
   if (value === 'bilingual') return 'bilingual';
   if (value === 'translated-only' || value === 'replace') return 'translated-only';
-  return DEFAULT_SETTINGS.displayMode;
+  return FALLBACK_DISPLAY_MODE;
 }
 
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */

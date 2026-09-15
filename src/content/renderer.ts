@@ -116,7 +116,10 @@ export class DomRenderer {
 
   update(segmentId: string, text: string): void {
     const host = this.hosts.get(segmentId);
-    if (host) this.setContent(host, 'done', text);
+    if (!host) return;
+    // 重试成功：原文重新藏起来，让位给译文（失败时曾被放回来，见 fail）。
+    this.setOriginalsHidden(segmentId, true);
+    this.setContent(host, 'done', text);
   }
 
   /**
@@ -131,7 +134,19 @@ export class DomRenderer {
   fail(segmentId: string, message: string, canRetry = true): void {
     const host = this.hosts.get(segmentId);
     if (!host) return;
+    // **失败时把原文放回来。** 仅译文模式下原文本来是藏着的，一旦整页失败（没填 Key、
+    // 断网、限流），页面上就只剩一片红字——用户连想读的原文都看不见，得先按 Alt+T 才能读。
+    // 那比"遮挡"更糟：遮挡只是多了一倍文字，这个是把内容整个拿走了。
+    // 重试成功时 update() 会重新藏起来。
+    this.setOriginalsHidden(segmentId, false);
     this.setContent(host, 'error', message, canRetry);
+  }
+
+  /** 仅译文模式下原文的显隐。双语模式没有这条记录，调用是空操作。 */
+  private setOriginalsHidden(segmentId: string, hidden: boolean): void {
+    const record = this.hiddenOriginals.get(segmentId);
+    if (record === undefined) return;
+    record.span.style.display = hidden ? 'none' : '';
   }
 
   /**
@@ -151,6 +166,8 @@ export class DomRenderer {
   private mountTranslatedOnly(segment: ExtractedSegment, state: RenderState, text?: string): void {
     const existing = this.hosts.get(segment.id);
     if (existing !== undefined) {
+      // 重新进入"进行中"（用户点了重试）时把原文重新藏起来。
+      this.setOriginalsHidden(segment.id, true);
       this.setContent(existing, state, text);
       return;
     }

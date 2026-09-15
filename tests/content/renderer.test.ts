@@ -378,6 +378,32 @@ describe('DomRenderer 仅译文模式：失败态', () => {
     expect(onRetry).toHaveBeenCalledWith('jy-1');
   });
 
+  it('失败时把原文放回来，重试时再藏起来', () => {
+    // 这条守的是一个很容易被忽略的可用性后果：整页失败（没填 Key、断网、限流）时，
+    // 如果原文还藏着，页面上就只剩一片红字——用户连想读的原文都看不见，得先按 Alt+T。
+    // 那比"遮挡"更糟：遮挡只是多了一倍文字，这个是把内容整个拿走了。
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+
+    const span = originalsOf(segment.element);
+    expect(span.style.display).toBe('none'); // 进行中：原文藏着，让位给"翻译中…"
+
+    renderer.fail(segment.id, '网络错误');
+    expect(span.style.display).not.toBe('none'); // 失败：原文必须看得见
+    expect(visibleText(segment.element)).toContain('Hello world');
+    expect(visibleText(segment.element)).toContain('网络错误');
+
+    // 用户点重试 → 重新进入进行中，原文再藏起来。
+    renderer.mount(segment, 'pending');
+    expect(span.style.display).toBe('none');
+
+    // 重试成功 → 保持藏着，显示译文。
+    renderer.update(segment.id, '你好世界');
+    expect(span.style.display).toBe('none');
+    expect(visibleText(segment.element)).toBe('你好世界');
+  });
+
   it('不可重试的失败只给原因，不挂按钮', () => {
     const segment = paragraph('Hello world');
     const renderer = new DomRenderer(document, 'translated-only');
