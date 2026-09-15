@@ -185,21 +185,33 @@ function bodyTextOf(host: Element): string {
   return host.shadowRoot?.querySelector('.jy-body')?.textContent ?? '';
 }
 
-function hasRetryButton(host: Element): boolean {
-  return host.shadowRoot?.querySelector('.jy-retry') !== null;
+/**
+ * 元素里**可见**的文本：跳过被藏起来的原文（`display:none` 的 span），译文读宿主的
+ * Shadow DOM。`textContent` 分不出可见性——「仅译文」模式正是靠"原文还在、只是不可见"
+ * 实现的，用它断言"只剩译文"会永远成立。
+ */
+function visibleTextOf(element: Element): string {
+  const pieces: string[] = [];
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      pieces.push(node.nodeValue ?? '');
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const child = node as Element;
+    if (child.tagName === 'JY-TRANSLATION') {
+      pieces.push(bodyTextOf(child));
+      return;
+    }
+    if (child.ownerDocument.defaultView?.getComputedStyle(child).display === 'none') return;
+    for (const grandChild of Array.from(child.childNodes)) walk(grandChild);
+  };
+  for (const child of Array.from(element.childNodes)) walk(child);
+  return pieces.join('');
 }
 
-/**
- * 元素**自己的直接文本**（不含后代）。松散文本段的锚点是容器，容器的
- * `textContent` 会把里面的块级子元素也算进去，用它找原文会找错元素。
- */
-function directTextOf(element: Element): string {
-  return Array.from(element.childNodes)
-    .filter((node) => node.nodeType === Node.TEXT_NODE)
-    .map((node) => node.nodeValue ?? '')
-    .join('')
-    .replace(/\s+/g, ' ')
-    .trim();
+function hasRetryButton(host: Element): boolean {
+  return host.shadowRoot?.querySelector('.jy-retry') !== null;
 }
 
 function authedHosts(): Element[] {
@@ -316,7 +328,7 @@ describe('内容脚本编排：翻译整页', () => {
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
     expect(sentBatches(worker)).toEqual([]);
-    expect(state).toEqual({ translated: false, mode: 'bilingual', total: 0, done: 0, failed: 0 });
+    expect(state).toEqual({ translated: false, mode: 'translated-only', total: 0, done: 0, failed: 0 });
 
     const toastHost = document.getElementById('jy-toast');
     expect(toastHost).not.toBeNull();
@@ -342,35 +354,31 @@ describe('内容脚本编排：翻译整页', () => {
     const expected = ['Hello world', 'Second paragraph here', 'Intro sentence', 'Nested body text'].filter(
       looksTranslatable,
     );
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 4, done: 4, failed: 0 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 4, done: 4, failed: 0 });
 
-    // 每段原文都配一个宿主，且宿主插在它的原文旁边：
-    // - 整元素段落（h1 / p）：宿主是它的下一个兄弟；
-    // - 松散文本段（#box 的直接文本）：宿主留在容器内部，落在紧随其后的块级子元素之前。
+    // 每段原文都被藏进自己的 `[data-jy-originals]` span，且它的译文宿主紧跟在这个 span 后面：
+    // 整元素段落（h1 / p）里就是宿主在元素内部、span 之后；
+    // 松散文本段（#box 的直接文本）里 span 与宿主也都留在容器内部，落在紧随其后的块级子元素之前。
     for (const text of expected) {
-      const sources = Array.from(document.querySelectorAll('article *')).filter(
-        (element) => directTextOf(element) === text,
+      const hidden = Array.from(document.querySelectorAll('article [data-jy-originals]')).find(
+        (span) => span.textContent === text,
       );
-      const source = sources[sources.length - 1];
-      expect(source, `找不到原文元素：${text}`).toBeDefined();
-      // 整元素段落：宿主是它的下一个兄弟；松散文本段（容器锚点）：宿主在容器内部。
-      // 两种都取"原文旁最近的那个"——容器内部优先。
-      const inside = Array.from(source?.children ?? []).find((child) => child.tagName === 'JY-TRANSLATION');
-      const host = inside ?? source?.nextElementSibling;
-      expect(host?.tagName, `${text} 的译文宿主不在原文旁边`).toBe('JY-TRANSLATION');
+      expect(hidden, `找不到这段原文藏在哪里：${text}`).toBeDefined();
+      const host = hidden?.nextElementSibling;
+      expect(host?.tagName, `${text} 的译文宿主不在它的原文后面`).toBe('JY-TRANSLATION');
       expect(bodyTextOf(host as Element)).toBe(translate(text));
     }
-    // 松散文本段的宿主必须留在容器内部、在 Body 之前（跑出去或被隔开就错位了）。
+    // 松散文本段的原文与宿主都必须留在容器内部、在 Body 之前（跑出去或被隔开就错位了）。
     const box = document.getElementById('box') as HTMLElement;
     const body = document.getElementById('body') as HTMLElement;
     const boxOrder = Array.from(box.childNodes).map((node) =>
-      node.nodeType === Node.TEXT_NODE ? '#text' : node.nodeName,
+      node.nodeType === Node.TEXT_NODE ? '#text' : (node as Element).nodeName,
     );
-    expect(boxOrder).toEqual(['#text', 'JY-TRANSLATION', 'P', 'JY-TRANSLATION']);
-    // Intro 的宿主在 Body 之前 —— 否则「Intro 译文 / Outro 译文」会一起挤到 Body 后面。
-    const introHost = boxOrder.indexOf('JY-TRANSLATION');
-    expect(box.childNodes[introHost].nextSibling).toBe(body);
-    expect(body.nextSibling).toBe(box.lastChild);
+    expect(boxOrder).toEqual(['SPAN', 'JY-TRANSLATION', 'P']);
+    // Intro 的隐藏原文与译本都排在 Body 之前 —— 否则「Intro 译文 / Outro 译文」会一起挤到 Body 后面。
+    expect(box.firstElementChild?.hasAttribute('data-jy-originals')).toBe(true);
+    expect(box.firstElementChild?.nextElementSibling?.tagName).toBe('JY-TRANSLATION');
+    expect(box.lastElementChild).toBe(body);
     expect(hosts()).toHaveLength(expected.length);
 
     const batches = sentBatches(worker);
@@ -410,7 +418,7 @@ describe('内容脚本编排：翻译整页', () => {
 
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 1, failed: 1 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 2, done: 1, failed: 1 });
 
     const broken = hosts().find((host) => bodyTextOf(host).includes('网络错误'));
     expect(broken).toBeDefined();
@@ -459,7 +467,7 @@ describe('内容脚本编排：翻译整页', () => {
 
     expect(state).toEqual({
       translated: true,
-      mode: 'bilingual',
+      mode: 'translated-only',
       total: cases.length,
       done: 0,
       failed: cases.length,
@@ -524,7 +532,7 @@ describe('内容脚本编排：翻译整页', () => {
     releaseThird?.();
     const state = await pending;
 
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 3, done: 0, failed: 3 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 3, done: 0, failed: 3 });
     expect(hosts()).toHaveLength(3);
     for (const host of hosts()) {
       expect(bodyTextOf(host)).toContain('尚未填写 API Key');
@@ -555,7 +563,7 @@ describe('内容脚本编排：翻译整页', () => {
 
     expect(hosts()).toHaveLength(2);
     expect(hosts()).toEqual(firstHosts);
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 2, failed: 0 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 2, done: 2, failed: 0 });
     expect(translateRequests(worker)).toHaveLength(1);
     // 光数宿主钉不住这条守卫：首次翻译已经给原文打了 `data-jy-translated`，第二次采集本
     // 来就采不到东西，删掉守卫也会走"没有找到需要翻译的内容"早退（审查实测照样全绿）。
@@ -572,7 +580,7 @@ describe('内容脚本编排：翻译整页', () => {
 
     expect(hosts()).toHaveLength(2);
     expect(translateRequests(worker)).toHaveLength(1);
-    expect(again).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 2, failed: 0 });
+    expect(again).toEqual({ translated: true, mode: 'translated-only', total: 2, done: 2, failed: 0 });
     expect(document.getElementById('jy-toast')).toBeNull();
   });
 
@@ -606,7 +614,7 @@ describe('内容脚本编排：翻译整页', () => {
 
     expect(hosts()).toHaveLength(1);
     expect(translateRequests(worker)).toHaveLength(1);
-    expect(secondState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 0, failed: 0 });
+    expect(secondState).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 0, failed: 0 });
     expect(thirdState).toEqual(secondState);
 
     releaseFirstBatch?.();
@@ -645,7 +653,7 @@ describe('内容脚本编排：翻译整页', () => {
     // 所以"还原之后能不能再翻译"这条用例真正钉住的是它有没有被释放。
     expect(await dispatch(contentListener, MSG.RESTORE_PAGE)).toEqual({
       translated: false,
-      mode: 'bilingual',
+      mode: 'translated-only',
       total: 0,
       done: 0,
       failed: 0,
@@ -658,7 +666,7 @@ describe('内容脚本编排：翻译整页', () => {
     expect(translateRequests(worker)).toHaveLength(2);
     expect(hosts()).toHaveLength(1);
     expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
-    expect(secondState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 1, failed: 0 });
+    expect(secondState).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
 
     // 第一轮仍然在飞（它的响应还没回）：它收尾时不许再动这一轮的页面状态。
     releaseFirst?.();
@@ -713,12 +721,12 @@ describe('内容脚本编排：翻译整页', () => {
     const thirdState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
     expect(translateRequests(worker)).toHaveLength(2);
     expect(hosts()).toEqual([secondHost]);
-    expect(thirdState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 0, failed: 0 });
+    expect(thirdState).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 0, failed: 0 });
 
     releases.get(2)?.();
     const secondState = await second;
 
-    expect(secondState).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 1, failed: 0 });
+    expect(secondState).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
     expect(hosts()).toHaveLength(1);
     expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
   });
@@ -734,12 +742,69 @@ describe('内容脚本编排：翻译整页', () => {
 
     const state = await dispatch(contentListener, MSG.RESTORE_PAGE);
 
-    expect(state).toEqual({ translated: false, mode: 'bilingual', total: 0, done: 0, failed: 0 });
+    expect(state).toEqual({ translated: false, mode: 'translated-only', total: 0, done: 0, failed: 0 });
     expect(hosts()).toHaveLength(0);
     expect(document.body.innerHTML).toBe(html);
     expect(document.querySelector('[data-jy-root]')).toBeNull();
     expect(document.querySelector('[data-jy-id]')).toBeNull();
     expect(document.querySelector('[data-jy-translated]')).toBeNull();
+  });
+
+  it('默认显示模式就是「仅译文」：正文只剩译文，原文（含链接）完整地藏在 display:none 里', async () => {
+    // 存储里什么都不写 —— 这条钉的就是**默认值**本身（DEFAULT_SETTINGS.displayMode）。
+    mount('<p id="p">Click <a href="/x">here</a> now</p>');
+    const p = document.getElementById('p') as HTMLElement;
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
+
+    const hidden = p.querySelector('[data-jy-originals]') as HTMLElement;
+    expect(hidden).not.toBeNull();
+    expect(hidden.style.display).toBe('none');
+    // 原文一个节点都没销毁：文本、行内链接、href 全在，只是不可见。
+    expect(hidden.textContent).toBe('Click here now');
+    expect(hidden.querySelector('a')?.getAttribute('href')).toBe('/x');
+    // 宿主在元素内部，可见文本只剩译文（双语模式是"原文 + 译文"两段）。
+    const host = p.querySelector('jy-translation') as Element;
+    expect(host.parentElement).toBe(p);
+    expect(visibleTextOf(p)).toBe(translate('Click here now'));
+  });
+
+  it('还原逐字节：body.outerHTML 与翻译前完全相同（含链接、图片与嵌套结构）', async () => {
+    const html = [
+      '<article>',
+      '<h1>Hello world</h1>',
+      '<p>Click <a href="/x">here</a> now</p>',
+      '<p>An image <img src="a.png" alt="pic"> inside</p>',
+      '<div id="box">Intro sentence<p>Nested body text</p>Outro sentence</div>',
+      '<table><tbody><tr><td>Cell text</td><td>Second cell</td></tr></tbody></table>',
+      '<ul><li>Item text</li></ul>',
+      '<p>Line one<br>Line two</p>',
+      '</article>',
+    ].join('');
+    mount(html);
+    const before = document.body.outerHTML;
+    const { worker, contentListener } = await loadContentScript();
+    // 译文用固定标记、不含原文：这样"可见文本里只有译文"才是一条真断言。
+    worker.mockImplementation(autoReply(() => 'MOCK'));
+
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    const hidden = document.querySelectorAll('[data-jy-originals]');
+    expect(hidden.length).toBeGreaterThan(5);
+    expect(visibleTextOf(document.body)).toBe('MOCK'.repeat(hidden.length));
+
+    await dispatch(contentListener, MSG.RESTORE_PAGE);
+
+    expect(document.body.outerHTML).toBe(before);
+    expect(
+      document.querySelectorAll(
+        '[data-jy-root],[data-jy-originals],[data-jy-id],[data-jy-translated],[data-jy-for]',
+      ),
+    ).toHaveLength(0);
   });
 
   it('TOGGLE_PAGE 在"已翻译"与"还原"之间切换', async () => {
@@ -763,7 +828,7 @@ describe('内容脚本编排：消息接口', () => {
     const { contentListener } = await loadContentScript();
 
     const state = await dispatch(contentListener, MSG.GET_PAGE_STATE);
-    expect(state).toEqual({ translated: false, mode: 'bilingual', total: 0, done: 0, failed: 0 });
+    expect(state).toEqual({ translated: false, mode: 'translated-only', total: 0, done: 0, failed: 0 });
   });
 
   it('TRANSLATE_SELECTION 被忽略：不报错、不发请求、不改页面', async () => {
@@ -850,7 +915,7 @@ describe('内容脚本编排：失败与边界', () => {
     const state = await pending;
 
     // 整批进失败态：不是永远 pending，也不是静默什么都不做。
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 0, failed: 1 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 0, failed: 1 });
     expect(bodyTextOf(hosts()[0])).toContain('没有响应');
     expect(bodyTextOf(hosts()[0])).not.toContain('翻译中…');
     expect(hasRetryButton(hosts()[0])).toBe(true);
@@ -860,14 +925,14 @@ describe('内容脚本编排：失败与边界', () => {
     chromeStub.runtime.sendMessage = originalSendMessage;
     expect(await dispatchWithoutFallbackTimer(contentListener, MSG.RESTORE_PAGE)).toEqual({
       translated: false,
-      mode: 'bilingual',
+      mode: 'translated-only',
       total: 0,
       done: 0,
       failed: 0,
     });
     const again = await dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
 
-    expect(again).toEqual({ translated: true, mode: 'bilingual', total: 1, done: 1, failed: 0 });
+    expect(again).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
     expect(hosts()).toHaveLength(1);
     expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
   });
@@ -908,7 +973,7 @@ describe('内容脚本编排：失败与边界', () => {
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
     // 标整页的写法会让"已经显示译文"的那段也算进 failed：done + failed > total（审查实测 1 + 2 > 2）。
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 1, failed: 1 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 2, done: 1, failed: 1 });
     expect(authedHosts()).toHaveLength(1);
     expect(bodyTextOf(authedHosts()[0])).toBe(translate('Second text'));
     // 失败批的条目照常标注并带重试按钮，整轮跑完弹一次提示。
@@ -933,7 +998,7 @@ describe('内容脚本编排：失败与边界', () => {
       expect(bodyTextOf(host)).not.toContain('翻译中…');
       expect(hasRetryButton(host)).toBe(true);
     }
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 2, done: 0, failed: 2 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 2, done: 0, failed: 2 });
     // 响应形状不对是一种失败，不是"什么也没发生"：用户至少要知道出了什么事。
     expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('响应');
   });
@@ -959,7 +1024,7 @@ describe('内容脚本编排：失败与边界', () => {
 
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
-    expect(state).toEqual({ translated: true, mode: 'bilingual', total: 3, done: 1, failed: 2 });
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 3, done: 1, failed: 2 });
     expect(hosts()).toHaveLength(3);
     // 带真 id 的那条照常显示译文。注意不能用 `authedHosts()`（它按"含译字"筛）：
     // 失败文案「翻译响应格式不正确」里也有"译"字，那样三条都算"有译文"。
@@ -997,7 +1062,7 @@ describe('内容脚本编排：失败与边界', () => {
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
     // 响应必须到达（否则弹窗那边等到端口超时，用户只看到按钮没反应）。
-    expect(state).toEqual({ translated: false, mode: 'bilingual', total: 0, done: 0, failed: 0 });
+    expect(state).toEqual({ translated: false, mode: 'translated-only', total: 0, done: 0, failed: 0 });
     expect(translateRequests(worker)).toHaveLength(0);
     expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('设置版本');
   });

@@ -1,18 +1,42 @@
 import type { ExtractedSegment } from './extractor';
-import { isBlockDisplay } from './extractor';
+import { createStyleLookup, inlineText, isBlockDisplay } from './extractor';
+import type { DisplayMode } from '../shared/settings';
 import { TRANSLATION_CSS } from './styles';
 
-export type DisplayMode = 'bilingual' | 'replace';
+export type { DisplayMode };
+
 export type RenderState = 'pending' | 'done' | 'error';
 
 const HOST_TAG = 'jy-translation';
 const PENDING_TEXT = '翻译中…';
+
+/**
+ * 仅译文模式下装原文的容器。
+ *
+ * `style="display:none"` 是**内联**样式：页面 CSS 里一条 `.jy-originals { display:block }`
+ * 就能把「只显示译文」破掉，内联样式不依赖页面上有没有我们的样式表，也不给别人改写的机会。
+ * `data-jy-root` 让采集端把整棵子树当成插件自己的节点跳过。
+ */
+const ORIGINALS_TAG = 'span';
+const ORIGINALS_ATTR = 'data-jy-originals';
 
 interface InsertionTarget {
   parent: HTMLElement;
   /** 插到 parent 内部（末尾，或 before 指定的子节点之前）；否则插到 parent 里 before 那个位置。 */
   inside: boolean;
   before: Node | null;
+}
+
+/** 仅译文模式下被藏起来的一段原文：节点都还在，只是被移进了这个 span。 */
+interface HiddenOriginals {
+  element: HTMLElement;
+  span: HTMLElement;
+  /**
+   * 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都在 span 里。
+   * 元素被框架整体换掉时可以把原文搬进新元素（松散文本段不行——它的父元素是容器，
+   * 里面还有别的段落，整块替换会把兄弟段落删掉）。
+   */
+  wholeElement: boolean;
 }
 
 /** 容器里第一个块级后代（`display:contents` 这类不算块级，继续往里找）。 */
@@ -26,7 +50,7 @@ function firstBlockInside(element: Element, styleOf: (element: Element) => strin
 }
 
 /**
- * 决定译文宿主插到哪里。只用于 `anchor.kind === 'auto'` 的段落——
+ * 决定译文宿主插到哪里。只用于**双语模式** `anchor.kind === 'auto'` 的段落——
  * 松散文本段落带显式落点，由 ensureHost 直接按 `anchor.node` 插入，不走这里。
  *
  * 表格单元格、列表项、以及弹性/网格布局的子元素都必须插到内部——
@@ -62,24 +86,19 @@ export function resolveInsertion(element: HTMLElement, segment?: ExtractedSegmen
   return { parent, inside: false, before: element.nextSibling };
 }
 
-/** 还原时要写回的元素内容。直接克隆子节点，不用 innerHTML 快照——省掉一次 HTML 解析。 */
-function snapshotChildren(element: Element): Node[] {
-  return Array.from(element.childNodes, (node) => node.cloneNode(true));
-}
-
-function swapChildren(element: Element, nodes: Node[]): void {
-  // 克隆节点可以直接搬进文档，不必再克隆一次。
-  element.replaceChildren(...nodes);
-}
-
 function escapeAttributeValue(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export class DomRenderer {
   private readonly hosts = new Map<string, HTMLElement>();
-  /** 替换模式下被改写的元素 → 改写前的子节点快照。用 Map 是因为 restore() 要遍历它。 */
-  private readonly originals = new Map<string, { element: HTMLElement; nodes: Node[] }>();
+  /**
+   * 仅译文模式下被藏起来的原文 → 装载它的 span。
+   *
+   * 用 `Map` 而不是 `WeakMap`：`restore()` 必须能**遍历**全部条目（双语模式不需要它——
+   * 那边的原文一直可见，压根没有要还原的东西）。
+   */
+  private readonly hiddenOriginals = new Map<string, HiddenOriginals>();
 
   constructor(
     private readonly document: Document,
@@ -88,50 +107,152 @@ export class DomRenderer {
   ) {}
 
   mount(segment: ExtractedSegment, state: RenderState, text?: string): void {
-    if (this.mode === 'replace' && this.isReplaceable(segment)) {
-      if (!this.originals.has(segment.id)) {
-        this.originals.set(segment.id, { element: segment.element, nodes: snapshotChildren(segment.element) });
-      }
-      if (state === 'done' && text !== undefined) segment.element.textContent = text;
+    if (this.mode === 'translated-only') {
+      this.mountTranslatedOnly(segment, state, text);
       return;
     }
-    // 双语模式，以及替换模式下「就地替换会毁掉行内标记」的段落：
-    // 后者仍然要翻出来，所以退回双语注入。替换模式本身是有意破坏性的，
-    // 但把 <a> 这类行内元素永久毁掉属于用户无法撤销的破坏，不做。
     this.setContent(this.ensureHost(segment), state, text);
   }
 
   update(segmentId: string, text: string): void {
     const host = this.hosts.get(segmentId);
-    if (host) {
-      this.setContent(host, 'done', text);
-      return;
-    }
-    const original = this.originals.get(segmentId);
-    if (original) {
-      original.element.textContent = text;
-      original.element.setAttribute('data-jy-translated', '1');
-    }
+    if (host) this.setContent(host, 'done', text);
   }
 
   /**
    * `canRetry === false` 用于**重试多少次都是同一个结果**的错误（缺 API Key、Key 无效）：
    * 只标注原因、不挂重试按钮。一个 200 段的页面否则会变成 200 个点了也没用的按钮，
    * 而用户真正该做的是去设置页填 Key（规格 §8：不重试，改为页面 toast + 弹窗红点）。
+   *
+   * 两种模式的失败都落在宿主上，所以**失败一定看得见**：仅译文模式下原文已经藏进
+   * `display:none` 的 span，宿主就是这一页上唯一还能写字的地方（旧的就地替换实现在这里
+   * 直接 `return`，用户既看不到原文、也看不到失败，还不能重试）。
    */
   fail(segmentId: string, message: string, canRetry = true): void {
     const host = this.hosts.get(segmentId);
-    // 替换模式下失败必须保持原文，否则用户会看到一片空白。
     if (!host) return;
     this.setContent(host, 'error', message, canRetry);
   }
 
   /**
-   * 只有在「节点内容就是这一整段文本」时才允许就地替换。
-   * 有任何元素子节点（行内链接、`<br>`）都不能用 textContent 盖掉：那会永久销毁宿主的行内标记。
+   * 仅译文模式：把原文**包起来藏掉**，而不是删掉它。
+   *
+   * 三步（见 `hideOriginals`）：
+   * 1. 新建 `<span data-jy-originals data-jy-root style="display:none">`；
+   * 2. 把这一段的原文节点**按原相对顺序**搬进去（是搬移不是克隆：还原就是把它们搬回去）；
+   * 3. 把 span 与 `<jy-translation>` 译文宿主放进元素内部，宿主在 span 之后。
+   *
+   * 于是元素里**可见的只有译文**，而原文节点一个都没销毁。为什么是包起来而不是替换掉：
+   * - 行内标记（链接、图片、加粗）全留在 DOM 里，还原时不需要重建任何东西；
+   * - 对任何元素都成立——表格单元格、列表项、弹性/网格布局的子元素都只需要往元素**内部**
+   *   追加，不必像双语模式那样分情况判断该插到兄弟位置还是内部；
+   * - 原文一个字符都没丢，所以失败态、还原、切回双语这三种回退都还有东西可用。
    */
-  private isReplaceable(segment: ExtractedSegment): boolean {
-    return segment.textRun !== true && segment.element.childElementCount === 0;
+  private mountTranslatedOnly(segment: ExtractedSegment, state: RenderState, text?: string): void {
+    const existing = this.hosts.get(segment.id);
+    if (existing !== undefined) {
+      this.setContent(existing, state, text);
+      return;
+    }
+
+    const host = this.createHost(segment.id);
+    this.hideOriginals(segment, host);
+
+    // 标记原文已翻译：即使后续被重复采集，extractor 也会跳过它（与双语模式同一条规则）。
+    // 松散文本段（`textRun`）的 element 是**容器**，绝不能标记：
+    // 整棵子树被短路之后，容器里新追加的内容就再也不会被采集了（见 extractor 的 Fix 5 取舍）。
+    if (segment.textRun !== true) segment.element.setAttribute('data-jy-translated', '1');
+    this.hosts.set(segment.id, host);
+    this.setContent(host, state, text);
+  }
+
+  /**
+   * 把这一段的原文节点搬进隐藏 span，并把 span 与宿主放进元素里。
+   *
+   * 两种段落形态的搬法不同，区别在于**这个元素是不是这一段的专属容器**：
+   * - 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都搬走，
+   *   span 落在原来第一个子节点的位置（子节点全搬空后就是"元素末尾"）；
+   * - 松散文本段（`anchor.kind === 'before'`）：元素是**容器**，里面还有别的块级子元素各自成段
+   *   （`<div>Intro<p>Body</p>Outro</div>`），整块搬走会把兄弟段落连同它们自己的译文一起藏掉。
+   *   只搬本段真正贡献了文字的那一串节点（见 `runNodes`），span 留在本段原来的位置。
+   *
+   * 宿主两种形态都放在 span 之后：整元素段落是追加到元素末尾（规格就是这三步），
+   * 松散文本段则仍按 `anchor` 给出的落点插入——那正是"紧跟这段原文"的位置。
+   */
+  private hideOriginals(segment: ExtractedSegment, host: HTMLElement): void {
+    const element = segment.element;
+    const anchor = segment.anchor;
+    const wholeElement = anchor.kind === 'auto';
+    const nodes: Node[] = wholeElement ? Array.from(element.childNodes) : this.runNodes(element, anchor.node);
+
+    if (nodes.length > 0) {
+      const span = this.createOriginals();
+      const first = nodes[0];
+      // span 站在第一个原文节点原来的位置上，还原时把子节点搬回"span 之前"就回到原位。
+      if (first !== undefined && first.parentNode === element) element.insertBefore(span, first);
+      else element.append(span);
+      span.append(...nodes);
+      this.hiddenOriginals.set(segment.id, { element, span, wholeElement });
+    }
+
+    if (wholeElement) element.append(host);
+    else this.insertHostAtAnchor(segment, host);
+  }
+
+  /**
+   * 松散文本段（`anchor.kind === 'before'`）自己那一串原文节点。
+   *
+   * 从锚点（本段之后的下一个节点）往前收，**只收采集端算进这一段的节点**：判据直接复用
+   * 采集端的 `inlineText` —— 它对这个子元素返回空串就说明这个子元素没有为本段贡献任何文字
+   * （被跳过的 `<code>` / 可编辑区域、隐藏元素、块级边界都是这样），到它就停。
+   *
+   * 这条判据同时挡住了最危险的一种错误：**把兄弟段落连它的译文一起藏掉**。凡是成段的元素
+   * 都是块级边界（或内部含块级后代的透明包裹），`inlineText` 对它恒为空串。
+   * 停早了只是这一小段仍显示原文（还能忍），停晚了就是整块内容凭空消失。
+   */
+  private runNodes(element: HTMLElement, anchorNode: Node | null): Node[] {
+    const nodes: Node[] = Array.from(element.childNodes);
+    const end =
+      anchorNode !== null && anchorNode.parentNode === element ? nodes.indexOf(anchorNode) : nodes.length;
+    if (end <= 0) return [];
+
+    const styleOf = createStyleLookup();
+    let start = end;
+    while (start > 0) {
+      const node = nodes[start - 1];
+      if (node === undefined) break;
+      if (node.nodeType === Node.TEXT_NODE) {
+        start -= 1;
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) break;
+      const child = node as Element;
+      // `<br>` 是硬换行也是段边界；插件自己的 span/宿主一律不碰。
+      if (child.nodeName === 'BR' || child.hasAttribute('data-jy-root')) break;
+      if (inlineText(child, styleOf) === '') break;
+      start -= 1;
+    }
+    return nodes.slice(start, end);
+  }
+
+  /**
+   * 松散文本段的宿主落点：容器内部、`anchor.node` 之前；node 为 null（或已不在容器里）
+   * 就追加到末尾。与双语模式 `ensureHost` 里那一段同一条规则。
+   */
+  private insertHostAtAnchor(segment: ExtractedSegment, host: HTMLElement): void {
+    const element = segment.element;
+    const node = segment.anchor.kind === 'before' ? segment.anchor.node : null;
+    if (node !== null && node.parentNode === element) element.insertBefore(host, node);
+    else element.append(host);
+  }
+
+  /** 装原文的 span：内联 `display:none`，见 {@link ORIGINALS_ATTR} 的注释。 */
+  private createOriginals(): HTMLElement {
+    const span = this.document.createElement(ORIGINALS_TAG);
+    span.setAttribute(ORIGINALS_ATTR, '');
+    span.setAttribute('data-jy-root', '');
+    span.style.display = 'none';
+    return span;
   }
 
   private ensureHost(segment: ExtractedSegment): HTMLElement {
@@ -210,16 +331,38 @@ export class DomRenderer {
     body.textContent = text ?? '';
   }
 
+  /**
+   * 还原：**逐字节**回到翻译前的样子。
+   *
+   * 双语模式只要把宿主摘掉就算完；仅译文模式还要把藏起来的原文搬回原位——
+   * 搬回去的是**同一批节点**（不是重建的副本），所以行内标记、属性、文本节点边界
+   * 全都原样回来，`outerHTML` 与翻译前逐字节相同。
+   */
   restore(): void {
     for (const host of this.hosts.values()) host.remove();
     this.hosts.clear();
 
-    for (const { element, nodes } of this.originals.values()) {
-      const live = this.resolveLive(element);
-      if (live !== undefined) swapChildren(live, nodes);
+    for (const { element, span, wholeElement } of this.hiddenOriginals.values()) {
+      // 页面在翻译之后重建过节点时，缓存的引用指向的是脱离文档的孤儿：
+      // 往孤儿里写原文等于什么也没还原，活着的节点会一直显示译文。
+      const live = this.resolveLive(element) ?? element;
+      // span 还挂在这个元素里（含"元素被整体移出文档"——那时它的父节点仍然是它）
+      // 就直接拆；元素被框架**换掉**时按兜底那一条处理。
+      const target = span.parentNode === live ? span : live.querySelector(`[${ORIGINALS_ATTR}]`);
+      if (target instanceof HTMLElement) {
+        this.unwrapOriginals(target);
+      } else if (wholeElement && live !== element && span.childNodes.length > 0) {
+        // 元素被框架整体换掉了：原文并没有丢——它就在 span 里。整元素段落的 span 装的就是
+        // 这个元素的全部内容，所以可以整块搬进活着的那一个（与双语模式把快照写回活节点等价）。
+        // 松散文本段不能这么干：它的父元素是容器，整块替换会把兄弟段落删掉。那种情况下
+        // 只能清掉标记（原文留在已脱离文档的 span 里，不再可恢复）。
+        live.replaceChildren(...Array.from(span.childNodes));
+        span.remove();
+      }
       element.removeAttribute('data-jy-translated');
+      if (live !== element) live.removeAttribute('data-jy-translated');
     }
-    this.originals.clear();
+    this.hiddenOriginals.clear();
 
     // 剩下的标记全部清掉：插件没留下的痕迹才算还原干净。
     // 这一步也负责把「框架重建过、带着旧标记的新节点」解锁，否则那些节点会被永久跳过。
@@ -227,6 +370,14 @@ export class DomRenderer {
       element.removeAttribute('data-jy-id');
       element.removeAttribute('data-jy-translated');
     }
+  }
+
+  /** 把隐藏 span 的子节点按原顺序搬回它原来的位置（span 之前），然后删掉 span。 */
+  private unwrapOriginals(span: HTMLElement): void {
+    const parent = span.parentNode;
+    if (parent === null) return;
+    for (const node of Array.from(span.childNodes)) parent.insertBefore(node, span);
+    span.remove();
   }
 
   /**

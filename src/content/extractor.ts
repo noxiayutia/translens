@@ -95,13 +95,21 @@ interface ElementStyle {
   visibility: string;
 }
 
+/** `styleOf` 的读取口径。渲染器要复用 {@link inlineText}，所以这个形状是导出的。 */
+export interface StyleLookup {
+  (element: Element): ElementStyle;
+}
+
 /**
  * `getComputedStyle` 每次都强制样式解析，而一次采集会对同一元素问好几遍
  * （隐藏判定、块级判定、文本段扫描），10k 元素的页面就是 3 万次。
  * 一次采集内同一元素的结果不会变（这期间我们不插节点、不改样式），缓存起来即可。
  * 跨采集必须丢弃：页面可能在这之间改了样式。
+ *
+ * 渲染器也用同一条口径（见 {@link inlineText}）："这个元素为这一段贡献了哪些文字"
+ * 只能有一份实现，两边各写一套必然随改动漂移。
  */
-function createStyleLookup(): (element: Element) => ElementStyle {
+export function createStyleLookup(): StyleLookup {
   const cache = new WeakMap<Element, ElementStyle>();
   return (element) => {
     const cached = cache.get(element);
@@ -118,7 +126,7 @@ function createStyleLookup(): (element: Element) => ElementStyle {
   };
 }
 
-function isHidden(element: Element, styleOf: (element: Element) => ElementStyle): boolean {
+function isHidden(element: Element, styleOf: StyleLookup): boolean {
   if (element.hasAttribute('hidden')) return true;
   if (element.getAttribute('aria-hidden') === 'true') return true;
   const style = styleOf(element);
@@ -169,7 +177,7 @@ function isEditable(element: Element): boolean {
  * 反过来，`<span style="display:inline-block">world</span>` 内部没有块级后代，
  * 就不算边界——它仍然是父段的一部分，`<p>Hello <span …>world</span></p>` 抽成一段。
  */
-function isBlockBoundary(element: Element, styleOf: (element: Element) => ElementStyle, depth: number): boolean {
+function isBlockBoundary(element: Element, styleOf: StyleLookup, depth: number): boolean {
   const display = styleOf(element).display;
   if (isBlockDisplay(display)) return true;
   if (!TRANSPARENT_DISPLAYS.has(display)) return false;
@@ -178,7 +186,7 @@ function isBlockBoundary(element: Element, styleOf: (element: Element) => Elemen
 
 function hasBlockDescendant(
   element: Element,
-  styleOf: (element: Element) => ElementStyle,
+  styleOf: StyleLookup,
   depth: number,
 ): boolean {
   if (depth > MAX_WRAPPER_DEPTH) return false;
@@ -224,8 +232,13 @@ function collapseSpaces(raw: string): string {
  * 元素**自身和行内后代**的可见文本；块级后代各自成段，这里一概不碰，
  * `<br>` 是硬换行也是段边界，同样不跨。
  * 用文本节点而不是 `innerText`：行为确定、可测，且不依赖布局。
+ *
+ * 返回空串就是"这个元素没有为本段贡献任何文字"——被跳过的 `<code>` / 可编辑区域、
+ * 隐藏元素、块级边界以及插件自己的宿主都是这样。渲染器的「仅译文」模式正是按这条判据
+ * 决定哪些节点属于**这一段**（见 `content/renderer.ts` 的 `runNodes`）：多藏一个节点
+ * 就可能把兄弟段落连它的译文一起藏掉，所以判据必须与采集端是同一份。
  */
-function inlineText(element: Element, styleOf: (element: Element) => ElementStyle): string {
+export function inlineText(element: Element, styleOf: StyleLookup): string {
   let result = '';
 
   const walk = (node: Node): void => {
