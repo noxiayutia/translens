@@ -2515,6 +2515,16 @@ import { describe, expect, it } from 'vitest';
 import { TieredCache, TranslationCache } from '../../src/core/cache';
 import { MemoryStorage } from '../helpers/memory-storage';
 
+/** 数 `keys()`（= 全量扫描的入口）被调了多少次。 */
+class ScanningStorage extends MemoryStorage {
+  keyScans = 0;
+
+  override async keys(): Promise<string[]> {
+    this.keyScans += 1;
+    return super.keys();
+  }
+}
+
 /** 让指定序号的存储写失败，用来验证缓存写失败不会冒泡给调用方。 */
 class FailingStorage extends MemoryStorage {
   writeAttempts = 0;
@@ -2577,6 +2587,56 @@ describe('TranslationCache', () => {
     expect(hit.get('b')).toBe('2');
     expect(hit.get('c')).toBe('3');
     expect(await cache.count()).toBe(2);
+  });
+
+  /**
+   * **性能悬崖回归**：打满之后，旧实现在**每一次** `putMany` 都触发 `scanAndEvict`
+   * （`keys()` 全量反序列化 + 读全部条目 + 排序 + 删除），且全部排在同一个串行队列上。
+   * 一个 3000 段的新页面 = 250 批，就是 250 次 × 5000 条的扫描，批次响应被越堵越长。
+   *
+   * 修复是给淘汰加**迟滞**：一次多删一些（删到低水位），之后要再攒满一截才触发下一次
+   * 扫描。这里断言的是**扫描次数**而不是"删了多少条"——删条数两边都对，悬崖只在扫描。
+   */
+  it('打满之后扫描是摊还的：每 5 次越限写入摊不到 1 次全量扫描（迟滞窗口）', async () => {
+    const storage = new ScanningStorage();
+    const cache = new TranslationCache(storage, 100);
+    // 先正常灌满。
+    for (let i = 0; i < 100; i += 1) {
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    const scansAtFull = storage.keyScans;
+
+    // 再连续写 1000 条越限写入——若"每次超限都全量扫描"，这里会多出 ~1000 次扫描。
+    for (let i = 100; i < 1100; i += 1) {
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    const overflowWrites = 1000;
+    const scans = storage.keyScans - scansAtFull;
+
+    // 迟滞的界：窗口是上限的 10%（10 条），摊还后约每 11 次写入扫一次；1/5 是宽松界。
+    // 旧实现约 1:1（~901 次）→ 这条断言现在就是红的。
+    expect(scans).toBeLessThanOrEqual(overflowWrites / 5);
+    // 内容仍然正确：读得回来、条数仍受上限约束。
+    expect((await cache.getMany(['h1099'])).get('h1099')).toBe('v1099');
+    expect(await cache.count()).toBeLessThanOrEqual(100);
+  });
+
+  it('迟滞只影响扫描时机，不影响正确性：淘汰仍按最旧、上限照旧执行', async () => {
+    const storage = new MemoryStorage();
+    const clock = fakeClock();
+    const cache = new TranslationCache(storage, 50, clock.now);
+    for (let i = 0; i < 50; i += 1) {
+      clock.advance(10);
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    // 超限写入：允许短暂留在上限附近，但最终必须被裁回上限之内，且删的是最旧的。
+    for (let i = 50; i < 62; i += 1) {
+      clock.advance(10);
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    expect(await cache.count()).toBeLessThanOrEqual(50);
+    expect((await cache.getMany(['h0'])).size).toBe(0); // 最旧的必须先出局
+    expect((await cache.getMany(['h61'])).get('h61')).toBe('v61'); // 最新的必须在
   });
 
   it('重复写入同一 key 不重复占位', async () => {
@@ -2713,8 +2773,11 @@ describe('TranslationCache', () => {
 
     expect(storage.rejectedWrites).toBe(0);
     expect(storage.maxItemBytesSeen).toBeLessThanOrEqual(1024);
-    expect(await cache.count()).toBe(20);
-    // 每写一条就裁掉最旧的，最后留下的是最后写入的 20 条。
+    // 25 次写入、上限 20、迟滞窗口 2：最后一次扫描裁到低水位 18，随后又写入 1 条 → 19。
+    // （旧值 20 是「每次超限都精确裁回上限」的节奏产物；淘汰正确性由上下两组 getMany
+    // 断言继续钉住，本用例的重心——淘汰从不写出大值——不受影响。）
+    expect(await cache.count()).toBe(19);
+    // 每写一条就裁掉最旧的，最后留下的是最后写入的一截（最旧的 5 条已全部出局）。
     expect((await cache.getMany(hashes.slice(0, 5))).size).toBe(0);
     expect((await cache.getMany(hashes.slice(20))).size).toBe(5);
   });
@@ -3014,6 +3077,21 @@ const REFRESH_INTERVAL_MS = 5000;
 /** 存储写失败（多半是配额满）时，按这个比例强制淘汰最旧的条目来腾空间。 */
 const QUOTA_EVICT_RATIO = 0.1;
 
+/**
+ * 淘汰迟滞窗口：按上限的这个比例**一次多删一些**（超出时删到 `maxEntries * (1 - 0.1)`）。
+ *
+ * 没有它会有性能悬崖：`putMany` 里近似计数一超过上限就调 `scanAndEvict`，而若一次只裁掉
+ * 溢出的那几条，计数立刻又贴回上限——之后**每一次**写入都触发一次全量扫描（`keys()` 是
+ * 整区反序列化，还要读全部条目 + 排序 + 删除）。打满 5000 条后翻一个 3000 段的新页面
+ * （250 批）就是 250 次全量扫描，而且全部串在同一个写入队列上，把批次响应越堵越长。
+ *
+ * 有了 10% 的窗口，一次扫描腾出的余量要再写满 `maxEntries * 0.1` 条才会触发下一次：
+ * 扫描频率从"每次写入一次"降到摊还每 ~11 条一次（默认上限 5000 ≈ 每 500 条）。
+ * 窗口按比例取整：上限小于 10 时窗口为 0，行为退回"裁到上限"——小上限多出现在测试里，
+ * 那里精确淘汰语义比摊还更重要（见 cache.test.ts 的上限 2/3 用例）。
+ */
+const EVICT_HYSTERESIS_RATIO = 0.1;
+
 interface CacheEntry {
   v: string;
   t: number;
@@ -3157,7 +3235,9 @@ export class TranslationCache {
       // 扫描，`prune()` 会把计数校正回来，条目本身已经落盘、读得出来。
       const count = (await this.readMeta()) + items.size;
       await this.writeMeta(count);
-      if (count > this.maxEntries) await this.scanAndEvict();
+      // 迟滞（见 `EVICT_HYSTERESIS_RATIO`）：这条路径上的扫描要一次删到低水位，否则
+      // 打满之后每一次 putMany 都全量扫一遍，几百批一起排在串行队列上堵死响应。
+      if (count > this.maxEntries) await this.scanAndEvict(0, true);
     });
   }
 
@@ -3203,8 +3283,12 @@ export class TranslationCache {
    * `forceEvictRatio > 0` 用于"存储已经写满、但条目数还没到上限"的场景：此时按上限算
    * 没有任何溢出，一条都不删的话新条目永远写不进去，缓存会永久停摆。所以写失败时按比例
    * 多腾一些名额（至少一条），避免每写一条就再扫描一次。
+   *
+   * `withHysteresis` 只给 `putMany` 的超限路径用（见 `EVICT_HYSTERESIS_RATIO` 的理由）。
+   * `prune()` 不带迟滞是刻意的：对账的语义是"收敛到真实值并按上限裁齐"，一次多删
+   * 一成用户缓存需要"写入压力"这样的触发理由，冷启动对账给不出这个理由。
    */
-  private async scanAndEvict(forceEvictRatio = 0): Promise<void> {
+  private async scanAndEvict(forceEvictRatio = 0, withHysteresis = false): Promise<void> {
     const keys = await this.entryKeys();
     if (keys.length === 0) {
       await this.writeMeta(0);
@@ -3216,7 +3300,8 @@ export class TranslationCache {
       .sort((a, b) => a.t - b.t);
     const overflow = sorted.length - this.maxEntries;
     const forced = forceEvictRatio > 0 ? Math.max(1, Math.floor(sorted.length * forceEvictRatio)) : 0;
-    const target = Math.min(Math.max(overflow, forced), sorted.length);
+    const hysteresis = withHysteresis && overflow > 0 ? Math.floor(this.maxEntries * EVICT_HYSTERESIS_RATIO) : 0;
+    const target = Math.min(Math.max(overflow + hysteresis, forced), sorted.length);
     if (target > 0) await this.area.remove(sorted.slice(0, target).map((item) => item.key));
     await this.writeMeta(Math.min(sorted.length - target, Math.max(0, this.maxEntries)));
   }
@@ -3724,6 +3809,12 @@ export interface Settings {
   displayMode: DisplayMode;
   hoverTranslate: boolean;
   selectionTranslate: boolean;
+  /**
+   * ⚠ **这个字段目前没有任何消费者**：只有类型声明、默认值与 `mergeSettings` 的夹取，
+   * 全仓没有任何代码读它来触发自动翻译——自动翻译功能本身尚未实现（属下一阶段）。
+   * 在存储里把它设成多少都**不会有任何效果**，别以为改这里就能调延时。
+   * 接功能时记得同时补界面（README 已按"无界面、无行为"如实描述）。
+   */
   autoTranslateDelay: number;
   concurrency: number;
   maxBatchChars: number;
@@ -3936,8 +4027,10 @@ function resolveArea(area?: StorageArea): StorageArea {
  *
  * 调用方是**扩展自身的受信页面与后台**：service worker、设置页、弹窗——三者同源
  * （`chrome-extension://`），谁也拿不到对方拿不到的东西，所以弹窗读完整设置不是越权。
- * 真正需要结构上隔离的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
- * 那个类型里根本没有 `apiKey` 字段。密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
+ * 真正需要把密钥隔离开的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
+ * 那个类型里根本没有 `apiKey` 字段——注意这是**类型级**投影（下游拿不到字段），不是
+ * 内存级隔离（实现上仍经由本函数读出整份设置，见 `loadUiSettings` 的注释）。密钥不得进入
+ * 日志、消息与导出的 JSON（规格 §7.3）。
  *
  * 这里也是**迁移入口**（规格 §7.3），具体步骤见 `migrate`。
  */
@@ -3980,11 +4073,20 @@ export async function loadSettings(area?: StorageArea): Promise<Settings> {
   return mergeSettings(migrate(stored, storedVersion), CURRENT_VERSION);
 }
 
-/** 不带 API Key 的设置投影，供**内容脚本**使用（它跑在网页进程里）。 */
+/** 不带 API Key 的接口配置投影，见 {@link loadUiSettings} 的如实定性。 */
 export type UiEngineConfig = Omit<EngineConfigSettings, 'apiKey'>;
 
 export type UiSettings = Omit<Settings, 'engineConfig'> & { engineConfig: UiEngineConfig };
 
+/**
+ * 读出**投影版**设置，供内容脚本一类不该碰凭据的调用方使用。
+ *
+ * 如实定性——这是**类型级**隔离，不是内存级隔离：`UiSettings` 里没有 `apiKey` 字段，
+ * 下游代码拿不到它；而实现上本函数仍调用 `loadSettings` 读出整份设置再丢掉字段，密钥会
+ * **瞬态**出现在调用方所在 world 的堆里。内容脚本处于 isolated world，页面脚本本来就
+ * 访问不到那个堆，实际风险接近 0——但别把投影读成"密钥从不经过网页进程内存"。
+ * 要做到结构性隔离，得把 apiKey 拆成独立存储键、投影版根本不读它（后续工作，尚未做）。
+ */
 export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
   const { engineConfig, ...rest } = await loadSettings(area);
   return { ...rest, engineConfig: { baseUrl: engineConfig.baseUrl, model: engineConfig.model } };
@@ -6016,8 +6118,12 @@ function isSkippedForText(element: Element): boolean {
  * 2. 宿主没实现该属性时（老引擎、测试环境）退回按最近的 `[contenteditable]` 祖先判定，
  *    显式的 `contenteditable="false"` 会把它自己与子树重新变回不可编辑（所见即所得编辑器
  *    用它嵌只读片段），`inherit` 则继续往上找。
+ *
+ * **导出**：划词选区（`selection.ts` 的 `readSelection`）判 anchor/focus 所在祖先时
+ * 复用这一份——"什么算可编辑区域"整页采集与划词必须同一口径（README 对两者承诺同一件事），
+ * 两处各写一份必然随改动漂移。
  */
-function isEditable(element: Element): boolean {
+export function isEditable(element: Element): boolean {
   if ((element as HTMLElement).isContentEditable === true) return true;
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     const value = node.getAttribute('contenteditable');
@@ -8146,10 +8252,15 @@ async function translatePage(): Promise<void> {
   const mine = ++generation;
   running = true;
 
-  // **用投影**（`loadUiSettings`），不是完整设置：内容脚本跑在网页进程里，读完整设置会把
-  // API Key 反序列化进网页进程的堆内存（规格 §7.3）。`UiSettings` 里根本没有 `apiKey`
-  // 字段，本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
-  // maxSegmentsPerBatch 全在投影里——这一层由 `tests/content/privacy-guard.test.ts` 守着。
+  // **用投影**（`loadUiSettings`），不是完整设置。要把话说准：这是**类型级**的边界，
+  // 不是内存级隔离——`loadUiSettings` 内部仍会把**整份设置（含 apiKey）**反序列化出来
+  // 再丢掉字段，只要密钥和设置存在同一个键里，这一次瞬态出现就不可避免。投影买到的是：
+  // 本层下游代码**拿不到** apiKey 字段、不可能把它写进消息或日志（规格 §7.3 的边界，
+  // 由 `tests/content/privacy-guard.test.ts` 守着），而内容脚本跑在 isolated world 里，
+  // 页面脚本本来就访问不到它的堆——残留风险接近 0。真正的结构性隔离要把 apiKey 拆成
+  // 独立存储键（属后续工作，本版本未做，别按"密钥绝不进网页内存"来理解）。
+  // 本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
+  // maxSegmentsPerBatch 全在投影里。
   const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
@@ -8322,9 +8433,18 @@ async function translatePage(): Promise<void> {
 async function retrySegment(segmentId: string): Promise<void> {
   const segment = segments.find((s) => s.id === segmentId);
   if (!segment) return;
-  // 重试要按**当前**设置走：用户点了重试按钮，往往正是刚去设置页填完 API Key 回来。
-  // 同样是投影（见 translatePage）：重试路径也不该把密钥读进网页进程。
-  const settings = await loadUiSettings();
+  /**
+   * 两个来源要分开满足，别一锅烩：
+   * - **语言走页面快照**（`pageSnapshot.targetLang`，与整页/增量同一口径）：快照的语义是
+   *   "中途改语言，本页面要还原重来才生效"。重试若现读设置，用户改过目标语言后点某个
+   *   旧失败段的重试，那一段会变新语言、其余还是旧语言——一语双语墙。
+   *   （`pageSnapshot === null` 只在"上一帧刚被还原、按钮点击恰好排队进来"的夹缝里可达，
+   *    那时不带 targetLang、让后台按当前设置兜底，见 service-worker 的 `payload.targetLang ?? …`。）
+   * - **Key 与接口配置走当前设置**：用户点重试往往正是刚去设置页填好 Key 回来，重试必须
+   *   用上新凭据。这一半不需要内容脚本读任何东西——凭据归后台，`handleTranslateTexts`
+   *   每条消息现读一次设置（`tests/background/service-worker.test.ts` 钉着这条分工）。
+   */
+  const targetLang = pageSnapshot?.targetLang;
 
   failedIds.delete(segmentId);
   renderer?.mount(segment, 'pending');
@@ -8333,7 +8453,7 @@ async function retrySegment(segmentId: string): Promise<void> {
   try {
     response = await sendToBackground({
       type: MSG.TRANSLATE_TEXTS,
-      payload: { items: [{ id: segment.id, text: segment.text }], targetLang: settings.targetLang },
+      payload: { items: [{ id: segment.id, text: segment.text }], targetLang },
     });
   } catch (raw) {
     failedIds.add(segmentId);
@@ -8523,7 +8643,9 @@ export function applyFeatureSettings(next: FeatureSettings): void {
   else pair.selection.disable();
 }
 
-/** 启动时读一次设置（投影，密钥不进网页进程）。读不出来按默认值挂监听——翻译路径会另行报告设置损坏。 */
+/** 启动时读一次设置（投影——类型级隔离，见 translatePage 处的注释：密钥会在读取瞬间
+ *  经过本 isolated world 的堆，但拿不到字段、页面脚本也摸不到这里）。读不出来按默认值挂监听——
+ *  翻译路径会另行报告设置损坏。 */
 function initFeatureSettings(): void {
   void loadUiSettings().then(
     (settings) => {

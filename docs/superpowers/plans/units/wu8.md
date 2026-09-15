@@ -419,10 +419,15 @@ async function translatePage(): Promise<void> {
   const mine = ++generation;
   running = true;
 
-  // **用投影**（`loadUiSettings`），不是完整设置：内容脚本跑在网页进程里，读完整设置会把
-  // API Key 反序列化进网页进程的堆内存（规格 §7.3）。`UiSettings` 里根本没有 `apiKey`
-  // 字段，本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
-  // maxSegmentsPerBatch 全在投影里——这一层由 `tests/content/privacy-guard.test.ts` 守着。
+  // **用投影**（`loadUiSettings`），不是完整设置。要把话说准：这是**类型级**的边界，
+  // 不是内存级隔离——`loadUiSettings` 内部仍会把**整份设置（含 apiKey）**反序列化出来
+  // 再丢掉字段，只要密钥和设置存在同一个键里，这一次瞬态出现就不可避免。投影买到的是：
+  // 本层下游代码**拿不到** apiKey 字段、不可能把它写进消息或日志（规格 §7.3 的边界，
+  // 由 `tests/content/privacy-guard.test.ts` 守着），而内容脚本跑在 isolated world 里，
+  // 页面脚本本来就访问不到它的堆——残留风险接近 0。真正的结构性隔离要把 apiKey 拆成
+  // 独立存储键（属后续工作，本版本未做，别按"密钥绝不进网页内存"来理解）。
+  // 本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
+  // maxSegmentsPerBatch 全在投影里。
   const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
@@ -595,9 +600,18 @@ async function translatePage(): Promise<void> {
 async function retrySegment(segmentId: string): Promise<void> {
   const segment = segments.find((s) => s.id === segmentId);
   if (!segment) return;
-  // 重试要按**当前**设置走：用户点了重试按钮，往往正是刚去设置页填完 API Key 回来。
-  // 同样是投影（见 translatePage）：重试路径也不该把密钥读进网页进程。
-  const settings = await loadUiSettings();
+  /**
+   * 两个来源要分开满足，别一锅烩：
+   * - **语言走页面快照**（`pageSnapshot.targetLang`，与整页/增量同一口径）：快照的语义是
+   *   "中途改语言，本页面要还原重来才生效"。重试若现读设置，用户改过目标语言后点某个
+   *   旧失败段的重试，那一段会变新语言、其余还是旧语言——一语双语墙。
+   *   （`pageSnapshot === null` 只在"上一帧刚被还原、按钮点击恰好排队进来"的夹缝里可达，
+   *    那时不带 targetLang、让后台按当前设置兜底，见 service-worker 的 `payload.targetLang ?? …`。）
+   * - **Key 与接口配置走当前设置**：用户点重试往往正是刚去设置页填好 Key 回来，重试必须
+   *   用上新凭据。这一半不需要内容脚本读任何东西——凭据归后台，`handleTranslateTexts`
+   *   每条消息现读一次设置（`tests/background/service-worker.test.ts` 钉着这条分工）。
+   */
+  const targetLang = pageSnapshot?.targetLang;
 
   failedIds.delete(segmentId);
   renderer?.mount(segment, 'pending');
@@ -606,7 +620,7 @@ async function retrySegment(segmentId: string): Promise<void> {
   try {
     response = await sendToBackground({
       type: MSG.TRANSLATE_TEXTS,
-      payload: { items: [{ id: segment.id, text: segment.text }], targetLang: settings.targetLang },
+      payload: { items: [{ id: segment.id, text: segment.text }], targetLang },
     });
   } catch (raw) {
     failedIds.add(segmentId);
@@ -796,7 +810,9 @@ export function applyFeatureSettings(next: FeatureSettings): void {
   else pair.selection.disable();
 }
 
-/** 启动时读一次设置（投影，密钥不进网页进程）。读不出来按默认值挂监听——翻译路径会另行报告设置损坏。 */
+/** 启动时读一次设置（投影——类型级隔离，见 translatePage 处的注释：密钥会在读取瞬间
+ *  经过本 isolated world 的堆，但拿不到字段、页面脚本也摸不到这里）。读不出来按默认值挂监听——
+ *  翻译路径会另行报告设置损坏。 */
 function initFeatureSettings(): void {
   void loadUiSettings().then(
     (settings) => {
