@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
+  PROVIDER_PRESETS,
   SETTINGS_KEY,
+  isAllowedBaseUrl,
   loadSettings,
   loadUiSettings,
   mergeSettings,
@@ -240,5 +242,57 @@ describe('无扩展环境下的默认存储', () => {
   it('没有显式传入存储区时给出可读的错误', async () => {
     await expect(loadSettings()).rejects.toThrow(/StorageArea/);
     await expect(saveSettings(DEFAULT_SETTINGS)).rejects.toThrow(/StorageArea/);
+  });
+});
+
+/**
+ * 服务商预设（用户实测把模型名填成 `deepseek`（正确值 `deepseek-chat`）拿到
+ * 一个界面上看不出原因的 HTTP 400 —— 这类错误用一个下拉就能防住）。
+ * 存储字段 `providerPreset` 默认 `custom`：**老数据没有这个字段，加载不报错、
+ * 已有用户的存储值一个都不动**（mergeSettings 逐字段补齐的老规矩）。
+ */
+describe('服务商预设（providerPreset）', () => {
+  it('默认与老数据（缺字段）都是 custom，不报错也不改别人的值', () => {
+    expect(DEFAULT_SETTINGS.providerPreset).toBe('custom');
+    const legacy = mergeSettings({ targetLang: 'ja', engineConfig: { baseUrl: 'https://a.example/v1', model: '我的模型' } });
+    expect(legacy.providerPreset).toBe('custom');
+    // 补齐预设字段不能顺手改写已有字段。
+    expect(legacy.targetLang).toBe('ja');
+    expect(legacy.engineConfig).toEqual({ apiKey: '', baseUrl: 'https://a.example/v1', model: '我的模型' });
+  });
+
+  it('合法值原样保留；未知/脏值回落 custom（而不是崩或写进脏值）', () => {
+    for (const id of ['custom', 'openai', 'deepseek', 'ollama']) {
+      expect(mergeSettings({ providerPreset: id }).providerPreset).toBe(id);
+    }
+    expect(mergeSettings({ providerPreset: 'claude' }).providerPreset).toBe('custom');
+    expect(mergeSettings({ providerPreset: 42 }).providerPreset).toBe('custom');
+    expect(mergeSettings({ providerPreset: null }).providerPreset).toBe('custom');
+  });
+
+  it('loadSettings 读老存储（没有该字段）后能原样往返保存', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, targetLang: 'ja' } });
+    const loaded = await loadSettings(area);
+    expect(loaded.providerPreset).toBe('custom');
+    await saveSettings(loaded, area);
+    expect((await loadSettings(area)).providerPreset).toBe('custom');
+  });
+
+  it('预填值逐字钉住：OpenAI / DeepSeek / Ollama 的地址与模型名（不确定的服务商不放）', () => {
+    const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
+    expect([...byId.keys()]).toEqual(['custom', 'openai', 'deepseek', 'ollama']);
+    expect(byId.get('openai')).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
+    expect(byId.get('deepseek')).toMatchObject({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(byId.get('ollama')).toMatchObject({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
+    // 自定义：不预填，保持现状。
+    expect(byId.get('custom')?.baseUrl).toBeUndefined();
+    expect(byId.get('custom')?.model).toBeUndefined();
+  });
+
+  it('每个预填地址都能通过存储层的 BaseURL 校验（填进去不会反被归一化吞掉）', () => {
+    for (const preset of PROVIDER_PRESETS) {
+      if (preset.baseUrl !== undefined) expect(isAllowedBaseUrl(preset.baseUrl)).toBe(true);
+    }
   });
 });

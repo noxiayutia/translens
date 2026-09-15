@@ -14,6 +14,38 @@ export interface EngineConfigSettings {
   model: string;
 }
 
+/** 服务商预设的 id。`custom` = 不预填，用户自己填什么是什么。 */
+export type ProviderPresetId = 'custom' | 'openai' | 'deepseek' | 'ollama';
+
+/**
+ * 服务商预设：选中后**自动填入**接口地址与模型名。
+ *
+ * 动机是真实踩过的坑：用户在模型名里填 `deepseek`（正确值是 `deepseek-chat`），
+ * 拿到一个界面上看不出原因的 `HTTP 400`。这类错误完全可以用一次下拉选择消除。
+ * 只放**确定无疑**的三家（OpenAI / DeepSeek / Ollama 本机默认端口）——
+ * 拿不准的服务商宁可不放，也不预填一个错的模型名。
+ *
+ * 预设只是**填写捷径**，不是锁定：选完之后接口地址与模型名照常手改，
+ * 改完即视为自定义（设置页负责把下拉翻回 `custom`，并把用户的修改当用户的修改看待——
+ * 预设永远不许把它覆盖回去）。默认值是 `custom`，老用户的存储里根本没有这个字段，
+ * 加载按 `custom` 补齐，任何已存值都不会被改动。
+ */
+export interface ProviderPreset {
+  id: ProviderPresetId;
+  label: string;
+  /** 预填的接口地址；`custom` 没有（undefined = 不动任何字段）。 */
+  baseUrl?: string;
+  /** 预填的模型名；`custom` 没有。 */
+  model?: string;
+}
+
+export const PROVIDER_PRESETS: ReadonlyArray<ProviderPreset> = [
+  { id: 'custom', label: '自定义' },
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { id: 'ollama', label: 'Ollama（本机）', baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+];
+
 /**
  * 译文显示方式。
  *
@@ -45,6 +77,12 @@ export interface Settings {
   version: number;
   engineId: string;
   engineConfig: EngineConfigSettings;
+  /**
+   * 设置页「服务商」下拉的当前选择（见 {@link PROVIDER_PRESETS}）。
+   * 它只是**填表捷径的记录**：翻译链路完全不看它，引擎与请求参数照旧由
+   * `engineId` + `engineConfig` 决定；改它不会改变任何已存的地址/模型/Key。
+   */
+  providerPreset: ProviderPresetId;
   targetLang: string;
   sourceLang: string;
   displayMode: DisplayMode;
@@ -69,6 +107,7 @@ export const DEFAULT_SETTINGS: Settings = {
   version: CURRENT_VERSION,
   engineId: 'google',
   engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  providerPreset: 'custom',
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
   displayMode: 'translated-only',
@@ -173,8 +212,15 @@ function pickGlossary(value: unknown): Term[] {
   return out;
 }
 
-function pickEngineConfig(value: unknown): EngineConfigSettings {
-  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
+/** 服务商预设的读取：认不出来的一切值（含老数据缺字段）都回落 `custom`。 */
+function pickProviderPreset(value: unknown): ProviderPresetId {
+  if (typeof value === 'string' && PROVIDER_PRESETS.some((preset) => preset.id === value)) {
+    return value as ProviderPresetId;
+  }
+  return DEFAULT_SETTINGS.providerPreset;
+}
+
+function pickEngineConfig(value: unknown): EngineConfigSettings {  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
   return {
     apiKey: pickString(raw.apiKey, DEFAULT_SETTINGS.engineConfig.apiKey),
     baseUrl: pickBaseUrl(raw.baseUrl),
@@ -209,6 +255,7 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
     version: pickVersion(version ?? input.version),
     engineId: pickString(input.engineId, DEFAULT_SETTINGS.engineId),
     engineConfig: pickEngineConfig(input.engineConfig),
+    providerPreset: pickProviderPreset(input.providerPreset),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
     displayMode: pickDisplayMode(input.displayMode),

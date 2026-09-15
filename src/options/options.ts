@@ -18,15 +18,18 @@ import {
 } from '../shared/host-permission';
 import {
   DISPLAY_MODES,
+  PROVIDER_PRESETS,
   isAllowedBaseUrl,
   loadSettings,
   saveSettings,
   type DisplayMode,
+  type ProviderPresetId,
   type Settings,
 } from '../shared/settings';
 
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
+const providerSelect = document.getElementById('provider') as HTMLSelectElement;
 const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
 const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
 const toggleKeyButton = document.getElementById('toggle-key') as HTMLButtonElement;
@@ -82,6 +85,7 @@ function fillSelect(
 
 interface EngineFormValues {
   engineId: string;
+  providerPreset: string;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -93,12 +97,36 @@ interface EngineFormValues {
 function readForm(): EngineFormValues {
   return {
     engineId: engineSelect.value,
+    providerPreset: providerSelect.value,
     baseUrl: baseUrlInput.value.trim(),
     apiKey: apiKeyInput.value,
     model: modelInput.value.trim(),
     targetLang: targetLangSelect.value,
     displayMode: displayModeSelect.value as DisplayMode,
   };
+}
+
+/**
+ * 选中服务商预设 → 把接口地址与模型名**填进表单**（用户还没点保存，改回来零成本）。
+ *
+ * 只做两件事，刻意不多做：
+ * - 不碰 API Key（那是用户自己的凭据，跟"哪家接口"无关）；
+ * - `custom` 不预填任何东西（保持现状——老用户存了什么就还是什么）。
+ */
+function applyProviderPreset(): void {
+  const preset = PROVIDER_PRESETS.find((entry) => entry.id === providerSelect.value);
+  if (preset === undefined || preset.baseUrl === undefined || preset.model === undefined) return;
+  baseUrlInput.value = preset.baseUrl;
+  modelInput.value = preset.model;
+}
+
+/**
+ * 用户手改接口地址/模型名 → 这一轮就按"自定义"算：下拉翻回 custom，
+ * 而不是留着一个已经说谎的「OpenAI」。预设逻辑只挂在**下拉自己的 change** 上，
+ * 永远不会反过来覆盖用户敲进去的值。
+ */
+function markProviderCustom(): void {
+  providerSelect.value = 'custom';
 }
 
 /**
@@ -196,6 +224,8 @@ async function handleSave(): Promise<void> {
     ...latest,
     engineId: values.engineId,
     engineConfig: { apiKey: values.apiKey, baseUrl: values.baseUrl, model: values.model },
+    // 认不出的值（含被绕过 UI 塞进来的脏字符串）由 `mergeSettings` 在落盘前回落成 custom。
+    providerPreset: values.providerPreset as ProviderPresetId,
     targetLang: values.targetLang,
     displayMode: values.displayMode,
   };
@@ -319,6 +349,14 @@ async function start(): Promise<void> {
     loaded.targetLang,
   );
   fillSelect(displayModeSelect, DISPLAY_MODES, loaded.displayMode);
+  // 服务商下拉：选项与预填值同源（shared/settings 的那一份），不在这儿手抄。
+  // 只把**上次存过的选择**显示出来——不触发 applyProviderPreset，
+  // 用户存过的接口地址/模型名一个字符都不动（预设只在"选它"那一刻填表）。
+  fillSelect(
+    providerSelect,
+    PROVIDER_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
+    loaded.providerPreset,
+  );
   baseUrlInput.value = loaded.engineConfig.baseUrl;
   apiKeyInput.value = loaded.engineConfig.apiKey;
   modelInput.value = loaded.engineConfig.model;
@@ -334,6 +372,10 @@ function init(): void {
   clearCacheButton.addEventListener('click', () => runSafely(cacheStatus, '清除缓存失败', handleClearCache));
   toggleKeyButton.addEventListener('click', toggleKeyVisibility);
   engineSelect.addEventListener('change', renderEngineHint);
+  // 服务商：下拉 change 才预填；接口地址/模型名一被手打就翻回 custom（见上面两个函数）。
+  providerSelect.addEventListener('change', applyProviderPreset);
+  baseUrlInput.addEventListener('input', markProviderCustom);
+  modelInput.addEventListener('input', markProviderCustom);
 
   runSafely(engineStatus, '设置读取失败', start);
 }

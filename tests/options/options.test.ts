@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LANGUAGES } from '../../src/core/lang';
 import { ENGINES } from '../../src/engines/registry';
-import { CURRENT_VERSION, DISPLAY_MODES, SETTINGS_KEY } from '../../src/shared/settings';
+import { CURRENT_VERSION, DISPLAY_MODES, PROVIDER_PRESETS, SETTINGS_KEY } from '../../src/shared/settings';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 
 /**
@@ -34,6 +34,7 @@ let chromeStub: ChromeStub;
 
 interface OptionsUi {
   engine: HTMLSelectElement;
+  provider: HTMLSelectElement;
   hint: HTMLParagraphElement;
   baseUrl: HTMLInputElement;
   apiKey: HTMLInputElement;
@@ -57,6 +58,7 @@ function ui(): OptionsUi {
   };
   return {
     engine: pick<HTMLSelectElement>('engine'),
+    provider: pick<HTMLSelectElement>('provider'),
     hint: pick<HTMLParagraphElement>('engine-hint'),
     baseUrl: pick<HTMLInputElement>('base-url'),
     apiKey: pick<HTMLInputElement>('api-key'),
@@ -463,6 +465,125 @@ describe('设置页：测试连接', () => {
     expect(url).toContain('q=hello');
     // 免费引擎不需要任何宿主权限申请。
     expect(chromeStub.permissions.requests).toEqual([]);
+  });
+});
+
+describe('设置页：服务商预设', () => {
+  /** 模拟用户在上下拉里选择服务商（改 value 不会自己触发 change，真机才会）。 */
+  function choosePreset(page: OptionsUi, id: string): void {
+    page.provider.value = id;
+    page.provider.dispatchEvent(new Event('change'));
+  }
+
+  it('下拉选项与 PROVIDER_PRESETS 同源，默认选中「自定义」', async () => {
+    await seedSettings();
+    const page = await loadOptions();
+    expect(Array.from(page.provider.options).map((option) => [option.value, option.textContent])).toEqual(
+      PROVIDER_PRESETS.map((preset) => [preset.id, preset.label]),
+    );
+    expect(page.provider.value).toBe('custom');
+  });
+
+  it('选 DeepSeek：接口地址与模型名自动填对（防住 deepseek / deepseek-chat 那类手滑）', async () => {
+    await seedSettings();
+    const page = await loadOptions();
+
+    choosePreset(page, 'deepseek');
+
+    expect(page.baseUrl.value).toBe('https://api.deepseek.com/v1');
+    expect(page.model.value).toBe('deepseek-chat');
+  });
+
+  it('选 OpenAI / Ollama 同样填对两个字段', async () => {
+    await seedSettings();
+    const page = await loadOptions();
+
+    choosePreset(page, 'openai');
+    expect(page.baseUrl.value).toBe('https://api.openai.com/v1');
+    expect(page.model.value).toBe('gpt-4o-mini');
+
+    choosePreset(page, 'ollama');
+    expect(page.baseUrl.value).toBe('http://localhost:11434/v1');
+    expect(page.model.value).toBe('llama3');
+  });
+
+  it('选「自定义」不动任何已填的值', async () => {
+    await seedSettings({
+      engineId: 'openai-compat',
+      engineConfig: { apiKey: 'sk-keep', baseUrl: CUSTOM_BASE_URL, model: 'mine' },
+    });
+    const page = await loadOptions();
+
+    choosePreset(page, 'custom');
+
+    expect(page.baseUrl.value).toBe(CUSTOM_BASE_URL);
+    expect(page.model.value).toBe('mine');
+    expect(page.apiKey.value).toBe('sk-keep');
+  });
+
+  it('预设不越界：API Key 一个字符都不碰（那是用户自己的凭据）', async () => {
+    await seedSettings({ engineConfig: { apiKey: 'sk-secret' } });
+    const page = await loadOptions();
+
+    choosePreset(page, 'deepseek');
+
+    expect(page.apiKey.value).toBe('sk-secret');
+  });
+
+  it('手改之后视为自定义：预设不再覆盖，保存落盘的是用户改的值', async () => {
+    await seedSettings();
+    const page = await loadOptions();
+
+    choosePreset(page, 'openai');
+    // 用户手改模型名与地址（jsdom 里派发 input 模拟真实键入）。
+    page.model.value = 'gpt-4o';
+    page.model.dispatchEvent(new Event('input'));
+    page.baseUrl.value = 'https://eu.api.openai.com/v1';
+    page.baseUrl.dispatchEvent(new Event('input'));
+
+    // 改完即自定义：下拉自己翻回 custom，而不是留着个说谎的「OpenAI」。
+    expect(page.provider.value).toBe('custom');
+    // 用户的修改不会被预设覆盖回去。
+    expect(page.model.value).toBe('gpt-4o');
+    expect(page.baseUrl.value).toBe('https://eu.api.openai.com/v1');
+
+    page.save.click();
+    await waitFor(() => page.engineStatus.dataset.kind !== undefined);
+    const stored = await storedSettings();
+    expect(stored.providerPreset).toBe('custom');
+    expect(stored.engineConfig).toMatchObject({ baseUrl: 'https://eu.api.openai.com/v1', model: 'gpt-4o' });
+  });
+
+  it('选预设后保存并重新打开：两个字段与下拉状态都原样回来', async () => {
+    await seedSettings({ engineId: 'openai-compat' });
+    const first = await loadOptions();
+    choosePreset(first, 'deepseek');
+    first.apiKey.value = 'sk-ds';
+    first.save.click();
+    await waitFor(() => first.engineStatus.dataset.kind !== undefined);
+    expect((await storedSettings()).providerPreset).toBe('deepseek');
+
+    // 重开页面（新模块实例 + 重新挂载真实 options.html）。
+    vi.resetModules();
+    const second = await loadOptions();
+    expect(second.provider.value).toBe('deepseek');
+    expect(second.baseUrl.value).toBe('https://api.deepseek.com/v1');
+    expect(second.model.value).toBe('deepseek-chat');
+    expect(second.apiKey.value).toBe('sk-ds');
+  });
+
+  it('老存储数据（没有 providerPreset 字段）加载不报错：显示自定义、已填值原样', async () => {
+    await seedSettings({
+      engineId: 'openai-compat',
+      engineConfig: { apiKey: 'sk-old', baseUrl: CUSTOM_BASE_URL, model: 'deepseek' },
+    });
+    const page = await loadOptions();
+
+    expect(page.engineStatus.dataset.kind).not.toBe('err');
+    expect(page.provider.value).toBe('custom');
+    // 用户当年手填的值（哪怕是错的 'deepseek'）不许被动任何东西——预设只在"选它"时才填。
+    expect(page.baseUrl.value).toBe(CUSTOM_BASE_URL);
+    expect(page.model.value).toBe('deepseek');
   });
 });
 
