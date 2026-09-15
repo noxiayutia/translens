@@ -3325,6 +3325,40 @@ describe('mergeSettings', () => {
   });
 });
 
+describe('显示模式（默认值、迁移）', () => {
+  it('默认是「仅译文」', () => {
+    expect(DEFAULT_SETTINGS.displayMode).toBe('translated-only');
+    expect(mergeSettings({}).displayMode).toBe('translated-only');
+    expect(mergeSettings({ targetLang: 'ja' }).displayMode).toBe('translated-only');
+  });
+
+  it('保留用户明确选过的双语', () => {
+    expect(mergeSettings({ displayMode: 'bilingual' }).displayMode).toBe('bilingual');
+    expect(mergeSettings({ displayMode: 'translated-only' }).displayMode).toBe('translated-only');
+  });
+
+  it("把老数据里的 'replace' 迁移成 'translated-only'，而不是回落", () => {
+    // 老用户的存储里就是 'replace'（v1 时代的"整页替换"）。当成未知值处理会退回**默认值**，
+    // 于是默认值哪天再变一次，他们就会莫名其妙地被切回双语——那正是他们当年特意改掉的默认行为。
+    // 所以映射写死成 'translated-only'，与当前的默认值是不是它无关（这条断言不引用
+    // DEFAULT_SETTINGS，正是为了在默认值改变时仍然有意义）。
+    expect(mergeSettings({ displayMode: 'replace' }).displayMode).toBe('translated-only');
+    expect(mergeSettings({ displayMode: 'replace', version: 1 }).displayMode).toBe('translated-only');
+  });
+
+  it('不认识的显示模式退回默认值', () => {
+    for (const raw of ['nope', '', null, 42, {}, []]) {
+      expect(mergeSettings({ displayMode: raw }).displayMode).toBe(DEFAULT_SETTINGS.displayMode);
+    }
+  });
+
+  it('loadSettings 读到老数据时就完成迁移（不需要用户再改一次设置）', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'replace' } });
+    expect((await loadSettings(area)).displayMode).toBe('translated-only');
+  });
+});
+
 describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
   const baseUrlOf = (value: unknown): string =>
     mergeSettings({ engineConfig: { baseUrl: value } }).engineConfig.baseUrl;
@@ -3449,13 +3483,28 @@ export interface EngineConfigSettings {
   model: string;
 }
 
+/**
+ * 译文显示方式。
+ *
+ * - `translated-only`（默认）：**只显示译文**。原文并没有被删掉——它被包进一个
+ *   `display:none` 的 `<span data-jy-originals>` 留在 DOM 里，还原就是把子节点搬回去
+ *   （见 `content/renderer.ts`）。用户要的就是这个：双语对照会让译文和原文互相挤占版面。
+ * - `bilingual`：原文照旧，译文插在它下面。
+ *
+ * 这里曾经还有第三种 `'replace'`（就地写 `textContent` 覆盖原文）。它已随
+ * {@link mergeSettings} 的迁移改成 `translated-only`：旧实现遇到含行内标记的段落会
+ * 静默退回双语，真实长文（维基百科几乎每段都有链接）实际表现就是"大部分段落仍是双语"，
+ * 与「只显示译文」正好相反。
+ */
+export type DisplayMode = 'bilingual' | 'translated-only';
+
 export interface Settings {
   version: number;
   engineId: string;
   engineConfig: EngineConfigSettings;
   targetLang: string;
   sourceLang: string;
-  displayMode: 'bilingual' | 'replace';
+  displayMode: DisplayMode;
   hoverTranslate: boolean;
   selectionTranslate: boolean;
   autoTranslateDelay: number;
@@ -3479,7 +3528,7 @@ export const DEFAULT_SETTINGS: Settings = {
   engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
-  displayMode: 'bilingual',
+  displayMode: 'translated-only',
   hoverTranslate: true,
   selectionTranslate: true,
   autoTranslateDelay: 0,
@@ -3503,6 +3552,22 @@ function pickString(value: unknown, fallback: string): string {
 
 function pickBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+/**
+ * 显示模式的读取与**迁移**。
+ *
+ * 存储里已有的 `'replace'`（v1 时代的"整页替换"）必须映射成 `translated-only`：
+ * 老用户升级后不能被当成"值不认识"而回落——回落的结果是显示模式悄悄变回双语，
+ * 而那正是用户当初特意改掉的默认行为。
+ *
+ * 映射写死成 `translated-only` 而不是"当前的默认值"是有意的：默认值以后再变一次时，
+ * `'replace'` 的语义仍然是"只要译文"，不该跟着新默认值漂走。
+ */
+function pickDisplayMode(value: unknown): DisplayMode {
+  if (value === 'bilingual') return 'bilingual';
+  if (value === 'translated-only' || value === 'replace') return 'translated-only';
+  return DEFAULT_SETTINGS.displayMode;
 }
 
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
@@ -3589,7 +3654,7 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
     engineConfig: pickEngineConfig(input.engineConfig),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
-    displayMode: input.displayMode === 'replace' ? 'replace' : DEFAULT_SETTINGS.displayMode,
+    displayMode: pickDisplayMode(input.displayMode),
     hoverTranslate: pickBoolean(input.hoverTranslate, DEFAULT_SETTINGS.hoverTranslate),
     selectionTranslate: pickBoolean(input.selectionTranslate, DEFAULT_SETTINGS.selectionTranslate),
     autoTranslateDelay: clampInt(input.autoTranslateDelay, DEFAULT_SETTINGS.autoTranslateDelay, 0, 60),
@@ -3808,6 +3873,7 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/shared/messages.ts
 import type { EngineErrorCode } from '../engines/types';
+import type { DisplayMode } from './settings';
 
 export const MSG = {
   /** 内容脚本 → SW：请求翻译一批文本 */
@@ -3852,7 +3918,8 @@ export type TranslateTextsResponse =
 
 export interface PageState {
   translated: boolean;
-  mode: 'bilingual' | 'replace';
+  /** 这一轮翻译用的是哪种显示方式（弹窗按它告诉用户当前页面处于什么状态）。 */
+  mode: DisplayMode;
   total: number;
   done: number;
   failed: number;
@@ -5575,13 +5642,21 @@ interface ElementStyle {
   visibility: string;
 }
 
+/** `styleOf` 的读取口径。渲染器要复用 {@link inlineText}，所以这个形状是导出的。 */
+export interface StyleLookup {
+  (element: Element): ElementStyle;
+}
+
 /**
  * `getComputedStyle` 每次都强制样式解析，而一次采集会对同一元素问好几遍
  * （隐藏判定、块级判定、文本段扫描），10k 元素的页面就是 3 万次。
  * 一次采集内同一元素的结果不会变（这期间我们不插节点、不改样式），缓存起来即可。
  * 跨采集必须丢弃：页面可能在这之间改了样式。
+ *
+ * 渲染器也用同一条口径（见 {@link inlineText}）："这个元素为这一段贡献了哪些文字"
+ * 只能有一份实现，两边各写一套必然随改动漂移。
  */
-function createStyleLookup(): (element: Element) => ElementStyle {
+export function createStyleLookup(): StyleLookup {
   const cache = new WeakMap<Element, ElementStyle>();
   return (element) => {
     const cached = cache.get(element);
@@ -5598,7 +5673,7 @@ function createStyleLookup(): (element: Element) => ElementStyle {
   };
 }
 
-function isHidden(element: Element, styleOf: (element: Element) => ElementStyle): boolean {
+function isHidden(element: Element, styleOf: StyleLookup): boolean {
   if (element.hasAttribute('hidden')) return true;
   if (element.getAttribute('aria-hidden') === 'true') return true;
   const style = styleOf(element);
@@ -5649,7 +5724,7 @@ function isEditable(element: Element): boolean {
  * 反过来，`<span style="display:inline-block">world</span>` 内部没有块级后代，
  * 就不算边界——它仍然是父段的一部分，`<p>Hello <span …>world</span></p>` 抽成一段。
  */
-function isBlockBoundary(element: Element, styleOf: (element: Element) => ElementStyle, depth: number): boolean {
+function isBlockBoundary(element: Element, styleOf: StyleLookup, depth: number): boolean {
   const display = styleOf(element).display;
   if (isBlockDisplay(display)) return true;
   if (!TRANSPARENT_DISPLAYS.has(display)) return false;
@@ -5658,7 +5733,7 @@ function isBlockBoundary(element: Element, styleOf: (element: Element) => Elemen
 
 function hasBlockDescendant(
   element: Element,
-  styleOf: (element: Element) => ElementStyle,
+  styleOf: StyleLookup,
   depth: number,
 ): boolean {
   if (depth > MAX_WRAPPER_DEPTH) return false;
@@ -5704,8 +5779,13 @@ function collapseSpaces(raw: string): string {
  * 元素**自身和行内后代**的可见文本；块级后代各自成段，这里一概不碰，
  * `<br>` 是硬换行也是段边界，同样不跨。
  * 用文本节点而不是 `innerText`：行为确定、可测，且不依赖布局。
+ *
+ * 返回空串就是"这个元素没有为本段贡献任何文字"——被跳过的 `<code>` / 可编辑区域、
+ * 隐藏元素、块级边界以及插件自己的宿主都是这样。渲染器的「仅译文」模式正是按这条判据
+ * 决定哪些节点属于**这一段**（见 `content/renderer.ts` 的 `runNodes`）：多藏一个节点
+ * 就可能把兄弟段落连它的译文一起藏掉，所以判据必须与采集端是同一份。
  */
-function inlineText(element: Element, styleOf: (element: Element) => ElementStyle): string {
+export function inlineText(element: Element, styleOf: StyleLookup): string {
   let result = '';
 
   const walk = (node: Node): void => {
@@ -6039,6 +6119,42 @@ function bodyTextOf(host: Element): string {
   return host.shadowRoot?.querySelector('.jy-body')?.textContent ?? '';
 }
 
+/**
+ * 元素里**可见**的文本。
+ *
+ * `el.textContent` 分不出可见性——藏起来的原文也在里面（这正是「仅译文」模式的实现方式），
+ * 所以自己走一遍：跳过 `display:none` 的子树，译文宿主读它 Shadow DOM 里的正文。
+ */
+function visibleText(element: Element): string {
+  const pieces: string[] = [];
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      pieces.push(node.nodeValue ?? '');
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const child = node as Element;
+    if (child.tagName === 'JY-TRANSLATION') {
+      pieces.push(bodyTextOf(child));
+      return;
+    }
+    if (child.ownerDocument.defaultView?.getComputedStyle(child).display === 'none') return;
+    for (const grandChild of Array.from(child.childNodes)) walk(grandChild);
+  };
+  for (const child of Array.from(element.childNodes)) walk(child);
+  return pieces.join('');
+}
+
+/** 元素里那个装着原文的隐藏 span（仅译文模式）。 */
+function originalsOf(element: Element): HTMLElement {
+  const span = element.querySelector('[data-jy-originals]');
+  if (!(span instanceof HTMLElement)) throw new Error('元素里没有藏着原文的 span');
+  return span;
+}
+
+/** 插件留在页面上的全部标记；还原之后必须一个都不剩。 */
+const JY_MARKERS = '[data-jy-id],[data-jy-translated],[data-jy-root],[data-jy-originals],[data-jy-for]';
+
 beforeEach(() => {
   document.body.innerHTML = '';
 });
@@ -6173,58 +6289,332 @@ describe('DomRenderer 状态与还原', () => {
   });
 });
 
-describe('DomRenderer 替换模式', () => {
-  it('把原文替换成译文', () => {
+describe('DomRenderer 仅译文模式', () => {
+  it('宿主在元素内部，原文被藏进 display:none 的 span，可见文本只剩译文', () => {
     const segment = paragraph('Hello world');
-    const renderer = new DomRenderer(document, 'replace');
+    const renderer = new DomRenderer(document, 'translated-only');
     renderer.mount(segment, 'pending');
     renderer.update(segment.id, '你好，世界');
-    expect(segment.element.textContent).toBe('你好，世界');
-  });
 
-  it('不插入额外宿主', () => {
-    const segment = paragraph('Hello world');
-    const renderer = new DomRenderer(document, 'replace');
-    renderer.mount(segment, 'pending');
-    renderer.update(segment.id, '你好，世界');
-    expect(document.querySelector('jy-translation')).toBeNull();
-  });
+    const host = segment.element.querySelector('jy-translation') as Element;
+    // 宿主在**元素内部**（双语模式是插在元素旁边的兄弟位置）。
+    expect(host).not.toBeNull();
+    expect(host.parentElement).toBe(segment.element);
+    expect(bodyTextOf(host)).toBe('你好，世界');
 
-  it('restore 还原原文', () => {
-    const segment = paragraph('Hello world');
-    const renderer = new DomRenderer(document, 'replace');
-    renderer.mount(segment, 'pending');
-    renderer.update(segment.id, '你好，世界');
-    renderer.restore();
+    const span = originalsOf(segment.element);
+    // display 为 none 且原文节点确实在里面（不是被删掉后重建的副本）。
+    expect(span.style.display).toBe('none');
+    expect(span.ownerDocument.defaultView?.getComputedStyle(span).display).toBe('none');
+    expect(span.textContent).toBe('Hello world');
+    expect(span.getAttribute('data-jy-root')).toBe('');
+
+    // `textContent` 分不出可见性——藏起来的原文也在里面、译文反而在 Shadow DOM 里读不到，
+    // 所以显式断言"可见的只剩译文"。
     expect(segment.element.textContent).toBe('Hello world');
+    expect(visibleText(segment.element)).toBe('你好，世界');
   });
 
-  it('失败时不破坏原文', () => {
+  it('span 在宿主之前，原文按原相对顺序留在里面', () => {
+    document.body.innerHTML = '<p id="p">Click <a href="/x">here</a> now</p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '点击这里');
+
+    const order = Array.from(p.childNodes).map((node) =>
+      node.nodeType === Node.TEXT_NODE ? '#text' : (node as Element).nodeName,
+    );
+    expect(order).toEqual(['SPAN', 'JY-TRANSLATION']);
+    const span = originalsOf(p);
+    expect(Array.from(span.childNodes).map((node) => node.nodeType)).toEqual([
+      Node.TEXT_NODE,
+      Node.ELEMENT_NODE,
+      Node.TEXT_NODE,
+    ]);
+    expect(span.textContent).toBe('Click here now');
+  });
+
+  it('pending 也先藏起原文：正文位置不会先显示一段原文再被换成译文', () => {
     const segment = paragraph('Hello world');
-    const renderer = new DomRenderer(document, 'replace');
+    const renderer = new DomRenderer(document, 'translated-only');
     renderer.mount(segment, 'pending');
-    renderer.fail(segment.id, '网络错误');
-    expect(segment.element.textContent).toBe('Hello world');
+
+    expect(originalsOf(segment.element).textContent).toBe('Hello world');
+    expect(visibleText(segment.element)).toBe('翻译中…');
   });
 
-  it('段落里带行内元素时退回双语注入，绝不销毁行内标记', () => {
+  it('重复 mount 同一个 id 不会插入第二个宿主或第二个 span', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, '你好，世界');
+    expect(segment.element.querySelectorAll('jy-translation')).toHaveLength(1);
+    expect(segment.element.querySelectorAll('[data-jy-originals]')).toHaveLength(1);
+    expect(visibleText(segment.element)).toBe('你好，世界');
+  });
+
+  it('表格单元格 / 列表项 / 弹性布局子元素：宿主都在元素内部，原文都藏在同一个元素里', () => {
+    const cases = [
+      { html: '<table><tbody><tr><td id="target">Cell text</td></tr></tbody></table>', text: 'Cell text' },
+      { html: '<ul><li id="target">Item text</li></ul>', text: 'Item text' },
+      {
+        html: '<div style="display:flex"><p id="target" style="display:block">Flex child text</p></div>',
+        text: 'Flex child text',
+      },
+    ];
+
+    for (const item of cases) {
+      document.body.innerHTML = item.html;
+      const element = document.getElementById('target') as HTMLElement;
+      // 用真实采集结果：锚点/元素是管线给的，不是手抄的。
+      const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+      expect(segment.element, item.html).toBe(element);
+
+      const renderer = new DomRenderer(document, 'translated-only');
+      renderer.mount(segment, 'done', '译文');
+
+      const host = element.querySelector('jy-translation') as Element;
+      expect(host, item.html).not.toBeNull();
+      expect(host.parentElement, item.html).toBe(element);
+      expect(originalsOf(element).textContent, item.html).toBe(item.text);
+      expect(visibleText(element), item.html).toBe('译文');
+
+      // 外层容器里没有多出任何插件节点：表格行不会混进非单元格节点、
+      // 列表项与弹性子元素也不会被挤成"原文 / 译文"两个兄弟。
+      const parent = element.parentElement as HTMLElement;
+      expect(Array.from(parent.children).map((child) => child.tagName), item.html).toEqual([element.tagName]);
+    }
+  });
+
+  it('含 <a href> 的段落：链接节点仍在 DOM 里、href 未变（虽然不可见）', () => {
     document.body.innerHTML = '<p id="p">Click <a href="/x">here</a> now</p>';
     const p = document.getElementById('p') as HTMLElement;
     const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
     expect(segment.element).toBe(p);
 
-    const renderer = new DomRenderer(document, 'replace');
-    renderer.mount(segment, 'pending');
-    renderer.update(segment.id, '点击这里');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '点击这里');
 
-    // 原文（含链接）原样保留，译文另起宿主。
-    expect(p.querySelector('a')).not.toBeNull();
-    expect(p.textContent).toBe('Click here now');
-    expect(document.querySelector('jy-translation')).not.toBeNull();
+    const link = p.querySelector('a');
+    // 旧的就地替换实现在这里会把 <a> 永久销毁（所以它当年干脆退回双语）；
+    // 包起来的做法不重建任何行内标记，链接还在，只是被藏进了 span。
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('/x');
+    expect(link?.textContent).toBe('here');
+    expect(originalsOf(p).contains(link)).toBe(true);
+    expect(visibleText(p)).toBe('点击这里');
+  });
+
+  it('松散文本段只藏自己那一串：兄弟段落与它们的译文都不受牵连', () => {
+    document.body.innerHTML =
+      '<div id="box">Intro sentence here<p id="body">Body paragraph text</p>Outro sentence here</div>';
+    const box = document.getElementById('box') as HTMLElement;
+    const body = document.getElementById('body') as HTMLElement;
+    const before = document.body.outerHTML;
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual([
+      'Intro sentence here',
+      'Body paragraph text',
+      'Outro sentence here',
+    ]);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.text}`);
+
+    // 容器里的三处原文各自藏进自己的 span：整块搬走会把 <p> 连它的译文一起藏掉。
+    // 直属于容器的只有两处（Body 的那处在 <p> 里面）。
+    expect(box.querySelectorAll(':scope > [data-jy-originals]')).toHaveLength(2);
+    expect(box.querySelectorAll('[data-jy-originals]')).toHaveLength(3);
+    expect(originalsOf(box).textContent).toBe('Intro sentence here');
+    expect(originalsOf(body).textContent).toBe('Body paragraph text');
+    expect(originalsOf(box).contains(body)).toBe(false);
+    expect(visibleText(box)).toBe(
+      '【译】Intro sentence here【译】Body paragraph text【译】Outro sentence here',
+    );
 
     renderer.restore();
-    expect(p.querySelector('a')).not.toBeNull();
-    expect(p.innerHTML).toBe('Click <a href="/x">here</a> now');
+    expect(document.body.outerHTML).toBe(before);
+  });
+
+  it('段落里带 <br> 时按行分段，行内标记与硬换行都不被搬走', () => {
+    document.body.innerHTML = '<p id="p">Line one<br>Line two</p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const before = document.body.outerHTML;
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Line one', 'Line two']);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.text}`);
+
+    const br = p.querySelector('br') as Element;
+    // `<br>` 是硬边界，必须留在可见的那一层（被包进 span 就等于把两行并成一行）。
+    expect(br.parentElement).toBe(p);
+    expect(p.querySelectorAll('[data-jy-originals]')).toHaveLength(2);
+    expect(visibleText(p)).toBe('【译】Line one【译】Line two');
+
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+  });
+});
+
+describe('DomRenderer 仅译文模式：失败态', () => {
+  it('失败时显示错误文案与重试按钮，不是静默', () => {
+    const segment = paragraph('Hello world');
+    const onRetry = vi.fn();
+    const renderer = new DomRenderer(document, 'translated-only', onRetry);
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '网络错误');
+
+    const host = segment.element.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toContain('网络错误');
+    const button = host.shadowRoot?.querySelector('.jy-retry') as HTMLButtonElement;
+    expect(button).not.toBeNull();
+    // 失败时原文一个字符都没丢（只是藏起来了），点重试仍然有救。
+    expect(originalsOf(segment.element).textContent).toBe('Hello world');
+    expect(visibleText(segment.element)).toContain('网络错误');
+
+    button.click();
+    expect(onRetry).toHaveBeenCalledWith('jy-1');
+  });
+
+  it('不可重试的失败只给原因，不挂按钮', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '缺少 API Key', false);
+
+    const host = segment.element.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toContain('缺少 API Key');
+    expect(host.shadowRoot?.querySelector('.jy-retry')).toBeNull();
+  });
+
+  it('失败之后还原：原文照原样回来', () => {
+    document.body.innerHTML = '<p id="p">Click <a href="/x">here</a> now</p>';
+    const before = document.body.outerHTML;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '网络错误');
+
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+  });
+});
+
+describe('DomRenderer 仅译文模式：还原逐字节', () => {
+  const RICH_HTML = [
+    '<article>',
+    '<h1>Hello world</h1>',
+    '<p>Click <a href="/x">here</a> now</p>',
+    '<p>An image <img src="a.png" alt="pic"> inside</p>',
+    '<div id="box">Intro sentence<p id="body">Nested body text</p>Outro sentence</div>',
+    '<table><tbody><tr><td>Cell text</td><td>Second cell</td></tr></tbody></table>',
+    '<ul><li>Item text</li><li>Another item</li></ul>',
+    '<div style="display:flex"><p style="display:block">Flex child text</p></div>',
+    '<p>Line one<br>Line two</p>',
+    '</article>',
+  ].join('');
+
+  it('还原后 body.outerHTML 与翻译前完全相同，且没有 data-jy-* 残留', () => {
+    document.body.innerHTML = RICH_HTML;
+    const before = document.body.outerHTML;
+
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments.length).toBeGreaterThan(6);
+    const renderer = new DomRenderer(document, 'translated-only');
+    // 译文刻意不含原文，否则"看不见原文"这条断言会被译文里的原文自己骗过去。
+    for (const segment of segments) renderer.mount(segment, 'done', `MOCK-${segment.order}`);
+
+    // 翻译态下正文里不应该还有可见的英文原文（藏起来的不算）。
+    expect(visibleText(document.body)).not.toContain('Hello world');
+    expect(visibleText(document.body)).not.toContain('Cell text');
+    expect(visibleText(document.body)).toContain('MOCK-0');
+    expect(visibleText(document.body)).toContain(`MOCK-${segments.length - 1}`);
+
+    renderer.restore();
+
+    // 逐字节：行内标记、图片、嵌套结构、文本节点边界全部回到原样。
+    expect(document.body.outerHTML).toBe(before);
+    expect(document.querySelectorAll(JY_MARKERS)).toHaveLength(0);
+  });
+
+  it('还原之后重新采集得到同样的段落（标记不残留、原文没被销毁）', () => {
+    document.body.innerHTML = RICH_HTML;
+    const renderer = new DomRenderer(document, 'translated-only');
+
+    const first = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    for (const segment of first) renderer.mount(segment, 'done', `【译】${segment.text}`);
+    renderer.restore();
+
+    const second = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(second.map((s) => s.text)).toEqual(first.map((s) => s.text));
+    expect(document.querySelectorAll('jy-translation')).toHaveLength(0);
+    expect(document.querySelectorAll('[data-jy-originals]')).toHaveLength(0);
+  });
+});
+
+describe('DomRenderer 还原的边界', () => {
+  it('元素被框架移出文档之后，restore 仍把原文搬回去', () => {
+    document.body.innerHTML = '<div id="box"><p id="p">Original english text</p></div>';
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '替换后的译文');
+    expect(visibleText(p)).toBe('替换后的译文');
+
+    // 框架把节点摘下来（脱离文档，但引用还在手里）：缓存的 span 仍然是它的子节点。
+    p.remove();
+    expect(p.isConnected).toBe(false);
+
+    renderer.restore();
+
+    expect(p.textContent).toBe('Original english text');
+    expect(p.hasAttribute('data-jy-translated')).toBe(false);
+    expect(p.querySelectorAll(JY_MARKERS)).toHaveLength(0);
+  });
+
+  it('页面在翻译之后换掉节点，restore 把原文搬进活着的那个', () => {
+    document.body.innerHTML = '<div id="box"><p id="p">Original english text</p></div>';
+    const box = document.getElementById('box') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '替换后的译文');
+
+    // 框架重渲染：新节点继承了旧节点上的插件标记，旧节点被丢掉。
+    const replacement = document.createElement('p');
+    replacement.setAttribute('data-jy-id', segment.id);
+    replacement.setAttribute('data-jy-translated', '1');
+    replacement.textContent = '框架重新渲染出来的文本';
+    box.replaceChildren(replacement);
+
+    renderer.restore();
+
+    // 原文没有丢——它就在隐藏 span 里，整块搬进活着的那一个（与双语模式写回快照等价）。
+    expect(replacement.textContent).toBe('Original english text');
+    expect(replacement.hasAttribute('data-jy-translated')).toBe(false);
+    expect(replacement.hasAttribute('data-jy-id')).toBe(false);
+  });
+
+  it('还原后重新采集仍是同样三段（标记不残留）', () => {
+    document.body.innerHTML = '<div id="box">Intro sentence here<p>Body paragraph text</p>Outro sentence here</div>';
+    const box = document.getElementById('box') as HTMLElement;
+    const renderer = new DomRenderer(document, 'bilingual');
+
+    const first = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(first.map((s) => s.text)).toEqual([
+      'Intro sentence here',
+      'Body paragraph text',
+      'Outro sentence here',
+    ]);
+    for (const segment of first) renderer.mount(segment, 'pending');
+    renderer.restore();
+
+    const second = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(second.map((s) => s.text)).toEqual(first.map((s) => s.text));
+    expect(box.querySelectorAll('jy-translation')).toHaveLength(0);
   });
 });
 
@@ -6341,50 +6731,6 @@ describe('DomRenderer 文本段（混合内容里的直接文本）', () => {
     expect(document.querySelector('[data-jy-translated]')).toBeNull();
   });
 });
-
-describe('DomRenderer 还原的边界', () => {
-  it('页面在翻译之后换掉节点，restore 也能把原文写回活着的那个', () => {
-    document.body.innerHTML = '<div id="box"><p id="p">Original english text</p></div>';
-    const box = document.getElementById('box') as HTMLElement;
-    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
-    const renderer = new DomRenderer(document, 'replace');
-    renderer.mount(segment, 'pending');
-    renderer.update(segment.id, '替换后的译文');
-    expect(segment.element.textContent).toBe('替换后的译文');
-
-    // 框架重渲染：新节点继承了旧节点上的插件标记。
-    const replacement = document.createElement('p');
-    replacement.setAttribute('data-jy-id', segment.id);
-    replacement.setAttribute('data-jy-translated', '1');
-    replacement.textContent = '替换后的译文';
-    box.replaceChildren(replacement);
-
-    renderer.restore();
-
-    expect(replacement.textContent).toBe('Original english text');
-    expect(replacement.hasAttribute('data-jy-translated')).toBe(false);
-    expect(replacement.hasAttribute('data-jy-id')).toBe(false);
-  });
-
-  it('还原后重新采集仍是同样三段（标记不残留）', () => {
-    document.body.innerHTML = '<div id="box">Intro sentence here<p>Body paragraph text</p>Outro sentence here</div>';
-    const box = document.getElementById('box') as HTMLElement;
-    const renderer = new DomRenderer(document, 'bilingual');
-
-    const first = collectSegments(document.body, { targetLang: 'zh-Hans' });
-    expect(first.map((s) => s.text)).toEqual([
-      'Intro sentence here',
-      'Body paragraph text',
-      'Outro sentence here',
-    ]);
-    for (const segment of first) renderer.mount(segment, 'pending');
-    renderer.restore();
-
-    const second = collectSegments(document.body, { targetLang: 'zh-Hans' });
-    expect(second.map((s) => s.text)).toEqual(first.map((s) => s.text));
-    expect(box.querySelectorAll('jy-translation')).toHaveLength(0);
-  });
-});
 ```
 
 - [ ] **Step 3: 运行测试确认失败**
@@ -6398,20 +6744,44 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/content/renderer.ts
 import type { ExtractedSegment } from './extractor';
-import { isBlockDisplay } from './extractor';
+import { createStyleLookup, inlineText, isBlockDisplay } from './extractor';
+import type { DisplayMode } from '../shared/settings';
 import { TRANSLATION_CSS } from './styles';
 
-export type DisplayMode = 'bilingual' | 'replace';
+export type { DisplayMode };
+
 export type RenderState = 'pending' | 'done' | 'error';
 
 const HOST_TAG = 'jy-translation';
 const PENDING_TEXT = '翻译中…';
+
+/**
+ * 仅译文模式下装原文的容器。
+ *
+ * `style="display:none"` 是**内联**样式：页面 CSS 里一条 `.jy-originals { display:block }`
+ * 就能把「只显示译文」破掉，内联样式不依赖页面上有没有我们的样式表，也不给别人改写的机会。
+ * `data-jy-root` 让采集端把整棵子树当成插件自己的节点跳过。
+ */
+const ORIGINALS_TAG = 'span';
+const ORIGINALS_ATTR = 'data-jy-originals';
 
 interface InsertionTarget {
   parent: HTMLElement;
   /** 插到 parent 内部（末尾，或 before 指定的子节点之前）；否则插到 parent 里 before 那个位置。 */
   inside: boolean;
   before: Node | null;
+}
+
+/** 仅译文模式下被藏起来的一段原文：节点都还在，只是被移进了这个 span。 */
+interface HiddenOriginals {
+  element: HTMLElement;
+  span: HTMLElement;
+  /**
+   * 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都在 span 里。
+   * 元素被框架整体换掉时可以把原文搬进新元素（松散文本段不行——它的父元素是容器，
+   * 里面还有别的段落，整块替换会把兄弟段落删掉）。
+   */
+  wholeElement: boolean;
 }
 
 /** 容器里第一个块级后代（`display:contents` 这类不算块级，继续往里找）。 */
@@ -6425,7 +6795,7 @@ function firstBlockInside(element: Element, styleOf: (element: Element) => strin
 }
 
 /**
- * 决定译文宿主插到哪里。只用于 `anchor.kind === 'auto'` 的段落——
+ * 决定译文宿主插到哪里。只用于**双语模式** `anchor.kind === 'auto'` 的段落——
  * 松散文本段落带显式落点，由 ensureHost 直接按 `anchor.node` 插入，不走这里。
  *
  * 表格单元格、列表项、以及弹性/网格布局的子元素都必须插到内部——
@@ -6461,24 +6831,19 @@ export function resolveInsertion(element: HTMLElement, segment?: ExtractedSegmen
   return { parent, inside: false, before: element.nextSibling };
 }
 
-/** 还原时要写回的元素内容。直接克隆子节点，不用 innerHTML 快照——省掉一次 HTML 解析。 */
-function snapshotChildren(element: Element): Node[] {
-  return Array.from(element.childNodes, (node) => node.cloneNode(true));
-}
-
-function swapChildren(element: Element, nodes: Node[]): void {
-  // 克隆节点可以直接搬进文档，不必再克隆一次。
-  element.replaceChildren(...nodes);
-}
-
 function escapeAttributeValue(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export class DomRenderer {
   private readonly hosts = new Map<string, HTMLElement>();
-  /** 替换模式下被改写的元素 → 改写前的子节点快照。用 Map 是因为 restore() 要遍历它。 */
-  private readonly originals = new Map<string, { element: HTMLElement; nodes: Node[] }>();
+  /**
+   * 仅译文模式下被藏起来的原文 → 装载它的 span。
+   *
+   * 用 `Map` 而不是 `WeakMap`：`restore()` 必须能**遍历**全部条目（双语模式不需要它——
+   * 那边的原文一直可见，压根没有要还原的东西）。
+   */
+  private readonly hiddenOriginals = new Map<string, HiddenOriginals>();
 
   constructor(
     private readonly document: Document,
@@ -6487,45 +6852,152 @@ export class DomRenderer {
   ) {}
 
   mount(segment: ExtractedSegment, state: RenderState, text?: string): void {
-    if (this.mode === 'replace' && this.isReplaceable(segment)) {
-      if (!this.originals.has(segment.id)) {
-        this.originals.set(segment.id, { element: segment.element, nodes: snapshotChildren(segment.element) });
-      }
-      if (state === 'done' && text !== undefined) segment.element.textContent = text;
+    if (this.mode === 'translated-only') {
+      this.mountTranslatedOnly(segment, state, text);
       return;
     }
-    // 双语模式，以及替换模式下「就地替换会毁掉行内标记」的段落：
-    // 后者仍然要翻出来，所以退回双语注入。替换模式本身是有意破坏性的，
-    // 但把 <a> 这类行内元素永久毁掉属于用户无法撤销的破坏，不做。
     this.setContent(this.ensureHost(segment), state, text);
   }
 
   update(segmentId: string, text: string): void {
     const host = this.hosts.get(segmentId);
-    if (host) {
-      this.setContent(host, 'done', text);
-      return;
-    }
-    const original = this.originals.get(segmentId);
-    if (original) {
-      original.element.textContent = text;
-      original.element.setAttribute('data-jy-translated', '1');
-    }
-  }
-
-  fail(segmentId: string, message: string): void {
-    const host = this.hosts.get(segmentId);
-    // 替换模式下失败必须保持原文，否则用户会看到一片空白。
-    if (!host) return;
-    this.setContent(host, 'error', message);
+    if (host) this.setContent(host, 'done', text);
   }
 
   /**
-   * 只有在「节点内容就是这一整段文本」时才允许就地替换。
-   * 有任何元素子节点（行内链接、`<br>`）都不能用 textContent 盖掉：那会永久销毁宿主的行内标记。
+   * `canRetry === false` 用于**重试多少次都是同一个结果**的错误（缺 API Key、Key 无效）：
+   * 只标注原因、不挂重试按钮。一个 200 段的页面否则会变成 200 个点了也没用的按钮，
+   * 而用户真正该做的是去设置页填 Key（规格 §8：不重试，改为页面 toast + 弹窗红点）。
+   *
+   * 两种模式的失败都落在宿主上，所以**失败一定看得见**：仅译文模式下原文已经藏进
+   * `display:none` 的 span，宿主就是这一页上唯一还能写字的地方（旧的就地替换实现在这里
+   * 直接 `return`，用户既看不到原文、也看不到失败，还不能重试）。
    */
-  private isReplaceable(segment: ExtractedSegment): boolean {
-    return segment.textRun !== true && segment.element.childElementCount === 0;
+  fail(segmentId: string, message: string, canRetry = true): void {
+    const host = this.hosts.get(segmentId);
+    if (!host) return;
+    this.setContent(host, 'error', message, canRetry);
+  }
+
+  /**
+   * 仅译文模式：把原文**包起来藏掉**，而不是删掉它。
+   *
+   * 三步（见 `hideOriginals`）：
+   * 1. 新建 `<span data-jy-originals data-jy-root style="display:none">`；
+   * 2. 把这一段的原文节点**按原相对顺序**搬进去（是搬移不是克隆：还原就是把它们搬回去）；
+   * 3. 把 span 与 `<jy-translation>` 译文宿主放进元素内部，宿主在 span 之后。
+   *
+   * 于是元素里**可见的只有译文**，而原文节点一个都没销毁。为什么是包起来而不是替换掉：
+   * - 行内标记（链接、图片、加粗）全留在 DOM 里，还原时不需要重建任何东西；
+   * - 对任何元素都成立——表格单元格、列表项、弹性/网格布局的子元素都只需要往元素**内部**
+   *   追加，不必像双语模式那样分情况判断该插到兄弟位置还是内部；
+   * - 原文一个字符都没丢，所以失败态、还原、切回双语这三种回退都还有东西可用。
+   */
+  private mountTranslatedOnly(segment: ExtractedSegment, state: RenderState, text?: string): void {
+    const existing = this.hosts.get(segment.id);
+    if (existing !== undefined) {
+      this.setContent(existing, state, text);
+      return;
+    }
+
+    const host = this.createHost(segment.id);
+    this.hideOriginals(segment, host);
+
+    // 标记原文已翻译：即使后续被重复采集，extractor 也会跳过它（与双语模式同一条规则）。
+    // 松散文本段（`textRun`）的 element 是**容器**，绝不能标记：
+    // 整棵子树被短路之后，容器里新追加的内容就再也不会被采集了（见 extractor 的 Fix 5 取舍）。
+    if (segment.textRun !== true) segment.element.setAttribute('data-jy-translated', '1');
+    this.hosts.set(segment.id, host);
+    this.setContent(host, state, text);
+  }
+
+  /**
+   * 把这一段的原文节点搬进隐藏 span，并把 span 与宿主放进元素里。
+   *
+   * 两种段落形态的搬法不同，区别在于**这个元素是不是这一段的专属容器**：
+   * - 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都搬走，
+   *   span 落在原来第一个子节点的位置（子节点全搬空后就是"元素末尾"）；
+   * - 松散文本段（`anchor.kind === 'before'`）：元素是**容器**，里面还有别的块级子元素各自成段
+   *   （`<div>Intro<p>Body</p>Outro</div>`），整块搬走会把兄弟段落连同它们自己的译文一起藏掉。
+   *   只搬本段真正贡献了文字的那一串节点（见 `runNodes`），span 留在本段原来的位置。
+   *
+   * 宿主两种形态都放在 span 之后：整元素段落是追加到元素末尾（规格就是这三步），
+   * 松散文本段则仍按 `anchor` 给出的落点插入——那正是"紧跟这段原文"的位置。
+   */
+  private hideOriginals(segment: ExtractedSegment, host: HTMLElement): void {
+    const element = segment.element;
+    const anchor = segment.anchor;
+    const wholeElement = anchor.kind === 'auto';
+    const nodes: Node[] = wholeElement ? Array.from(element.childNodes) : this.runNodes(element, anchor.node);
+
+    if (nodes.length > 0) {
+      const span = this.createOriginals();
+      const first = nodes[0];
+      // span 站在第一个原文节点原来的位置上，还原时把子节点搬回"span 之前"就回到原位。
+      if (first !== undefined && first.parentNode === element) element.insertBefore(span, first);
+      else element.append(span);
+      span.append(...nodes);
+      this.hiddenOriginals.set(segment.id, { element, span, wholeElement });
+    }
+
+    if (wholeElement) element.append(host);
+    else this.insertHostAtAnchor(segment, host);
+  }
+
+  /**
+   * 松散文本段（`anchor.kind === 'before'`）自己那一串原文节点。
+   *
+   * 从锚点（本段之后的下一个节点）往前收，**只收采集端算进这一段的节点**：判据直接复用
+   * 采集端的 `inlineText` —— 它对这个子元素返回空串就说明这个子元素没有为本段贡献任何文字
+   * （被跳过的 `<code>` / 可编辑区域、隐藏元素、块级边界都是这样），到它就停。
+   *
+   * 这条判据同时挡住了最危险的一种错误：**把兄弟段落连它的译文一起藏掉**。凡是成段的元素
+   * 都是块级边界（或内部含块级后代的透明包裹），`inlineText` 对它恒为空串。
+   * 停早了只是这一小段仍显示原文（还能忍），停晚了就是整块内容凭空消失。
+   */
+  private runNodes(element: HTMLElement, anchorNode: Node | null): Node[] {
+    const nodes: Node[] = Array.from(element.childNodes);
+    const end =
+      anchorNode !== null && anchorNode.parentNode === element ? nodes.indexOf(anchorNode) : nodes.length;
+    if (end <= 0) return [];
+
+    const styleOf = createStyleLookup();
+    let start = end;
+    while (start > 0) {
+      const node = nodes[start - 1];
+      if (node === undefined) break;
+      if (node.nodeType === Node.TEXT_NODE) {
+        start -= 1;
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) break;
+      const child = node as Element;
+      // `<br>` 是硬换行也是段边界；插件自己的 span/宿主一律不碰。
+      if (child.nodeName === 'BR' || child.hasAttribute('data-jy-root')) break;
+      if (inlineText(child, styleOf) === '') break;
+      start -= 1;
+    }
+    return nodes.slice(start, end);
+  }
+
+  /**
+   * 松散文本段的宿主落点：容器内部、`anchor.node` 之前；node 为 null（或已不在容器里）
+   * 就追加到末尾。与双语模式 `ensureHost` 里那一段同一条规则。
+   */
+  private insertHostAtAnchor(segment: ExtractedSegment, host: HTMLElement): void {
+    const element = segment.element;
+    const node = segment.anchor.kind === 'before' ? segment.anchor.node : null;
+    if (node !== null && node.parentNode === element) element.insertBefore(host, node);
+    else element.append(host);
+  }
+
+  /** 装原文的 span：内联 `display:none`，见 {@link ORIGINALS_ATTR} 的注释。 */
+  private createOriginals(): HTMLElement {
+    const span = this.document.createElement(ORIGINALS_TAG);
+    span.setAttribute(ORIGINALS_ATTR, '');
+    span.setAttribute('data-jy-root', '');
+    span.style.display = 'none';
+    return span;
   }
 
   private ensureHost(segment: ExtractedSegment): HTMLElement {
@@ -6573,7 +7045,7 @@ export class DomRenderer {
   }
 
   /** 一律用 textContent 写入，杜绝引擎返回内容被当成 HTML 执行。 */
-  private setContent(host: HTMLElement, state: RenderState, text?: string): void {
+  private setContent(host: HTMLElement, state: RenderState, text?: string, canRetry = true): void {
     const body = host.shadowRoot?.querySelector('.jy-body');
     if (!body) return;
 
@@ -6587,6 +7059,7 @@ export class DomRenderer {
     if (state === 'error') {
       body.classList.add('jy-error');
       body.textContent = text ?? '翻译失败';
+      if (!canRetry) return;
       const button = this.document.createElement('button');
       button.className = 'jy-retry';
       button.type = 'button';
@@ -6603,16 +7076,38 @@ export class DomRenderer {
     body.textContent = text ?? '';
   }
 
+  /**
+   * 还原：**逐字节**回到翻译前的样子。
+   *
+   * 双语模式只要把宿主摘掉就算完；仅译文模式还要把藏起来的原文搬回原位——
+   * 搬回去的是**同一批节点**（不是重建的副本），所以行内标记、属性、文本节点边界
+   * 全都原样回来，`outerHTML` 与翻译前逐字节相同。
+   */
   restore(): void {
     for (const host of this.hosts.values()) host.remove();
     this.hosts.clear();
 
-    for (const { element, nodes } of this.originals.values()) {
-      const live = this.resolveLive(element);
-      if (live !== undefined) swapChildren(live, nodes);
+    for (const { element, span, wholeElement } of this.hiddenOriginals.values()) {
+      // 页面在翻译之后重建过节点时，缓存的引用指向的是脱离文档的孤儿：
+      // 往孤儿里写原文等于什么也没还原，活着的节点会一直显示译文。
+      const live = this.resolveLive(element) ?? element;
+      // span 还挂在这个元素里（含"元素被整体移出文档"——那时它的父节点仍然是它）
+      // 就直接拆；元素被框架**换掉**时按兜底那一条处理。
+      const target = span.parentNode === live ? span : live.querySelector(`[${ORIGINALS_ATTR}]`);
+      if (target instanceof HTMLElement) {
+        this.unwrapOriginals(target);
+      } else if (wholeElement && live !== element && span.childNodes.length > 0) {
+        // 元素被框架整体换掉了：原文并没有丢——它就在 span 里。整元素段落的 span 装的就是
+        // 这个元素的全部内容，所以可以整块搬进活着的那一个（与双语模式把快照写回活节点等价）。
+        // 松散文本段不能这么干：它的父元素是容器，整块替换会把兄弟段落删掉。那种情况下
+        // 只能清掉标记（原文留在已脱离文档的 span 里，不再可恢复）。
+        live.replaceChildren(...Array.from(span.childNodes));
+        span.remove();
+      }
       element.removeAttribute('data-jy-translated');
+      if (live !== element) live.removeAttribute('data-jy-translated');
     }
-    this.originals.clear();
+    this.hiddenOriginals.clear();
 
     // 剩下的标记全部清掉：插件没留下的痕迹才算还原干净。
     // 这一步也负责把「框架重建过、带着旧标记的新节点」解锁，否则那些节点会被永久跳过。
@@ -6620,6 +7115,14 @@ export class DomRenderer {
       element.removeAttribute('data-jy-id');
       element.removeAttribute('data-jy-translated');
     }
+  }
+
+  /** 把隐藏 span 的子节点按原顺序搬回它原来的位置（span 之前），然后删掉 span。 */
+  private unwrapOriginals(span: HTMLElement): void {
+    const parent = span.parentNode;
+    if (parent === null) return;
+    for (const node of Array.from(span.childNodes)) parent.insertBefore(node, span);
+    span.remove();
   }
 
   /**
@@ -6694,6 +7197,7 @@ export function toast(message: string): void {
 
   const shadow = host.attachShadow({ mode: 'open' });
   const span = document.createElement('span');
+  // 一律用 textContent：错误信息里可能带引擎返回的原文片段，绝不能被当成 HTML 解析。
   span.textContent = message;
   shadow.append(span);
 
@@ -6710,7 +7214,7 @@ import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
-import { loadUiSettings, type UiSettings } from '../shared/settings';
+import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
 import { DomRenderer } from './renderer';
 import { toast } from './toast';
@@ -6733,7 +7237,7 @@ let segments: ExtractedSegment[] = [];
 let running = false;
 /** 本轮翻译攒下的页面级提示：整轮跑完只弹一次，见 `translatePage` 末尾。 */
 let lastError: string | null = null;
-let displayMode: 'bilingual' | 'replace' = 'bilingual';
+let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
 const finished = new Set<string>();
 const failedIds = new Set<string>();
 
@@ -7393,7 +7897,7 @@ body {
 import { LANGUAGES } from '../core/lang';
 import { ENGINES, getEngine } from '../engines/registry';
 import { MSG, type PageState } from '../shared/messages';
-import { loadSettings, saveSettings, type Settings } from '../shared/settings';
+import { loadSettings, saveSettings, type DisplayMode, type Settings } from '../shared/settings';
 
 /**
  * 按钮的三种态：不知道页面状态（`pageState === null`，初始与失败后）、
@@ -7404,10 +7908,20 @@ import { loadSettings, saveSettings, type Settings } from '../shared/settings';
  */
 const toggleButton = document.getElementById('toggle') as HTMLButtonElement;
 const statusText = document.getElementById('status') as HTMLParagraphElement;
+const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
 const optionsButton = document.getElementById('open-options') as HTMLButtonElement;
+
+/**
+ * 显示模式的两个选项。`translated-only` 放在最前面——它是默认值，也是用户最常想改的那一项
+ * （双语对照会把原文和译文叠在一页上，长文里很挤）。
+ */
+const DISPLAY_MODES: Array<{ value: DisplayMode; label: string }> = [
+  { value: 'translated-only', label: '仅译文' },
+  { value: 'bilingual', label: '双语对照' },
+];
 
 /** 发消息的兜底超时：内容脚本**可能永远不回**（见 `requestPageState` 的注释）。 */
 const TOGGLE_TIMEOUT_MS = 30_000;
@@ -7431,9 +7945,10 @@ function fillSelect(select: HTMLSelectElement, entries: Array<{ value: string; l
   }
 }
 
-/** 用存储里的设置填两个下拉，并把 hint 算对；保存失败回滚时也走这里。 */
+/** 用存储里的设置填三个下拉，并把 hint 算对；保存失败回滚时也走这里。 */
 function applySettings(next: Settings): void {
   settings = next;
+  fillSelect(displayModeSelect, DISPLAY_MODES, settings.displayMode);
   fillSelect(
     targetLangSelect,
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
@@ -7652,7 +8167,7 @@ async function saveSettingsOrReport(
   next: Settings,
   previous: Settings,
   control: HTMLSelectElement,
-  field: 'targetLang' | 'engineId',
+  field: 'targetLang' | 'engineId' | 'displayMode',
 ): Promise<void> {
   try {
     await saveSettings(next);
@@ -7680,6 +8195,24 @@ function onTargetLangChange(): void {
   });
 }
 
+/**
+ * 切换显示模式：**只写设置，当场不重译**。
+ *
+ * 显示模式是渲染时读的（内容脚本 `translatePage` 从设置里取一次），改完不会回头重画
+ * 已经译好的页面。这里如实告诉用户"要重新翻译才生效"，而不是假装立即生效——
+ * 页面纹丝不动而弹窗说"已生效"，用户只会以为功能坏了。
+ */
+function onDisplayModeChange(): void {
+  const previous = settings;
+  const next: Settings = { ...settings, displayMode: displayModeSelect.value as DisplayMode };
+  void saveSettingsOrReport(next, previous, displayModeSelect, 'displayMode').then(() => {
+    if (settings !== next) return;
+    if (pageState?.translated) {
+      statusText.textContent = '显示模式已更新，重新翻译此页生效。';
+    }
+  });
+}
+
 function onEngineChange(): void {
   const previous = settings;
   const next: Settings = { ...settings, engineId: engineSelect.value };
@@ -7703,6 +8236,7 @@ function init(): void {
     runSafely('操作失败', handleToggleClick);
   });
   targetLangSelect.addEventListener('change', onTargetLangChange);
+  displayModeSelect.addEventListener('change', onDisplayModeChange);
   engineSelect.addEventListener('change', onEngineChange);
   optionsButton.addEventListener('click', () => chrome.runtime.openOptionsPage());
 

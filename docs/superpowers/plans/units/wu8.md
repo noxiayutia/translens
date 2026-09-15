@@ -37,6 +37,7 @@ export function toast(message: string): void {
 
   const shadow = host.attachShadow({ mode: 'open' });
   const span = document.createElement('span');
+  // 一律用 textContent：错误信息里可能带引擎返回的原文片段，绝不能被当成 HTML 解析。
   span.textContent = message;
   shadow.append(span);
 
@@ -53,7 +54,7 @@ import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
-import { loadUiSettings, type UiSettings } from '../shared/settings';
+import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
 import { collectSegments, type ExtractedSegment } from './extractor';
 import { DomRenderer } from './renderer';
 import { toast } from './toast';
@@ -76,7 +77,7 @@ let segments: ExtractedSegment[] = [];
 let running = false;
 /** 本轮翻译攒下的页面级提示：整轮跑完只弹一次，见 `translatePage` 末尾。 */
 let lastError: string | null = null;
-let displayMode: 'bilingual' | 'replace' = 'bilingual';
+let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
 const finished = new Set<string>();
 const failedIds = new Set<string>();
 

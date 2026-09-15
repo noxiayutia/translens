@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "浸译",
   "version": "0.1.0",
-  "description": "沉浸式网页翻译：原文下方就地显示译文，支持免费引擎与自定义 OpenAI 兼容 API。",
+  "description": "沉浸式网页翻译：默认只显示译文（可切换双语对照），支持免费引擎与自定义 OpenAI 兼容 API。",
   "permissions": ["storage", "activeTab", "contextMenus"],
   "host_permissions": ["https://translate.googleapis.com/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],

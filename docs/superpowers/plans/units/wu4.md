@@ -1010,6 +1010,40 @@ describe('mergeSettings', () => {
   });
 });
 
+describe('显示模式（默认值、迁移）', () => {
+  it('默认是「仅译文」', () => {
+    expect(DEFAULT_SETTINGS.displayMode).toBe('translated-only');
+    expect(mergeSettings({}).displayMode).toBe('translated-only');
+    expect(mergeSettings({ targetLang: 'ja' }).displayMode).toBe('translated-only');
+  });
+
+  it('保留用户明确选过的双语', () => {
+    expect(mergeSettings({ displayMode: 'bilingual' }).displayMode).toBe('bilingual');
+    expect(mergeSettings({ displayMode: 'translated-only' }).displayMode).toBe('translated-only');
+  });
+
+  it("把老数据里的 'replace' 迁移成 'translated-only'，而不是回落", () => {
+    // 老用户的存储里就是 'replace'（v1 时代的"整页替换"）。当成未知值处理会退回**默认值**，
+    // 于是默认值哪天再变一次，他们就会莫名其妙地被切回双语——那正是他们当年特意改掉的默认行为。
+    // 所以映射写死成 'translated-only'，与当前的默认值是不是它无关（这条断言不引用
+    // DEFAULT_SETTINGS，正是为了在默认值改变时仍然有意义）。
+    expect(mergeSettings({ displayMode: 'replace' }).displayMode).toBe('translated-only');
+    expect(mergeSettings({ displayMode: 'replace', version: 1 }).displayMode).toBe('translated-only');
+  });
+
+  it('不认识的显示模式退回默认值', () => {
+    for (const raw of ['nope', '', null, 42, {}, []]) {
+      expect(mergeSettings({ displayMode: raw }).displayMode).toBe(DEFAULT_SETTINGS.displayMode);
+    }
+  });
+
+  it('loadSettings 读到老数据时就完成迁移（不需要用户再改一次设置）', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 1, displayMode: 'replace' } });
+    expect((await loadSettings(area)).displayMode).toBe('translated-only');
+  });
+});
+
 describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
   const baseUrlOf = (value: unknown): string =>
     mergeSettings({ engineConfig: { baseUrl: value } }).engineConfig.baseUrl;
@@ -1134,13 +1168,28 @@ export interface EngineConfigSettings {
   model: string;
 }
 
+/**
+ * 译文显示方式。
+ *
+ * - `translated-only`（默认）：**只显示译文**。原文并没有被删掉——它被包进一个
+ *   `display:none` 的 `<span data-jy-originals>` 留在 DOM 里，还原就是把子节点搬回去
+ *   （见 `content/renderer.ts`）。用户要的就是这个：双语对照会让译文和原文互相挤占版面。
+ * - `bilingual`：原文照旧，译文插在它下面。
+ *
+ * 这里曾经还有第三种 `'replace'`（就地写 `textContent` 覆盖原文）。它已随
+ * {@link mergeSettings} 的迁移改成 `translated-only`：旧实现遇到含行内标记的段落会
+ * 静默退回双语，真实长文（维基百科几乎每段都有链接）实际表现就是"大部分段落仍是双语"，
+ * 与「只显示译文」正好相反。
+ */
+export type DisplayMode = 'bilingual' | 'translated-only';
+
 export interface Settings {
   version: number;
   engineId: string;
   engineConfig: EngineConfigSettings;
   targetLang: string;
   sourceLang: string;
-  displayMode: 'bilingual' | 'replace';
+  displayMode: DisplayMode;
   hoverTranslate: boolean;
   selectionTranslate: boolean;
   autoTranslateDelay: number;
@@ -1164,7 +1213,7 @@ export const DEFAULT_SETTINGS: Settings = {
   engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
-  displayMode: 'bilingual',
+  displayMode: 'translated-only',
   hoverTranslate: true,
   selectionTranslate: true,
   autoTranslateDelay: 0,
@@ -1188,6 +1237,22 @@ function pickString(value: unknown, fallback: string): string {
 
 function pickBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+/**
+ * 显示模式的读取与**迁移**。
+ *
+ * 存储里已有的 `'replace'`（v1 时代的"整页替换"）必须映射成 `translated-only`：
+ * 老用户升级后不能被当成"值不认识"而回落——回落的结果是显示模式悄悄变回双语，
+ * 而那正是用户当初特意改掉的默认行为。
+ *
+ * 映射写死成 `translated-only` 而不是"当前的默认值"是有意的：默认值以后再变一次时，
+ * `'replace'` 的语义仍然是"只要译文"，不该跟着新默认值漂走。
+ */
+function pickDisplayMode(value: unknown): DisplayMode {
+  if (value === 'bilingual') return 'bilingual';
+  if (value === 'translated-only' || value === 'replace') return 'translated-only';
+  return DEFAULT_SETTINGS.displayMode;
 }
 
 /** 允许 http 的本机主机名（用户的本地推理服务，如 Ollama）。 */
@@ -1274,7 +1339,7 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
     engineConfig: pickEngineConfig(input.engineConfig),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
-    displayMode: input.displayMode === 'replace' ? 'replace' : DEFAULT_SETTINGS.displayMode,
+    displayMode: pickDisplayMode(input.displayMode),
     hoverTranslate: pickBoolean(input.hoverTranslate, DEFAULT_SETTINGS.hoverTranslate),
     selectionTranslate: pickBoolean(input.selectionTranslate, DEFAULT_SETTINGS.selectionTranslate),
     autoTranslateDelay: clampInt(input.autoTranslateDelay, DEFAULT_SETTINGS.autoTranslateDelay, 0, 60),
@@ -1493,6 +1558,7 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/shared/messages.ts
 import type { EngineErrorCode } from '../engines/types';
+import type { DisplayMode } from './settings';
 
 export const MSG = {
   /** 内容脚本 → SW：请求翻译一批文本 */
@@ -1537,7 +1603,8 @@ export type TranslateTextsResponse =
 
 export interface PageState {
   translated: boolean;
-  mode: 'bilingual' | 'replace';
+  /** 这一轮翻译用的是哪种显示方式（弹窗按它告诉用户当前页面处于什么状态）。 */
+  mode: DisplayMode;
   total: number;
   done: number;
   failed: number;
