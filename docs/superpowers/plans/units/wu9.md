@@ -174,6 +174,8 @@ import {
 const toggleButton = document.getElementById('toggle') as HTMLButtonElement;
 const statusText = document.getElementById('status') as HTMLParagraphElement;
 const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
+const hoverCheckbox = document.getElementById('hover-translate') as HTMLInputElement;
+const selectionCheckbox = document.getElementById('selection-translate') as HTMLInputElement;
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
@@ -205,10 +207,12 @@ function fillSelect(
   }
 }
 
-/** 用存储里的设置填三个下拉，并把 hint 算对；保存失败回滚时也走这里。 */
+/** 用存储里的设置填三个下拉与两个快捷开关，并把 hint 算对；保存失败回滚时也走这里。 */
 function applySettings(next: Settings): void {
   settings = next;
   fillSelect(displayModeSelect, DISPLAY_MODES, settings.displayMode);
+  hoverCheckbox.checked = settings.hoverTranslate;
+  selectionCheckbox.checked = settings.selectionTranslate;
   fillSelect(
     targetLangSelect,
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
@@ -473,6 +477,58 @@ function onDisplayModeChange(): void {
   });
 }
 
+/**
+ * 悬停/划词快捷开关：保存 + **推送给当前页面**。
+ *
+ * 这两个开关控制的是"内容脚本挂不挂监听器"——只写设置不够：当前页面已经挂上的监听
+ * 不会因为存储变了而消失，没挂上的也不会自己出现。所以保存成功后必须发一条
+ * `APPLY_SETTINGS` 让内容脚本当场重新挂/摘；拿不到确认回执（没有内容脚本的页面、
+ * 不认识这条消息的旧内容脚本）就**如实说要重新加载页面**，不静默骗人。
+ */
+function onFeatureToggleChange(
+  checkbox: HTMLInputElement,
+  field: 'hoverTranslate' | 'selectionTranslate',
+  label: string,
+): void {
+  const previous = settings;
+  const next: Settings =
+    field === 'hoverTranslate'
+      ? { ...settings, hoverTranslate: checkbox.checked }
+      : { ...settings, selectionTranslate: checkbox.checked };
+  void (async () => {
+    try {
+      await saveSettings(next);
+      settings = next;
+    } catch (raw) {
+      // 与下拉同一个口径：保存被拒就把开关拨回真正生效的那一档，并说出原因。
+      checkbox.checked = previous[field];
+      statusText.textContent = errorText('设置未能保存', raw);
+      return;
+    }
+    let applied = false;
+    try {
+      const tabId = await activeTabId();
+      if (tabId !== null) {
+        const reply = (await chrome.tabs.sendMessage(tabId, {
+          type: MSG.APPLY_SETTINGS,
+          payload: {
+            hoverTranslate: next.hoverTranslate,
+            selectionTranslate: next.selectionTranslate,
+            // 顺带报一次目标语言：内容脚本手里那份可能已经过期（朗读语种用）。
+            targetLang: next.targetLang,
+          },
+        })) as { ok?: unknown } | undefined;
+        applied = reply?.ok === true;
+      }
+    } catch {
+      applied = false;
+    }
+    statusText.textContent = applied
+      ? `${label}已更新，当前页面即时生效。`
+      : `${label}已保存；当前页面没能即时确认，重新加载页面后生效。`;
+  })();
+}
+
 function onEngineChange(): void {
   const previous = settings;
   const next: Settings = { ...settings, engineId: engineSelect.value };
@@ -497,6 +553,12 @@ function init(): void {
   });
   targetLangSelect.addEventListener('change', onTargetLangChange);
   displayModeSelect.addEventListener('change', onDisplayModeChange);
+  hoverCheckbox.addEventListener('change', () =>
+    onFeatureToggleChange(hoverCheckbox, 'hoverTranslate', '悬停翻译'),
+  );
+  selectionCheckbox.addEventListener('change', () =>
+    onFeatureToggleChange(selectionCheckbox, 'selectionTranslate', '划词翻译'),
+  );
   engineSelect.addEventListener('change', onEngineChange);
   optionsButton.addEventListener('click', () => chrome.runtime.openOptionsPage());
 

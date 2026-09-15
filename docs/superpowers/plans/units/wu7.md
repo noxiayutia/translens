@@ -12,7 +12,7 @@
  * @vitest-environment jsdom
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { collectSegments, isBlockDisplay } from '../../src/content/extractor';
+import { collectSegments, isBlockDisplay, pageHasKana } from '../../src/content/extractor';
 
 function mount(html: string): HTMLElement {
   document.body.innerHTML = html;
@@ -323,6 +323,29 @@ describe('collectSegments', () => {
     expect(segments.map((s) => s.text)).toEqual(['Keep me']);
   });
 
+  // ---- 页面级假名上下文（修「纯汉字日文被静默跳过」的已知限制）----
+  it('pageHasKana 探测：整页含假名/片假名时为 true，纯汉字页为 false', () => {
+    expect(pageHasKana(mount('<p>本日はお日柄もよく</p><p>東京タワー</p>'))).toBe(true);
+    expect(pageHasKana(mount('<p>東京都港区赤坂</p><p>漢字 123 abc</p>'))).toBe(false);
+    expect(pageHasKana(mount('<p>这是一段纯中文内容</p>'))).toBe(false);
+    expect(pageHasKana(mount(''))).toBe(false);
+  });
+
+  it('pageHasKana:true 时，纯汉字段落不因"疑似已是中文"被跳过', () => {
+    const root = mount('<p>日本橋</p><p>日本語です</p>');
+    // 默认（无页面上下文）：'日本橋' 无简繁特征、被判定为"已是 zh"→ 跳过。
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).not.toContain('日本橋');
+    // 页面级判定为"有假名"时放行：'日本橋' 很可能只是不用假名的日文。
+    expect(collectSegments(root, { targetLang: 'zh-Hans', pageHasKana: true }).map((s) => s.text)).toContain(
+      '日本橋',
+    );
+  });
+
+  it('pageHasKana:false（无假名页）保留旧行为：纯中文段仍整体跳过', () => {
+    const root = mount('<p>这是一段中文</p><p>另一段中文内容</p>');
+    expect(collectSegments(root, { targetLang: 'zh-Hans', pageHasKana: false })).toEqual([]);
+  });
+
   it('混合内容里容器自己的直接文本也成段，且保持文档顺序', () => {
     const root = mount(
       '<div>Article intro sentence here<p>Body paragraph one is here</p>Article outro sentence here</div>',
@@ -582,7 +605,7 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/content/extractor.ts
-import { isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
+import { containsKana, isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
 
 /** 译文宿主的落点。整元素段落交给渲染器按布局规则决定；松散文本段落必须显式给出位置。 */
 export type SegmentAnchor =
@@ -615,7 +638,26 @@ export interface ExtractedSegment {
 
 export interface ExtractorOptions {
   targetLang: string;
+  /**
+   * 页面级判定：**整页**文本里出现过假名（由 {@link pageHasKana} 在采集前算一次，
+   * 调用方负责本轮复用）。true 时本段的"看起来已是目标语言"不再构成跳过理由——
+   * 汉字是中日共用的书写系统，有假名的页面上纯汉字段落更可能是日文。
+   * 省略/false 时行为与逐段判据完全相同。
+   */
+  pageHasKana?: boolean;
   shouldSkipText?: (text: string) => boolean;
+}
+
+/**
+ * 廉价页面级扫描：给定根（通常是 `document.body`）之下是否出现过假名/片假名。
+ *
+ * 读的是整棵子树的 `textContent`——**整页一次**的量，不是每段一次，调用方必须
+ * 缓存本轮结果（`translatePage` 拿它喂采集，增量轮直接沿用，见 index.ts）。
+ * 方向上只会多翻不会漏翻：`<script>`/隐藏节点里的假名也算数（宁可保守），
+ * 换来的是日文页面不再整片静默没有译文。
+ */
+export function pageHasKana(root: ParentNode): boolean {
+  return containsKana(root.textContent ?? '');
 }
 
 /** 这些标签里的内容一律不翻译：代码、表单控件、多媒体与元数据。 */
@@ -966,7 +1008,8 @@ function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegm
   const push = (element: Element, text: string, anchor: SegmentAnchor, textRun: boolean): boolean => {
     if (!isTranslatableText(text)) return false;
     if (options.shouldSkipText?.(text)) return false;
-    if (shouldSkip(text, options.targetLang)) return false;
+    // 页面级判定为"本页含假名"时，本轮关闭"看起来已是目标语言"的跳过（见 ExtractorOptions）。
+    if (shouldSkip(text, options.targetLang, { allowSameScriptSkip: !options.pageHasKana })) return false;
 
     const id = `jy-${segments.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
     element.setAttribute('data-jy-id', id);
@@ -1419,6 +1462,38 @@ describe('DomRenderer 状态与还原', () => {
     const host = document.querySelector('jy-translation') as Element;
     expect(bodyTextOf(host)).toContain('网络错误');
     expect(host.shadowRoot?.querySelector('.jy-retry')).not.toBeNull();
+  });
+
+  /**
+   * 实测渲染成「接口限流，请稍后重试重试」：`margin-left` 只是**视觉**分隔，
+   * 文本层面错误文案与按钮的「重试」直接相连——复制译文连着"重试"、读屏念"重试重试"、
+   * 禁用样式时挤成一团。要在按钮前补一个真正的空格文本节点，双语与仅译文两套样式都要。
+   */
+  it('双语模式：错误文案与重试按钮之间有空格文本节点（复制/读屏不粘连）', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '接口限流，请稍后重试');
+
+    const host = document.querySelector('jy-translation') as Element;
+    // textContent 是"复制/读屏"看到的整体文本：两个"重试"之间必须有分隔的空格。
+    expect(bodyTextOf(host)).toBe('接口限流，请稍后重试 重试');
+    // 不挂按钮的失败（canRetry:false）不许多出这个空格。
+    const plain = paragraph('Second text');
+    const plainRenderer = new DomRenderer(document, 'bilingual');
+    plainRenderer.mount(plain, 'pending');
+    plainRenderer.fail(plain.id, '缺少 API Key', false);
+    expect(bodyTextOf(document.querySelectorAll('jy-translation')[1] as Element)).toBe('缺少 API Key');
+  });
+
+  it('仅译文模式：同样以空格文本节点分隔错误文案与重试按钮', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '接口限流，请稍后重试');
+
+    const host = segment.element.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toBe('接口限流，请稍后重试 重试');
   });
 
   it('点击重试按钮触发回调', () => {
@@ -2309,6 +2384,14 @@ export class DomRenderer {
       body.classList.add('jy-error');
       body.textContent = text ?? '翻译失败';
       if (!canRetry) return;
+      /**
+       * 真正的空格文本节点，而不是只靠 CSS 的 `margin-left`：
+       * 实测「接口限流，请稍后重试」+ 按钮「重试」在文本层面连成"重试重试"——
+       * 复制走的就是这串文本、读屏逐字念出来、按钮被禁用样式压掉间距时直接在页面上
+       * 贴成一团。两套译文样式（双语/仅译文）共用这条路径，所以补一次两边都好。
+       * 不可重试的分支在上面就 return 了，不挂按钮也就不会多出这个空格。
+       */
+      body.append(this.document.createTextNode(' '));
       const button = this.document.createElement('button');
       button.className = 'jy-retry';
       button.type = 'button';

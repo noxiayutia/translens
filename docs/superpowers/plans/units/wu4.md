@@ -936,7 +936,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
+  PROVIDER_PRESETS,
   SETTINGS_KEY,
+  isAllowedBaseUrl,
   loadSettings,
   loadUiSettings,
   mergeSettings,
@@ -1176,6 +1178,58 @@ describe('无扩展环境下的默认存储', () => {
     await expect(saveSettings(DEFAULT_SETTINGS)).rejects.toThrow(/StorageArea/);
   });
 });
+
+/**
+ * 服务商预设（用户实测把模型名填成 `deepseek`（正确值 `deepseek-chat`）拿到
+ * 一个界面上看不出原因的 HTTP 400 —— 这类错误用一个下拉就能防住）。
+ * 存储字段 `providerPreset` 默认 `custom`：**老数据没有这个字段，加载不报错、
+ * 已有用户的存储值一个都不动**（mergeSettings 逐字段补齐的老规矩）。
+ */
+describe('服务商预设（providerPreset）', () => {
+  it('默认与老数据（缺字段）都是 custom，不报错也不改别人的值', () => {
+    expect(DEFAULT_SETTINGS.providerPreset).toBe('custom');
+    const legacy = mergeSettings({ targetLang: 'ja', engineConfig: { baseUrl: 'https://a.example/v1', model: '我的模型' } });
+    expect(legacy.providerPreset).toBe('custom');
+    // 补齐预设字段不能顺手改写已有字段。
+    expect(legacy.targetLang).toBe('ja');
+    expect(legacy.engineConfig).toEqual({ apiKey: '', baseUrl: 'https://a.example/v1', model: '我的模型' });
+  });
+
+  it('合法值原样保留；未知/脏值回落 custom（而不是崩或写进脏值）', () => {
+    for (const id of ['custom', 'openai', 'deepseek', 'ollama']) {
+      expect(mergeSettings({ providerPreset: id }).providerPreset).toBe(id);
+    }
+    expect(mergeSettings({ providerPreset: 'claude' }).providerPreset).toBe('custom');
+    expect(mergeSettings({ providerPreset: 42 }).providerPreset).toBe('custom');
+    expect(mergeSettings({ providerPreset: null }).providerPreset).toBe('custom');
+  });
+
+  it('loadSettings 读老存储（没有该字段）后能原样往返保存', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, targetLang: 'ja' } });
+    const loaded = await loadSettings(area);
+    expect(loaded.providerPreset).toBe('custom');
+    await saveSettings(loaded, area);
+    expect((await loadSettings(area)).providerPreset).toBe('custom');
+  });
+
+  it('预填值逐字钉住：OpenAI / DeepSeek / Ollama 的地址与模型名（不确定的服务商不放）', () => {
+    const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
+    expect([...byId.keys()]).toEqual(['custom', 'openai', 'deepseek', 'ollama']);
+    expect(byId.get('openai')).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
+    expect(byId.get('deepseek')).toMatchObject({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(byId.get('ollama')).toMatchObject({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
+    // 自定义：不预填，保持现状。
+    expect(byId.get('custom')?.baseUrl).toBeUndefined();
+    expect(byId.get('custom')?.model).toBeUndefined();
+  });
+
+  it('每个预填地址都能通过存储层的 BaseURL 校验（填进去不会反被归一化吞掉）', () => {
+    for (const preset of PROVIDER_PRESETS) {
+      if (preset.baseUrl !== undefined) expect(isAllowedBaseUrl(preset.baseUrl)).toBe(true);
+    }
+  });
+});
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1202,6 +1256,38 @@ export interface EngineConfigSettings {
   baseUrl: string;
   model: string;
 }
+
+/** 服务商预设的 id。`custom` = 不预填，用户自己填什么是什么。 */
+export type ProviderPresetId = 'custom' | 'openai' | 'deepseek' | 'ollama';
+
+/**
+ * 服务商预设：选中后**自动填入**接口地址与模型名。
+ *
+ * 动机是真实踩过的坑：用户在模型名里填 `deepseek`（正确值是 `deepseek-chat`），
+ * 拿到一个界面上看不出原因的 `HTTP 400`。这类错误完全可以用一次下拉选择消除。
+ * 只放**确定无疑**的三家（OpenAI / DeepSeek / Ollama 本机默认端口）——
+ * 拿不准的服务商宁可不放，也不预填一个错的模型名。
+ *
+ * 预设只是**填写捷径**，不是锁定：选完之后接口地址与模型名照常手改，
+ * 改完即视为自定义（设置页负责把下拉翻回 `custom`，并把用户的修改当用户的修改看待——
+ * 预设永远不许把它覆盖回去）。默认值是 `custom`，老用户的存储里根本没有这个字段，
+ * 加载按 `custom` 补齐，任何已存值都不会被改动。
+ */
+export interface ProviderPreset {
+  id: ProviderPresetId;
+  label: string;
+  /** 预填的接口地址；`custom` 没有（undefined = 不动任何字段）。 */
+  baseUrl?: string;
+  /** 预填的模型名；`custom` 没有。 */
+  model?: string;
+}
+
+export const PROVIDER_PRESETS: ReadonlyArray<ProviderPreset> = [
+  { id: 'custom', label: '自定义' },
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { id: 'ollama', label: 'Ollama（本机）', baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+];
 
 /**
  * 译文显示方式。
@@ -1234,6 +1320,12 @@ export interface Settings {
   version: number;
   engineId: string;
   engineConfig: EngineConfigSettings;
+  /**
+   * 设置页「服务商」下拉的当前选择（见 {@link PROVIDER_PRESETS}）。
+   * 它只是**填表捷径的记录**：翻译链路完全不看它，引擎与请求参数照旧由
+   * `engineId` + `engineConfig` 决定；改它不会改变任何已存的地址/模型/Key。
+   */
+  providerPreset: ProviderPresetId;
   targetLang: string;
   sourceLang: string;
   displayMode: DisplayMode;
@@ -1258,6 +1350,7 @@ export const DEFAULT_SETTINGS: Settings = {
   version: CURRENT_VERSION,
   engineId: 'google',
   engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  providerPreset: 'custom',
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
   displayMode: 'translated-only',
@@ -1362,8 +1455,15 @@ function pickGlossary(value: unknown): Term[] {
   return out;
 }
 
-function pickEngineConfig(value: unknown): EngineConfigSettings {
-  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
+/** 服务商预设的读取：认不出来的一切值（含老数据缺字段）都回落 `custom`。 */
+function pickProviderPreset(value: unknown): ProviderPresetId {
+  if (typeof value === 'string' && PROVIDER_PRESETS.some((preset) => preset.id === value)) {
+    return value as ProviderPresetId;
+  }
+  return DEFAULT_SETTINGS.providerPreset;
+}
+
+function pickEngineConfig(value: unknown): EngineConfigSettings {  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
   return {
     apiKey: pickString(raw.apiKey, DEFAULT_SETTINGS.engineConfig.apiKey),
     baseUrl: pickBaseUrl(raw.baseUrl),
@@ -1398,6 +1498,7 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
     version: pickVersion(version ?? input.version),
     engineId: pickString(input.engineId, DEFAULT_SETTINGS.engineId),
     engineConfig: pickEngineConfig(input.engineConfig),
+    providerPreset: pickProviderPreset(input.providerPreset),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
     displayMode: pickDisplayMode(input.displayMode),
@@ -1658,6 +1759,14 @@ export const MSG = {
   GET_PAGE_STATE: 'jinyi:get-page-state',
   /** 右键菜单 → 内容脚本：翻译选中文本 */
   TRANSLATE_SELECTION: 'jinyi:translate-selection',
+  /**
+   * 弹窗 → 内容脚本：「悬停翻译 / 划词翻译」开关改了。
+   *
+   * 这两个开关控制的是**监听器挂没挂**，只写进设置不会让当前页面已经挂上/缺席的监听
+   * 自己出现或消失——弹窗必须把改动推给内容脚本，让它当场重新挂/摘，
+   * 否则用户拨了开关、页面却纹丝不动（规格 §7.1 要求"改动即时生效"）。
+   */
+  APPLY_SETTINGS: 'jinyi:apply-settings',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];

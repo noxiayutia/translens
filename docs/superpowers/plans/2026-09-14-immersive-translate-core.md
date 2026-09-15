@@ -488,7 +488,14 @@ git commit -m "feat(core): 稳定哈希与缓存 key 组装"
 ```ts
 // tests/core/lang.test.ts
 import { describe, expect, it } from 'vitest';
-import { detectHanVariant, detectScript, isTranslatableText, normalizeText, shouldSkip } from '../../src/core/lang';
+import {
+  containsKana,
+  detectHanVariant,
+  detectScript,
+  isTranslatableText,
+  normalizeText,
+  shouldSkip,
+} from '../../src/core/lang';
 
 describe('detectScript', () => {
   it('识别纯中文', () => {
@@ -671,6 +678,50 @@ describe('shouldSkip', () => {
     expect(shouldSkip('没有简繁特征的纯中文', 'zh-Hans')).toBe(true);
   });
 });
+
+/**
+ * `allowSameScriptSkip` 是页面级上下文的入口（修「纯汉字日文被静默跳过」那条已知限制）：
+ * 内容脚本扫一遍整页发现假名时传 false——本页的"像中文"不再等于"是中文"，
+ * 那些很可能只是不用假名的日文。方向上只会**多翻**，不会少翻。
+ */
+describe('shouldSkip 的 allowSameScriptSkip 选项', () => {
+  it('关掉后：目标中文的纯汉字段落不再因"看起来已是中文"而跳过', () => {
+    // '日本橋三丁目' 整段没有任何简繁特征字（detectHanVariant 判 unknown），
+    // 默认路径会按字符集判定跳过——这正是日文页面上被吞掉的那类段落。
+    expect(shouldSkip('日本橋三丁目', 'zh-Hans')).toBe(true);
+    expect(shouldSkip('日本橋三丁目', 'zh-Hans', { allowSameScriptSkip: false })).toBe(false);
+    // zh-Hant 下「東」是繁体特征字、同样必跳的段落也一样放行。
+    expect(shouldSkip('東京都港区', 'zh-Hant')).toBe(true);
+    expect(shouldSkip('東京都港区', 'zh-Hant', { allowSameScriptSkip: false })).toBe(false);
+  });
+
+  it('非中文目标的"已是目标语言"跳过同样受该开关约束（同一条规则，不留分支）', () => {
+    expect(shouldSkip('This is English', 'en')).toBe(true);
+    expect(shouldSkip('This is English', 'en', { allowSameScriptSkip: false })).toBe(false);
+  });
+
+  it('默认（不传）与显式 true 的行为逐字不变', () => {
+    expect(shouldSkip('日本橋三丁目', 'zh-Hans', { allowSameScriptSkip: true })).toBe(true);
+    expect(shouldSkip('这是一段中文', 'zh-Hans', {})).toBe(true);
+    expect(shouldSkip('This is English', 'zh-Hans', { allowSameScriptSkip: false })).toBe(false);
+    // 关掉开关只会让"跳过"变少，永远不会让它变多。
+    expect(shouldSkip('Hello world 世界', 'zh-Hans', { allowSameScriptSkip: false })).toBe(false);
+  });
+});
+
+describe('containsKana（页面级假名判据）', () => {
+  it('平假名、片假名都算', () => {
+    expect(containsKana('本日はお日柄もよく')).toBe(true);
+    expect(containsKana('東京タワー')).toBe(true);
+    expect(containsKana('ｵﾗｵﾗ')).toBe(true); // 半角片假名（老站点与缩写里都见过）
+  });
+
+  it('纯汉字、假名之外的字符不算', () => {
+    expect(containsKana('東京都港区赤坂')).toBe(false);
+    expect(containsKana('Hello 世界 123！？')).toBe(false);
+    expect(containsKana('')).toBe(false);
+  });
+});
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -834,6 +885,23 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
 export type HanVariant = 'hans' | 'hant' | 'unknown';
 
 /**
+ * 平假名 / 片假名（含半角片假名）的码点区间。
+ * 与 `SCRIPT_RANGES` 里 'ja' 的判定同源再加半角段：半角片假名在老站点与一些
+ * 站內缩写（`ｵﾗ`、`ｱﾃ`）里仍频繁出现，只认全角会漏。
+ */
+const KANA = /[\u3040-\u30ff\uff66-\uff9d]/;
+
+/**
+ * 文本里是否出现过假名。**页面级**判据的构件：调用方在采集前对整页文本扫一遍，
+ * 把结果作为本轮上下文传回来（见 `shouldSkip` 的 `allowSameScriptSkip`）。
+ * 单遍正则、命中即停，拿得起重复调用——但它每次看的都是"一整页"的量，
+ * 所以每个调用点都该自己做缓存，不许逐段跑。
+ */
+export function containsKana(text: string): boolean {
+  return KANA.test(text);
+}
+
+/**
  * 只在某一字体出现的高频字。两组**严格一一对应**：`HANS_ONLY[i]` 与 `HANT_ONLY[i]`
  * 是同一个字的两种写法，增删必须成对，否则计数会天然偏向更长的那一组。
  * 选的都是在两岸三地日常文本里高频出现的字，单段文本里出现一两个就足以定性。
@@ -871,6 +939,20 @@ function targetHanVariant(code: string): HanVariant | undefined {
   return undefined;
 }
 
+/** `shouldSkip` 的本轮上下文选项。 */
+export interface ShouldSkipOptions {
+  /**
+   * 是否允许因「看起来已经是目标语言」而跳过本段。默认 `true`（历史行为）。
+   *
+   * 传 `false` 的正当性来自**页面级**信息：整页出现过假名时，纯汉字段落很可能是
+   * 「只用汉字书写的日文」，而单段层面的 `zh` 检出不再等于"它已经是中文"——
+   * 这一轮就不因字符集/简繁变体的相似而跳过（宁可多翻不可漏翻：这个开关只会
+   * **增加**翻译，永远不会减少）。页面级判定的采集在内容脚本层（那是宿主层的职责），
+   * 本函数保持纯函数：判定结果由调用方算好传进来。
+   */
+  allowSameScriptSkip?: boolean;
+}
+
 /**
  * 段落已经是指定目标语言时无需翻译。
  * 非中文目标：只有目标字符集严格领先才跳过，与其它字符集同分时宁可翻译——
@@ -879,21 +961,17 @@ function targetHanVariant(code: string): HanVariant | undefined {
  * 靠 detectHanVariant 分辨简繁——文本与目标**同变体**才跳过；异变体必须翻译，
  * 简繁互转正是在这一步发生的，一刀切跳过会让它变成静默 no-op。
  *
- * 已知限制：**纯汉字、不含假名的日文**会被判成中文。
- * `'東京都港区赤坂'` 这类只有汉字的日文，字符全部落在 `SCRIPT_RANGES` 的 CJK 区间里，
- * `detectScript` 只能给出 `'zh'`，于是目标为中文时这里把它当成「已是目标语言」：
- * `zh-Hant` 下必跳（東是繁体特征字），`zh-Hans` 下只要整段没有特征字也跳，
- * 这一整段就永远不翻。
- *
- * 这在**单段文本**层面不可判：汉字是简繁日共用的书写系统，不看上下文没有任何依据，
- * 加什么启发式都只是换一种错法。唯一可靠的办法是文档级上下文——整页出现过假名
- * 就把全页按日文处理，段落再继承这个判断。那要求 `shouldSkip` 拿到整页信息
- * （改签名或引入状态），属于内容脚本接线的设计。Plan 1 的 core 是纯函数层，
- * 只回答「这一段像不像目标语言」，不持有页面状态，所以不做；
- * 等它真正接到内容脚本上（目前尚无生产调用点）再在**调用方**补页面级判定，
- * 不要在这里塞启发式。
+ * 「**纯汉字、无假名的日文**会被判成中文」曾是单段层面的已知限制（'東京都港区赤坂'
+ * 这类段落在中文目标下整段跳过，那片区域永远没有译文）：汉字是简繁日共用的书写系统，
+ * 不看页面上下文没有任何可靠依据，加启发式只是换一种错法。
+ * 现在它由调用方带页面级上下文解决：内容脚本采集前扫一遍整页假名（{@link containsKana}），
+ * 页面含假名时本轮传 `allowSameScriptSkip: false`。本函数仍然只回答「这一段像不像目标
+ * 语言」，不持有任何宿主状态。
  */
-export function shouldSkip(text: string, targetLang: string): boolean {
+export function shouldSkip(text: string, targetLang: string, options: ShouldSkipOptions = {}): boolean {
+  // 本轮的页面级上下文判定"相似不再等于同语言"：所有跳过分支一并关闭（见选项注释）。
+  if (options.allowSameScriptSkip === false) return false;
+
   const code = targetLang.toLowerCase();
   const expected = TARGET_SCRIPT[baseLang(code)];
   if (expected === undefined) return false;
@@ -3251,7 +3329,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
+  PROVIDER_PRESETS,
   SETTINGS_KEY,
+  isAllowedBaseUrl,
   loadSettings,
   loadUiSettings,
   mergeSettings,
@@ -3491,6 +3571,58 @@ describe('无扩展环境下的默认存储', () => {
     await expect(saveSettings(DEFAULT_SETTINGS)).rejects.toThrow(/StorageArea/);
   });
 });
+
+/**
+ * 服务商预设（用户实测把模型名填成 `deepseek`（正确值 `deepseek-chat`）拿到
+ * 一个界面上看不出原因的 HTTP 400 —— 这类错误用一个下拉就能防住）。
+ * 存储字段 `providerPreset` 默认 `custom`：**老数据没有这个字段，加载不报错、
+ * 已有用户的存储值一个都不动**（mergeSettings 逐字段补齐的老规矩）。
+ */
+describe('服务商预设（providerPreset）', () => {
+  it('默认与老数据（缺字段）都是 custom，不报错也不改别人的值', () => {
+    expect(DEFAULT_SETTINGS.providerPreset).toBe('custom');
+    const legacy = mergeSettings({ targetLang: 'ja', engineConfig: { baseUrl: 'https://a.example/v1', model: '我的模型' } });
+    expect(legacy.providerPreset).toBe('custom');
+    // 补齐预设字段不能顺手改写已有字段。
+    expect(legacy.targetLang).toBe('ja');
+    expect(legacy.engineConfig).toEqual({ apiKey: '', baseUrl: 'https://a.example/v1', model: '我的模型' });
+  });
+
+  it('合法值原样保留；未知/脏值回落 custom（而不是崩或写进脏值）', () => {
+    for (const id of ['custom', 'openai', 'deepseek', 'ollama']) {
+      expect(mergeSettings({ providerPreset: id }).providerPreset).toBe(id);
+    }
+    expect(mergeSettings({ providerPreset: 'claude' }).providerPreset).toBe('custom');
+    expect(mergeSettings({ providerPreset: 42 }).providerPreset).toBe('custom');
+    expect(mergeSettings({ providerPreset: null }).providerPreset).toBe('custom');
+  });
+
+  it('loadSettings 读老存储（没有该字段）后能原样往返保存', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, targetLang: 'ja' } });
+    const loaded = await loadSettings(area);
+    expect(loaded.providerPreset).toBe('custom');
+    await saveSettings(loaded, area);
+    expect((await loadSettings(area)).providerPreset).toBe('custom');
+  });
+
+  it('预填值逐字钉住：OpenAI / DeepSeek / Ollama 的地址与模型名（不确定的服务商不放）', () => {
+    const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
+    expect([...byId.keys()]).toEqual(['custom', 'openai', 'deepseek', 'ollama']);
+    expect(byId.get('openai')).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
+    expect(byId.get('deepseek')).toMatchObject({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(byId.get('ollama')).toMatchObject({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
+    // 自定义：不预填，保持现状。
+    expect(byId.get('custom')?.baseUrl).toBeUndefined();
+    expect(byId.get('custom')?.model).toBeUndefined();
+  });
+
+  it('每个预填地址都能通过存储层的 BaseURL 校验（填进去不会反被归一化吞掉）', () => {
+    for (const preset of PROVIDER_PRESETS) {
+      if (preset.baseUrl !== undefined) expect(isAllowedBaseUrl(preset.baseUrl)).toBe(true);
+    }
+  });
+});
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -3517,6 +3649,38 @@ export interface EngineConfigSettings {
   baseUrl: string;
   model: string;
 }
+
+/** 服务商预设的 id。`custom` = 不预填，用户自己填什么是什么。 */
+export type ProviderPresetId = 'custom' | 'openai' | 'deepseek' | 'ollama';
+
+/**
+ * 服务商预设：选中后**自动填入**接口地址与模型名。
+ *
+ * 动机是真实踩过的坑：用户在模型名里填 `deepseek`（正确值是 `deepseek-chat`），
+ * 拿到一个界面上看不出原因的 `HTTP 400`。这类错误完全可以用一次下拉选择消除。
+ * 只放**确定无疑**的三家（OpenAI / DeepSeek / Ollama 本机默认端口）——
+ * 拿不准的服务商宁可不放，也不预填一个错的模型名。
+ *
+ * 预设只是**填写捷径**，不是锁定：选完之后接口地址与模型名照常手改，
+ * 改完即视为自定义（设置页负责把下拉翻回 `custom`，并把用户的修改当用户的修改看待——
+ * 预设永远不许把它覆盖回去）。默认值是 `custom`，老用户的存储里根本没有这个字段，
+ * 加载按 `custom` 补齐，任何已存值都不会被改动。
+ */
+export interface ProviderPreset {
+  id: ProviderPresetId;
+  label: string;
+  /** 预填的接口地址；`custom` 没有（undefined = 不动任何字段）。 */
+  baseUrl?: string;
+  /** 预填的模型名；`custom` 没有。 */
+  model?: string;
+}
+
+export const PROVIDER_PRESETS: ReadonlyArray<ProviderPreset> = [
+  { id: 'custom', label: '自定义' },
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { id: 'ollama', label: 'Ollama（本机）', baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+];
 
 /**
  * 译文显示方式。
@@ -3549,6 +3713,12 @@ export interface Settings {
   version: number;
   engineId: string;
   engineConfig: EngineConfigSettings;
+  /**
+   * 设置页「服务商」下拉的当前选择（见 {@link PROVIDER_PRESETS}）。
+   * 它只是**填表捷径的记录**：翻译链路完全不看它，引擎与请求参数照旧由
+   * `engineId` + `engineConfig` 决定；改它不会改变任何已存的地址/模型/Key。
+   */
+  providerPreset: ProviderPresetId;
   targetLang: string;
   sourceLang: string;
   displayMode: DisplayMode;
@@ -3573,6 +3743,7 @@ export const DEFAULT_SETTINGS: Settings = {
   version: CURRENT_VERSION,
   engineId: 'google',
   engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  providerPreset: 'custom',
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
   displayMode: 'translated-only',
@@ -3677,8 +3848,15 @@ function pickGlossary(value: unknown): Term[] {
   return out;
 }
 
-function pickEngineConfig(value: unknown): EngineConfigSettings {
-  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
+/** 服务商预设的读取：认不出来的一切值（含老数据缺字段）都回落 `custom`。 */
+function pickProviderPreset(value: unknown): ProviderPresetId {
+  if (typeof value === 'string' && PROVIDER_PRESETS.some((preset) => preset.id === value)) {
+    return value as ProviderPresetId;
+  }
+  return DEFAULT_SETTINGS.providerPreset;
+}
+
+function pickEngineConfig(value: unknown): EngineConfigSettings {  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
   return {
     apiKey: pickString(raw.apiKey, DEFAULT_SETTINGS.engineConfig.apiKey),
     baseUrl: pickBaseUrl(raw.baseUrl),
@@ -3713,6 +3891,7 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
     version: pickVersion(version ?? input.version),
     engineId: pickString(input.engineId, DEFAULT_SETTINGS.engineId),
     engineConfig: pickEngineConfig(input.engineConfig),
+    providerPreset: pickProviderPreset(input.providerPreset),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
     displayMode: pickDisplayMode(input.displayMode),
@@ -3973,6 +4152,14 @@ export const MSG = {
   GET_PAGE_STATE: 'jinyi:get-page-state',
   /** 右键菜单 → 内容脚本：翻译选中文本 */
   TRANSLATE_SELECTION: 'jinyi:translate-selection',
+  /**
+   * 弹窗 → 内容脚本：「悬停翻译 / 划词翻译」开关改了。
+   *
+   * 这两个开关控制的是**监听器挂没挂**，只写进设置不会让当前页面已经挂上/缺席的监听
+   * 自己出现或消失——弹窗必须把改动推给内容脚本，让它当场重新挂/摘，
+   * 否则用户拨了开关、页面却纹丝不动（规格 §7.1 要求"改动即时生效"）。
+   */
+  APPLY_SETTINGS: 'jinyi:apply-settings',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -5060,7 +5247,7 @@ git commit -m "feat(background): 消息路由、快捷键与右键菜单"
  * @vitest-environment jsdom
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { collectSegments, isBlockDisplay } from '../../src/content/extractor';
+import { collectSegments, isBlockDisplay, pageHasKana } from '../../src/content/extractor';
 
 function mount(html: string): HTMLElement {
   document.body.innerHTML = html;
@@ -5371,6 +5558,29 @@ describe('collectSegments', () => {
     expect(segments.map((s) => s.text)).toEqual(['Keep me']);
   });
 
+  // ---- 页面级假名上下文（修「纯汉字日文被静默跳过」的已知限制）----
+  it('pageHasKana 探测：整页含假名/片假名时为 true，纯汉字页为 false', () => {
+    expect(pageHasKana(mount('<p>本日はお日柄もよく</p><p>東京タワー</p>'))).toBe(true);
+    expect(pageHasKana(mount('<p>東京都港区赤坂</p><p>漢字 123 abc</p>'))).toBe(false);
+    expect(pageHasKana(mount('<p>这是一段纯中文内容</p>'))).toBe(false);
+    expect(pageHasKana(mount(''))).toBe(false);
+  });
+
+  it('pageHasKana:true 时，纯汉字段落不因"疑似已是中文"被跳过', () => {
+    const root = mount('<p>日本橋</p><p>日本語です</p>');
+    // 默认（无页面上下文）：'日本橋' 无简繁特征、被判定为"已是 zh"→ 跳过。
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).not.toContain('日本橋');
+    // 页面级判定为"有假名"时放行：'日本橋' 很可能只是不用假名的日文。
+    expect(collectSegments(root, { targetLang: 'zh-Hans', pageHasKana: true }).map((s) => s.text)).toContain(
+      '日本橋',
+    );
+  });
+
+  it('pageHasKana:false（无假名页）保留旧行为：纯中文段仍整体跳过', () => {
+    const root = mount('<p>这是一段中文</p><p>另一段中文内容</p>');
+    expect(collectSegments(root, { targetLang: 'zh-Hans', pageHasKana: false })).toEqual([]);
+  });
+
   it('混合内容里容器自己的直接文本也成段，且保持文档顺序', () => {
     const root = mount(
       '<div>Article intro sentence here<p>Body paragraph one is here</p>Article outro sentence here</div>',
@@ -5630,7 +5840,7 @@ Expected: FAIL — 模块不存在。
 
 ```ts
 // src/content/extractor.ts
-import { isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
+import { containsKana, isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
 
 /** 译文宿主的落点。整元素段落交给渲染器按布局规则决定；松散文本段落必须显式给出位置。 */
 export type SegmentAnchor =
@@ -5663,7 +5873,26 @@ export interface ExtractedSegment {
 
 export interface ExtractorOptions {
   targetLang: string;
+  /**
+   * 页面级判定：**整页**文本里出现过假名（由 {@link pageHasKana} 在采集前算一次，
+   * 调用方负责本轮复用）。true 时本段的"看起来已是目标语言"不再构成跳过理由——
+   * 汉字是中日共用的书写系统，有假名的页面上纯汉字段落更可能是日文。
+   * 省略/false 时行为与逐段判据完全相同。
+   */
+  pageHasKana?: boolean;
   shouldSkipText?: (text: string) => boolean;
+}
+
+/**
+ * 廉价页面级扫描：给定根（通常是 `document.body`）之下是否出现过假名/片假名。
+ *
+ * 读的是整棵子树的 `textContent`——**整页一次**的量，不是每段一次，调用方必须
+ * 缓存本轮结果（`translatePage` 拿它喂采集，增量轮直接沿用，见 index.ts）。
+ * 方向上只会多翻不会漏翻：`<script>`/隐藏节点里的假名也算数（宁可保守），
+ * 换来的是日文页面不再整片静默没有译文。
+ */
+export function pageHasKana(root: ParentNode): boolean {
+  return containsKana(root.textContent ?? '');
 }
 
 /** 这些标签里的内容一律不翻译：代码、表单控件、多媒体与元数据。 */
@@ -6014,7 +6243,8 @@ function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegm
   const push = (element: Element, text: string, anchor: SegmentAnchor, textRun: boolean): boolean => {
     if (!isTranslatableText(text)) return false;
     if (options.shouldSkipText?.(text)) return false;
-    if (shouldSkip(text, options.targetLang)) return false;
+    // 页面级判定为"本页含假名"时，本轮关闭"看起来已是目标语言"的跳过（见 ExtractorOptions）。
+    if (shouldSkip(text, options.targetLang, { allowSameScriptSkip: !options.pageHasKana })) return false;
 
     const id = `jy-${segments.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
     element.setAttribute('data-jy-id', id);
@@ -6467,6 +6697,38 @@ describe('DomRenderer 状态与还原', () => {
     const host = document.querySelector('jy-translation') as Element;
     expect(bodyTextOf(host)).toContain('网络错误');
     expect(host.shadowRoot?.querySelector('.jy-retry')).not.toBeNull();
+  });
+
+  /**
+   * 实测渲染成「接口限流，请稍后重试重试」：`margin-left` 只是**视觉**分隔，
+   * 文本层面错误文案与按钮的「重试」直接相连——复制译文连着"重试"、读屏念"重试重试"、
+   * 禁用样式时挤成一团。要在按钮前补一个真正的空格文本节点，双语与仅译文两套样式都要。
+   */
+  it('双语模式：错误文案与重试按钮之间有空格文本节点（复制/读屏不粘连）', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '接口限流，请稍后重试');
+
+    const host = document.querySelector('jy-translation') as Element;
+    // textContent 是"复制/读屏"看到的整体文本：两个"重试"之间必须有分隔的空格。
+    expect(bodyTextOf(host)).toBe('接口限流，请稍后重试 重试');
+    // 不挂按钮的失败（canRetry:false）不许多出这个空格。
+    const plain = paragraph('Second text');
+    const plainRenderer = new DomRenderer(document, 'bilingual');
+    plainRenderer.mount(plain, 'pending');
+    plainRenderer.fail(plain.id, '缺少 API Key', false);
+    expect(bodyTextOf(document.querySelectorAll('jy-translation')[1] as Element)).toBe('缺少 API Key');
+  });
+
+  it('仅译文模式：同样以空格文本节点分隔错误文案与重试按钮', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'pending');
+    renderer.fail(segment.id, '接口限流，请稍后重试');
+
+    const host = segment.element.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toBe('接口限流，请稍后重试 重试');
   });
 
   it('点击重试按钮触发回调', () => {
@@ -7357,6 +7619,14 @@ export class DomRenderer {
       body.classList.add('jy-error');
       body.textContent = text ?? '翻译失败';
       if (!canRetry) return;
+      /**
+       * 真正的空格文本节点，而不是只靠 CSS 的 `margin-left`：
+       * 实测「接口限流，请稍后重试」+ 按钮「重试」在文本层面连成"重试重试"——
+       * 复制走的就是这串文本、读屏逐字念出来、按钮被禁用样式压掉间距时直接在页面上
+       * 贴成一团。两套译文样式（双语/仅译文）共用这条路径，所以补一次两边都好。
+       * 不可重试的分支在上面就 return 了，不挂按钮也就不会多出这个空格。
+       */
+      body.append(this.document.createTextNode(' '));
       const button = this.document.createElement('button');
       button.className = 'jy-retry';
       button.type = 'button';
@@ -7512,7 +7782,7 @@ import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
-import { collectSegments, type ExtractedSegment } from './extractor';
+import { collectSegments, pageHasKana, type ExtractedSegment } from './extractor';
 import { createHoverTranslator, type HoverController } from './hover';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
@@ -7530,15 +7800,13 @@ import { toast } from './toast';
  *   如果 running 一直卡到那一轮跑完，用户"还原 → 再翻译"（Alt+T 连按两下就是这条路径）
  *   期间的所有请求都会被入口守卫悄悄吞掉——监听器照常回响应，页面什么都不做。
  * - **旧的一轮不能回来干扰新的一轮**。被接管的那一轮在 await 返回后要安静退出：
- *   不写状态（renderer / lastError 属于新的一轮）、也不能在 finally 里把新的一轮的
+ *   不写状态（renderer / 页面级提示属于新的一轮）、也不能在 finally 里把新的一轮的
  *   running 守卫清掉（否则新的一轮在飞时又放进来第三个 renderer）。
  */
 let generation = 0;
 let renderer: DomRenderer | null = null;
 let segments: ExtractedSegment[] = [];
 let running = false;
-/** 本轮翻译攒下的页面级提示：整轮跑完只弹一次，见 `translatePage` 末尾。 */
-let lastError: string | null = null;
 let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
 /**
  * 页面翻译那一刻的**设置快照**。增量翻译只复用这份快照，绝不重读设置：
@@ -7546,6 +7814,16 @@ let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
  * （改动对新页面生效，本要重来请先还原）。还原时收回。
  */
 let pageSnapshot: UiSettings | null = null;
+/**
+ * 本轮的页面级假名判定（与 `pageSnapshot` 同生同灭）。
+ *
+ * `shouldSkip` 在单段层面分不出"中文"与"只用汉字的日文"（见 `core/lang.ts`），
+ * 这个盲区在整页翻译里表现为「東京都港区赤坂」这类纯汉字段落被当成"已是中文"静默跳过。
+ * 采集前对整页 `textContent` 做一次廉价扫描补足上下文：页面出现过假名 → 本轮所有采集
+ * （含增量轮）不因"看起来已是目标语言"而跳过。**每轮只扫这一次**，增量轮沿用缓存——
+ * 每轮重读全文对大页面就是 O(整页) 的字符串拼接，而页面是不是日文页面不会中途翻转。
+ */
+let pageKanaSnapshot = false;
 const finished = new Set<string>();
 const failedIds = new Set<string>();
 
@@ -7639,6 +7917,63 @@ function describeError(response: { code: string; message: string }): string {
 }
 
 /**
+ * 一条页面级提示候选：文案 + 它的错误码。
+ * 错误码不是装饰——整轮弹哪一条由它决定（`pickNotice`），文案自己看不出来。
+ */
+interface PageNotice {
+  code: TranslateItemResult['code'];
+  message: string;
+}
+
+/**
+ * 页面级提示的优先级：`AUTH` > `RATE_LIMIT` > 其它。
+ *
+ * 取舍理由与规格 §8 一致：AUTH 要用户**去设置页填 Key**，不处理整页永远翻不出来；
+ * RATE_LIMIT 只要等一等；其余（网络抖动、后台超时、形状不符）大多是瞬时或局部问题，
+ * 段级标注已经够看到。让"最需要用户采取行动"的那条赢，而不是让"最后写入"的那条赢。
+ */
+function noticePriority(code: TranslateItemResult['code']): number {
+  if (code === 'AUTH') return 2;
+  if (code === 'RATE_LIMIT') return 1;
+  return 0;
+}
+
+/**
+ * 择一：优先级更高的候选顶掉较低的；**打平时保留先到的**——同码的 N 条失败说的是
+ * 同一件事，后到的一条不该把先到的换掉（更不该各弹一次）。整轮收尾只 toast 这一条。
+ */
+function pickNotice(current: PageNotice | null, next: PageNotice): PageNotice {
+  if (current === null) return next;
+  return noticePriority(next.code) > noticePriority(current.code) ? next : current;
+}
+
+/** 一轮翻译（或一个增量轮）攒下的页面级提示候选集。见 {@link createNoticeTracker}。 */
+interface NoticeTracker {
+  record(next: PageNotice): void;
+  peek(): PageNotice | null;
+}
+
+/**
+ * 建一份"本轮页面级提示"账本：批次任务并发往里 `record`，整轮跑完 `peek` 一条去弹。
+ *
+ * 状态收在闭包里而不是模块变量上，有两个好处：每一轮天然从零开始（旧实现靠
+ * `lastError = null` 手动清，清漏一次上一轮的错误就会混进这一轮）；并且
+ * 整页（`translatePage`）与增量（`translateIncremental`）共用**同一套**择一逻辑，
+ * 不再两处各写一份覆盖规则。
+ */
+function createNoticeTracker(): NoticeTracker {
+  let current: PageNotice | null = null;
+  return {
+    record(next: PageNotice): void {
+      current = pickNotice(current, next);
+    },
+    peek(): PageNotice | null {
+      return current;
+    },
+  };
+}
+
+/**
  * 条目级失败要不要挂重试按钮，判据是 `engines/types.ts` 的 `RETRYABLE_CODES` 那一份，
  * 本层不再自带一套集合——两处各写一份时「哪个码算可重试」会随改动漂移。
  *
@@ -7662,13 +7997,15 @@ function isRetryable(code: TranslateItemResult['code']): boolean {
  * 一模一样的错误标签，完全不知道发生了什么（规格 §8 要求的是「不重试；页面 toast + 弹窗红点」）。
  *
  * 只对"这一批**每一条**都失败且错误码相同"生效：部分失败是正常的，逐个标注即可。
- * 返回 null 表示不该弹 toast。
  *
  * `batchSize` 必须显式传本批的条目数，不能拿 `failures.length === results.length` 代替：
  * 调用方传进来的可能只有失败的那些条目（`applyResults` 就是这么调的），那样比较恒为真，
  * 一条失败混在成功里也会弹出"整批失败"的提示。
+ *
+ * 返回 `PageNotice`（不是裸文案）：错误码要跟着走完整轮，收尾时按优先级择一（`pickNotice`）。
+ * 返回 null 表示不该弹提示。
  */
-function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: number): string | null {
+function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: number): PageNotice | null {
   const failures = results.filter((result) => result.text === null);
   if (failures.length === 0 || failures.length !== batchSize) return null;
 
@@ -7678,16 +8015,19 @@ function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: numbe
 
   const message = first.message ?? describeError({ code: first.code, message: '翻译失败' });
   if (first.code === 'AUTH') {
-    return `${message}（在扩展设置里填好 API Key 后重新翻译此页）`;
+    return { code: first.code, message: `${message}（在扩展设置里填好 API Key 后重新翻译此页）` };
   }
   if (first.code === 'NETWORK') {
     // 整批网络失败几乎从不是"抖了一下"，而是这个接口根本到不了：默认的免费 Google 接口
     // 在很多网络下被完全阻断（连超时都不返回）。只说"翻译失败"会让用户以为插件坏了，
     // 而真正该做的是去设置页换一个自己能访问的接口。规格 §8「免费接口失效」要求的
     // 就是这条提示。
-    return `${message}。如果反复出现，说明当前网络到不了这个翻译接口——默认的免费 Google 接口在很多网络下无法访问，请在扩展设置里改用你能访问的自定义 API。`;
+    return {
+      code: first.code,
+      message: `${message}。如果反复出现，说明当前网络到不了这个翻译接口——默认的免费 Google 接口在很多网络下无法访问，请在扩展设置里改用你能访问的自定义 API。`,
+    };
   }
-  return message;
+  return { code: first.code, message };
 }
 
 /**
@@ -7714,7 +8054,7 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
  * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——只有 `RETRYABLE_CODES`
  * 里那两类（网络抖动、限流）才挂按钮，其余错误挂上去也只是让用户白点。
  * 整个响应**全部失败且错误码相同**时，逐条标注之外再加一句整批提示，由调用方选时机弹。
- * 返回该提示（不需要时返回 null）。
+ * 返回该提示（带错误码，供收尾按优先级择一；不需要时返回 null）。
  *
  * `results` 来自消息边界，类型断言拦不住它：`TranslateTextsResponse` 只是编译期声明，
  * 后台版本不匹配、引擎适配器出错都可能回一个 `results: undefined` 或元素形状不对的响应
@@ -7725,10 +8065,10 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
  *
  * 逐条对应而不是按下标对齐：坏的条目丢掉之后下标会错位，`id` 才是唯一的身份。
  */
-function applyResults(batch: TextSegment[], results: unknown): string | null {
+function applyResults(batch: TextSegment[], results: unknown): PageNotice | null {
   if (!Array.isArray(results)) {
     failBatch(batch, MALFORMED_RESPONSE);
-    return MALFORMED_RESPONSE;
+    return { code: undefined, message: MALFORMED_RESPONSE };
   }
 
   // 按 id 建立索引再逐条对应：坏形状的条目被丢掉之后下标会错位，`id` 才是唯一的身份。
@@ -7757,7 +8097,7 @@ function applyResults(batch: TextSegment[], results: unknown): string | null {
 
   // 整批同码提示只按**真的回来了的**那些条目算：没回来的条目没有 code 可比，
   // 它们的提示由 MALFORMED_RESPONSE 负责。
-  if (missingResult) return MALFORMED_RESPONSE;
+  if (missingResult) return { code: undefined, message: MALFORMED_RESPONSE };
   return sameCodeFailureMessage([...failures.values()], batch.length);
 }
 
@@ -7766,7 +8106,7 @@ function applyResults(batch: TextSegment[], results: unknown): string | null {
  *
  * 只标本批：一个响应只代表它自己那一批的对错。标整页会把别的批次已经翻译好的片段
  * 一起算成失败——`applyResults` 从不回删被误标的 id，`done + failed` 会超过 `total`，
- * 状态面板上就出现"一段既译好了又算失败"。提示不在这里弹，攒进 `lastError` 由调用方
+ * 状态面板上就出现"一段既译好了又算失败"。提示不在这里弹，攒进本轮的提示账本由调用方
  * 在整轮跑完后弹一次。
  */
 function failBatch(batch: TextSegment[], message: string): void {
@@ -7777,7 +8117,7 @@ function failBatch(batch: TextSegment[], message: string): void {
  * 把一段标成失败态（记进 `failedIds` + 渲染）。**这一步自己绝不抛异常**：
  * 它跑在并发池的任务里，`core/pool.ts` 的契约是"调用方负责在任务内部捕获"——
  * 一个异常逃出去就会 reject 掉整轮，剩下的条目会永远停在"翻译中…"，
- * 而 `if (lastError !== null) toast(...)` 那一行也永远到不了（页面静默卡死）。
+ * 而收尾那句 `toast(页面级提示)` 也永远到不了（页面静默卡死）。
  *
  * 第一次渲染失败就退回一句纯文本：连错误标签都挂不上去的宿主，也别再让它
  * 以一个未捕获的异常收场。
@@ -7814,7 +8154,10 @@ async function translatePage(): Promise<void> {
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
 
-  const collected = collectSegments(document.body, { targetLang: settings.targetLang });
+  // 页面级假名判定：**采集之前**对整页文本扫这一次（见 pageKanaSnapshot 的注释），
+  // 本轮整页与后续增量共用这份结果。
+  const kanaOnPage = pageHasKana(document.body);
+  const collected = collectSegments(document.body, { targetLang: settings.targetLang, pageHasKana: kanaOnPage });
   if (collected.length === 0) {
     // 这里到认领之间没有 await，所以自己一定还是当前世代（generation 只能被下一轮
     // 翻译或还原推进，而两者都跑不到这里），守卫直接收回即可。
@@ -7823,16 +8166,18 @@ async function translatePage(): Promise<void> {
     return;
   }
 
-  lastError = null;
   displayMode = settings.displayMode;
   // 增量层的唯一设置来源：此后新内容一律沿用这份快照（见 translateIncremental）。
   pageSnapshot = settings;
+  pageKanaSnapshot = kanaOnPage;
   // 朗读的目标语言跟着这一轮翻译用的一次刷新（翻译请求本身不依赖它，见 translateInline）。
   inlineTargetLang = settings.targetLang;
   finished.clear();
   failedIds.clear();
   segments = collected;
   renderer = new DomRenderer(document, settings.displayMode, (segmentId) => void retrySegment(segmentId));
+  // 本轮的页面级提示账本：批次只往里 record，收尾统一弹**优先级最高**的一条。
+  const pageErrors = createNoticeTracker();
 
   for (const segment of segments) renderer.mount(segment, 'pending');
   // 宿主挂完才 enable：首轮挂载不是"页面变动"；种子把首轮已翻译的段落（含不打标记的
@@ -7840,7 +8185,60 @@ async function translatePage(): Promise<void> {
   incremental.enable(segments);
 
   const textSegments: TextSegment[] = segments.map((s) => ({ id: s.id, text: s.text, order: s.order }));
-  const batches = planBatches(textSegments, {
+  /**
+   * **页内文本去重**（分批之前）：同一页面里字面相同的段落归并成一个请求单元。
+   *
+   * 调度器（`background/scheduler.ts`）只在**单批内**按文本去重，而批次之间互相看不见：
+   * 导航/页脚/"Learn more"这类重复文本按 12 段一批切到 5 个批次上，仍会重发 5 次
+   * （实测 apple.com 首页「Store」出现 59 次）。并发在飞时后面的批次也看不到前面批次
+   * 正在飞的请求，缓存来不及救。归并放到内容脚本这一层，因为它看得见**整页**。
+   *
+   * 省下的只是请求，不是段落：渲染、失败态、重试与 `finished`/`failedIds` 计数都
+   * 按段算（结果摊回给组内每一段，见 `expandBatch` / `expandResults`）；重试走
+   * `retrySegment` 的单段链路，**不**连带重译同文本的其他段。
+   * 缓存粒度不受影响（缓存 key 本来就按文本算，见 scheduler 的 uniqueTexts 注释）。
+   * 增量翻译路径有意不做这套——它有 (容器, 文本) 账本与单轮上限，另成体系。
+   */
+  const membersByText = new Map<string, TextSegment[]>();
+  for (const segment of textSegments) {
+    const group = membersByText.get(segment.text);
+    if (group === undefined) membersByText.set(segment.text, [segment]);
+    else group.push(segment);
+  }
+  /** 代表段 id → 同文本的全部段（含代表段自己）。代表段取每组**首次出现**的那一段。 */
+  const membersByRepId = new Map<string, TextSegment[]>();
+  const representatives: TextSegment[] = [];
+  for (const group of membersByText.values()) {
+    const representative = group[0] as TextSegment;
+    representatives.push(representative);
+    membersByRepId.set(representative.id, group);
+  }
+  /** 本批的全部落地段：代表段摊回同文本组（失败标注、形状兜底都按这个全集算）。 */
+  const expandBatch = (batch: TextSegment[]): TextSegment[] =>
+    batch.flatMap((representative) => membersByRepId.get(representative.id) ?? [representative]);
+  /**
+   * 响应条目按代表段 id 回来，逐条复制给组内每一段（换掉 id、其余原样）。
+   * 认不出 id 的条目（形状不符/不属于任何组）原样交给 `applyResults` 的既有防线。
+   */
+  const expandResults = (results: unknown): unknown => {
+    if (!Array.isArray(results)) return results;
+    const out: unknown[] = [];
+    for (const result of results) {
+      if (!isResultItem(result)) {
+        out.push(result);
+        continue;
+      }
+      const group = membersByRepId.get(result.id);
+      if (group === undefined) {
+        out.push(result);
+        continue;
+      }
+      for (const member of group) out.push({ ...result, id: member.id });
+    }
+    return out;
+  };
+
+  const batches = planBatches(representatives, {
     maxBatchChars: settings.maxBatchChars,
     maxSegmentsPerBatch: settings.maxSegmentsPerBatch,
   });
@@ -7854,9 +8252,11 @@ async function translatePage(): Promise<void> {
 
         // 整个任务体都在 try/catch 里（不只是 sendMessage）：`core/pool.ts` 的契约是
         // "调用方负责在任务内部捕获"——任何意外异常逃出去都会 reject 掉 runPool，
-        // 于是 applyResults 之后那一行 `if (lastError !== null) toast(...)` 被跳过、
+        // 于是收尾那句 toast 被跳过、
         // running 也在 finally 里被收走，页面就永久留在"翻译中…"（renderer 守卫还在，
         // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
+        // 本批的代表段摊回的全集：请求只发 `batch`（去重后的代表段），**落地**按全集逐段算。
+        const fullBatch = expandBatch(batch);
         try {
           let response: TranslateTextsResponse;
           try {
@@ -7871,9 +8271,9 @@ async function translatePage(): Promise<void> {
             // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
             // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
-            // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
+            // `fullBatch` 含同文本的全部段：一个代表段炸了，摊到的每一段都进失败态。
             if (mine !== generation) return;
-            failBatch(batch, describeTransportError(raw));
+            failBatch(fullBatch, describeTransportError(raw));
             return;
           }
 
@@ -7883,20 +8283,21 @@ async function translatePage(): Promise<void> {
           // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
           // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
           if (!response.ok) {
-            lastError = describeError(response);
-            failBatch(batch, response.message);
+            pageErrors.record({ code: response.code, message: describeError(response) });
+            failBatch(fullBatch, response.message);
             return;
           }
           // `applyResults` 自己校验响应形状：形状不符时整批进失败态，不抛异常。
-          const notice = applyResults(batch, response.results);
-          if (notice !== null) lastError = notice;
+          // 响应按代表段的 id 回来，先摊回全集再落地（逐段渲染/计数，见上方去重注释）。
+          const notice = applyResults(fullBatch, expandResults(response.results));
+          if (notice !== null) pageErrors.record(notice);
         } catch (raw) {
           // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
           // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
           const detail = raw instanceof Error ? raw.message : String(raw);
           if (mine !== generation) return;
-          lastError = `翻译失败：${detail}`;
-          failBatch(batch, MALFORMED_RESPONSE);
+          pageErrors.record({ code: undefined, message: `翻译失败：${detail}` });
+          failBatch(fullBatch, MALFORMED_RESPONSE);
         }
       }),
       settings.concurrency,
@@ -7910,9 +8311,12 @@ async function translatePage(): Promise<void> {
   // 一轮的收尾同样只能由当前世代做：还原已经把页面清干净了，就别再弹上一代的错误。
   if (mine !== generation) return;
 
-  // 整轮跑完才弹，且只弹一次：每批各弹一次的话，提示会被后一批顶掉重弹
+  // 整轮跑完才弹，且只弹一条：每批各弹一次的话，提示会被后一批顶掉重弹
   // （`toast()` 是"删旧节点 + 建新节点"），一个多批页面等于把同一件事播 N 遍。
-  if (lastError !== null) toast(lastError);
+  // 弹账本里**优先级最高**的那条（`pickNotice`），不是最后写入的那条：AUTH 不该被
+  // 后到的网络抖动顶掉——那是最需要用户去设置页处理的一条。
+  const pageNotice = pageErrors.peek();
+  if (pageNotice !== null) toast(pageNotice.message);
 }
 
 async function retrySegment(segmentId: string): Promise<void> {
@@ -7991,7 +8395,9 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
     newSegments.map((segment) => ({ id: segment.id, text: segment.text, order: segment.order })),
     { maxBatchChars: snapshot.maxBatchChars, maxSegmentsPerBatch: snapshot.maxSegmentsPerBatch },
   );
-  let notice: string | null = null;
+  // 与整页共用同一套判择逻辑（同一个 `createNoticeTracker` + `pickNotice`），
+  // 不再两处各写一份覆盖规则。
+  const pageErrors = createNoticeTracker();
   await runPool(
     batches.map((batch) => async () => {
       try {
@@ -8011,12 +8417,12 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
         }
         if (renderer !== current) return;
         if (!response.ok) {
-          notice = describeError(response);
+          pageErrors.record({ code: response.code, message: describeError(response) });
           failBatch(batch, response.message);
           return;
         }
         const resultNotice = applyResults(batch, response.results);
-        if (resultNotice !== null) notice = resultNotice;
+        if (resultNotice !== null) pageErrors.record(resultNotice);
       } catch {
         if (renderer !== current) return;
         failBatch(batch, MALFORMED_RESPONSE);
@@ -8026,7 +8432,8 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
   );
 
   // 整批同码的页面级提示照常浮出（规格 §8：绝不静默失败）；页面已经还原就不再打扰。
-  if (notice !== null && renderer === current) toast(notice);
+  const pageNotice = pageErrors.peek();
+  if (pageNotice !== null && renderer === current) toast(pageNotice.message);
 }
 
 /**
@@ -8037,7 +8444,10 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
  *   绝不能进增量队列；在飞的增量批次由 renderer 身份守卫丢弃）。
  */
 const incremental = createIncrementalObserver({
-  scanOptions: () => (pageSnapshot === null ? null : { targetLang: pageSnapshot.targetLang }),
+  scanOptions: () =>
+    pageSnapshot === null
+      ? null
+      : { targetLang: pageSnapshot.targetLang, pageHasKana: pageKanaSnapshot },
   isTranslated: () => renderer !== null,
   isStale: () => (globalThis as { __jinyiContentInstance?: symbol }).__jinyiContentInstance !== INSTANCE_TOKEN,
   translate: translateIncremental,
@@ -8133,9 +8543,11 @@ function restorePage(): void {
   renderer = null;
   segments = [];
   pageSnapshot = null;
+  pageKanaSnapshot = false;
   finished.clear();
   failedIds.clear();
-  lastError = null;
+  // 页面级提示账本是每一轮的局部状态（见 translatePage 的 createNoticeTracker），
+  // 还原推进了世代号，在飞那一轮的收尾 toast 本来就被守卫拦下，这里无需再清什么。
   // 还原是一个明确的"都给我撤掉"信号：浮层气泡关掉、悬停描边撤掉、
   // 在飞的悬停/划词结果作废（监听器保持原样——用户接下来还要用）。
   hideTooltip();
@@ -8428,6 +8840,8 @@ import {
 const toggleButton = document.getElementById('toggle') as HTMLButtonElement;
 const statusText = document.getElementById('status') as HTMLParagraphElement;
 const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
+const hoverCheckbox = document.getElementById('hover-translate') as HTMLInputElement;
+const selectionCheckbox = document.getElementById('selection-translate') as HTMLInputElement;
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
@@ -8459,10 +8873,12 @@ function fillSelect(
   }
 }
 
-/** 用存储里的设置填三个下拉，并把 hint 算对；保存失败回滚时也走这里。 */
+/** 用存储里的设置填三个下拉与两个快捷开关，并把 hint 算对；保存失败回滚时也走这里。 */
 function applySettings(next: Settings): void {
   settings = next;
   fillSelect(displayModeSelect, DISPLAY_MODES, settings.displayMode);
+  hoverCheckbox.checked = settings.hoverTranslate;
+  selectionCheckbox.checked = settings.selectionTranslate;
   fillSelect(
     targetLangSelect,
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
@@ -8727,6 +9143,58 @@ function onDisplayModeChange(): void {
   });
 }
 
+/**
+ * 悬停/划词快捷开关：保存 + **推送给当前页面**。
+ *
+ * 这两个开关控制的是"内容脚本挂不挂监听器"——只写设置不够：当前页面已经挂上的监听
+ * 不会因为存储变了而消失，没挂上的也不会自己出现。所以保存成功后必须发一条
+ * `APPLY_SETTINGS` 让内容脚本当场重新挂/摘；拿不到确认回执（没有内容脚本的页面、
+ * 不认识这条消息的旧内容脚本）就**如实说要重新加载页面**，不静默骗人。
+ */
+function onFeatureToggleChange(
+  checkbox: HTMLInputElement,
+  field: 'hoverTranslate' | 'selectionTranslate',
+  label: string,
+): void {
+  const previous = settings;
+  const next: Settings =
+    field === 'hoverTranslate'
+      ? { ...settings, hoverTranslate: checkbox.checked }
+      : { ...settings, selectionTranslate: checkbox.checked };
+  void (async () => {
+    try {
+      await saveSettings(next);
+      settings = next;
+    } catch (raw) {
+      // 与下拉同一个口径：保存被拒就把开关拨回真正生效的那一档，并说出原因。
+      checkbox.checked = previous[field];
+      statusText.textContent = errorText('设置未能保存', raw);
+      return;
+    }
+    let applied = false;
+    try {
+      const tabId = await activeTabId();
+      if (tabId !== null) {
+        const reply = (await chrome.tabs.sendMessage(tabId, {
+          type: MSG.APPLY_SETTINGS,
+          payload: {
+            hoverTranslate: next.hoverTranslate,
+            selectionTranslate: next.selectionTranslate,
+            // 顺带报一次目标语言：内容脚本手里那份可能已经过期（朗读语种用）。
+            targetLang: next.targetLang,
+          },
+        })) as { ok?: unknown } | undefined;
+        applied = reply?.ok === true;
+      }
+    } catch {
+      applied = false;
+    }
+    statusText.textContent = applied
+      ? `${label}已更新，当前页面即时生效。`
+      : `${label}已保存；当前页面没能即时确认，重新加载页面后生效。`;
+  })();
+}
+
 function onEngineChange(): void {
   const previous = settings;
   const next: Settings = { ...settings, engineId: engineSelect.value };
@@ -8751,6 +9219,12 @@ function init(): void {
   });
   targetLangSelect.addEventListener('change', onTargetLangChange);
   displayModeSelect.addEventListener('change', onDisplayModeChange);
+  hoverCheckbox.addEventListener('change', () =>
+    onFeatureToggleChange(hoverCheckbox, 'hoverTranslate', '悬停翻译'),
+  );
+  selectionCheckbox.addEventListener('change', () =>
+    onFeatureToggleChange(selectionCheckbox, 'selectionTranslate', '划词翻译'),
+  );
   engineSelect.addEventListener('change', onEngineChange);
   optionsButton.addEventListener('click', () => chrome.runtime.openOptionsPage());
 

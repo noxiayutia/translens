@@ -55,7 +55,7 @@ import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
-import { collectSegments, type ExtractedSegment } from './extractor';
+import { collectSegments, pageHasKana, type ExtractedSegment } from './extractor';
 import { createHoverTranslator, type HoverController } from './hover';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
@@ -73,15 +73,13 @@ import { toast } from './toast';
  *   如果 running 一直卡到那一轮跑完，用户"还原 → 再翻译"（Alt+T 连按两下就是这条路径）
  *   期间的所有请求都会被入口守卫悄悄吞掉——监听器照常回响应，页面什么都不做。
  * - **旧的一轮不能回来干扰新的一轮**。被接管的那一轮在 await 返回后要安静退出：
- *   不写状态（renderer / lastError 属于新的一轮）、也不能在 finally 里把新的一轮的
+ *   不写状态（renderer / 页面级提示属于新的一轮）、也不能在 finally 里把新的一轮的
  *   running 守卫清掉（否则新的一轮在飞时又放进来第三个 renderer）。
  */
 let generation = 0;
 let renderer: DomRenderer | null = null;
 let segments: ExtractedSegment[] = [];
 let running = false;
-/** 本轮翻译攒下的页面级提示：整轮跑完只弹一次，见 `translatePage` 末尾。 */
-let lastError: string | null = null;
 let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
 /**
  * 页面翻译那一刻的**设置快照**。增量翻译只复用这份快照，绝不重读设置：
@@ -89,6 +87,16 @@ let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
  * （改动对新页面生效，本要重来请先还原）。还原时收回。
  */
 let pageSnapshot: UiSettings | null = null;
+/**
+ * 本轮的页面级假名判定（与 `pageSnapshot` 同生同灭）。
+ *
+ * `shouldSkip` 在单段层面分不出"中文"与"只用汉字的日文"（见 `core/lang.ts`），
+ * 这个盲区在整页翻译里表现为「東京都港区赤坂」这类纯汉字段落被当成"已是中文"静默跳过。
+ * 采集前对整页 `textContent` 做一次廉价扫描补足上下文：页面出现过假名 → 本轮所有采集
+ * （含增量轮）不因"看起来已是目标语言"而跳过。**每轮只扫这一次**，增量轮沿用缓存——
+ * 每轮重读全文对大页面就是 O(整页) 的字符串拼接，而页面是不是日文页面不会中途翻转。
+ */
+let pageKanaSnapshot = false;
 const finished = new Set<string>();
 const failedIds = new Set<string>();
 
@@ -182,6 +190,63 @@ function describeError(response: { code: string; message: string }): string {
 }
 
 /**
+ * 一条页面级提示候选：文案 + 它的错误码。
+ * 错误码不是装饰——整轮弹哪一条由它决定（`pickNotice`），文案自己看不出来。
+ */
+interface PageNotice {
+  code: TranslateItemResult['code'];
+  message: string;
+}
+
+/**
+ * 页面级提示的优先级：`AUTH` > `RATE_LIMIT` > 其它。
+ *
+ * 取舍理由与规格 §8 一致：AUTH 要用户**去设置页填 Key**，不处理整页永远翻不出来；
+ * RATE_LIMIT 只要等一等；其余（网络抖动、后台超时、形状不符）大多是瞬时或局部问题，
+ * 段级标注已经够看到。让"最需要用户采取行动"的那条赢，而不是让"最后写入"的那条赢。
+ */
+function noticePriority(code: TranslateItemResult['code']): number {
+  if (code === 'AUTH') return 2;
+  if (code === 'RATE_LIMIT') return 1;
+  return 0;
+}
+
+/**
+ * 择一：优先级更高的候选顶掉较低的；**打平时保留先到的**——同码的 N 条失败说的是
+ * 同一件事，后到的一条不该把先到的换掉（更不该各弹一次）。整轮收尾只 toast 这一条。
+ */
+function pickNotice(current: PageNotice | null, next: PageNotice): PageNotice {
+  if (current === null) return next;
+  return noticePriority(next.code) > noticePriority(current.code) ? next : current;
+}
+
+/** 一轮翻译（或一个增量轮）攒下的页面级提示候选集。见 {@link createNoticeTracker}。 */
+interface NoticeTracker {
+  record(next: PageNotice): void;
+  peek(): PageNotice | null;
+}
+
+/**
+ * 建一份"本轮页面级提示"账本：批次任务并发往里 `record`，整轮跑完 `peek` 一条去弹。
+ *
+ * 状态收在闭包里而不是模块变量上，有两个好处：每一轮天然从零开始（旧实现靠
+ * `lastError = null` 手动清，清漏一次上一轮的错误就会混进这一轮）；并且
+ * 整页（`translatePage`）与增量（`translateIncremental`）共用**同一套**择一逻辑，
+ * 不再两处各写一份覆盖规则。
+ */
+function createNoticeTracker(): NoticeTracker {
+  let current: PageNotice | null = null;
+  return {
+    record(next: PageNotice): void {
+      current = pickNotice(current, next);
+    },
+    peek(): PageNotice | null {
+      return current;
+    },
+  };
+}
+
+/**
  * 条目级失败要不要挂重试按钮，判据是 `engines/types.ts` 的 `RETRYABLE_CODES` 那一份，
  * 本层不再自带一套集合——两处各写一份时「哪个码算可重试」会随改动漂移。
  *
@@ -205,13 +270,15 @@ function isRetryable(code: TranslateItemResult['code']): boolean {
  * 一模一样的错误标签，完全不知道发生了什么（规格 §8 要求的是「不重试；页面 toast + 弹窗红点」）。
  *
  * 只对"这一批**每一条**都失败且错误码相同"生效：部分失败是正常的，逐个标注即可。
- * 返回 null 表示不该弹 toast。
  *
  * `batchSize` 必须显式传本批的条目数，不能拿 `failures.length === results.length` 代替：
  * 调用方传进来的可能只有失败的那些条目（`applyResults` 就是这么调的），那样比较恒为真，
  * 一条失败混在成功里也会弹出"整批失败"的提示。
+ *
+ * 返回 `PageNotice`（不是裸文案）：错误码要跟着走完整轮，收尾时按优先级择一（`pickNotice`）。
+ * 返回 null 表示不该弹提示。
  */
-function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: number): string | null {
+function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: number): PageNotice | null {
   const failures = results.filter((result) => result.text === null);
   if (failures.length === 0 || failures.length !== batchSize) return null;
 
@@ -221,16 +288,19 @@ function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: numbe
 
   const message = first.message ?? describeError({ code: first.code, message: '翻译失败' });
   if (first.code === 'AUTH') {
-    return `${message}（在扩展设置里填好 API Key 后重新翻译此页）`;
+    return { code: first.code, message: `${message}（在扩展设置里填好 API Key 后重新翻译此页）` };
   }
   if (first.code === 'NETWORK') {
     // 整批网络失败几乎从不是"抖了一下"，而是这个接口根本到不了：默认的免费 Google 接口
     // 在很多网络下被完全阻断（连超时都不返回）。只说"翻译失败"会让用户以为插件坏了，
     // 而真正该做的是去设置页换一个自己能访问的接口。规格 §8「免费接口失效」要求的
     // 就是这条提示。
-    return `${message}。如果反复出现，说明当前网络到不了这个翻译接口——默认的免费 Google 接口在很多网络下无法访问，请在扩展设置里改用你能访问的自定义 API。`;
+    return {
+      code: first.code,
+      message: `${message}。如果反复出现，说明当前网络到不了这个翻译接口——默认的免费 Google 接口在很多网络下无法访问，请在扩展设置里改用你能访问的自定义 API。`,
+    };
   }
-  return message;
+  return { code: first.code, message };
 }
 
 /**
@@ -257,7 +327,7 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
  * 失败条目一律标注错误文案，重试按钮按 `isRetryable` 决定——只有 `RETRYABLE_CODES`
  * 里那两类（网络抖动、限流）才挂按钮，其余错误挂上去也只是让用户白点。
  * 整个响应**全部失败且错误码相同**时，逐条标注之外再加一句整批提示，由调用方选时机弹。
- * 返回该提示（不需要时返回 null）。
+ * 返回该提示（带错误码，供收尾按优先级择一；不需要时返回 null）。
  *
  * `results` 来自消息边界，类型断言拦不住它：`TranslateTextsResponse` 只是编译期声明，
  * 后台版本不匹配、引擎适配器出错都可能回一个 `results: undefined` 或元素形状不对的响应
@@ -268,10 +338,10 @@ const MALFORMED_RESPONSE = '翻译响应格式不正确，请重试';
  *
  * 逐条对应而不是按下标对齐：坏的条目丢掉之后下标会错位，`id` 才是唯一的身份。
  */
-function applyResults(batch: TextSegment[], results: unknown): string | null {
+function applyResults(batch: TextSegment[], results: unknown): PageNotice | null {
   if (!Array.isArray(results)) {
     failBatch(batch, MALFORMED_RESPONSE);
-    return MALFORMED_RESPONSE;
+    return { code: undefined, message: MALFORMED_RESPONSE };
   }
 
   // 按 id 建立索引再逐条对应：坏形状的条目被丢掉之后下标会错位，`id` 才是唯一的身份。
@@ -300,7 +370,7 @@ function applyResults(batch: TextSegment[], results: unknown): string | null {
 
   // 整批同码提示只按**真的回来了的**那些条目算：没回来的条目没有 code 可比，
   // 它们的提示由 MALFORMED_RESPONSE 负责。
-  if (missingResult) return MALFORMED_RESPONSE;
+  if (missingResult) return { code: undefined, message: MALFORMED_RESPONSE };
   return sameCodeFailureMessage([...failures.values()], batch.length);
 }
 
@@ -309,7 +379,7 @@ function applyResults(batch: TextSegment[], results: unknown): string | null {
  *
  * 只标本批：一个响应只代表它自己那一批的对错。标整页会把别的批次已经翻译好的片段
  * 一起算成失败——`applyResults` 从不回删被误标的 id，`done + failed` 会超过 `total`，
- * 状态面板上就出现"一段既译好了又算失败"。提示不在这里弹，攒进 `lastError` 由调用方
+ * 状态面板上就出现"一段既译好了又算失败"。提示不在这里弹，攒进本轮的提示账本由调用方
  * 在整轮跑完后弹一次。
  */
 function failBatch(batch: TextSegment[], message: string): void {
@@ -320,7 +390,7 @@ function failBatch(batch: TextSegment[], message: string): void {
  * 把一段标成失败态（记进 `failedIds` + 渲染）。**这一步自己绝不抛异常**：
  * 它跑在并发池的任务里，`core/pool.ts` 的契约是"调用方负责在任务内部捕获"——
  * 一个异常逃出去就会 reject 掉整轮，剩下的条目会永远停在"翻译中…"，
- * 而 `if (lastError !== null) toast(...)` 那一行也永远到不了（页面静默卡死）。
+ * 而收尾那句 `toast(页面级提示)` 也永远到不了（页面静默卡死）。
  *
  * 第一次渲染失败就退回一句纯文本：连错误标签都挂不上去的宿主，也别再让它
  * 以一个未捕获的异常收场。
@@ -357,7 +427,10 @@ async function translatePage(): Promise<void> {
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
 
-  const collected = collectSegments(document.body, { targetLang: settings.targetLang });
+  // 页面级假名判定：**采集之前**对整页文本扫这一次（见 pageKanaSnapshot 的注释），
+  // 本轮整页与后续增量共用这份结果。
+  const kanaOnPage = pageHasKana(document.body);
+  const collected = collectSegments(document.body, { targetLang: settings.targetLang, pageHasKana: kanaOnPage });
   if (collected.length === 0) {
     // 这里到认领之间没有 await，所以自己一定还是当前世代（generation 只能被下一轮
     // 翻译或还原推进，而两者都跑不到这里），守卫直接收回即可。
@@ -366,16 +439,18 @@ async function translatePage(): Promise<void> {
     return;
   }
 
-  lastError = null;
   displayMode = settings.displayMode;
   // 增量层的唯一设置来源：此后新内容一律沿用这份快照（见 translateIncremental）。
   pageSnapshot = settings;
+  pageKanaSnapshot = kanaOnPage;
   // 朗读的目标语言跟着这一轮翻译用的一次刷新（翻译请求本身不依赖它，见 translateInline）。
   inlineTargetLang = settings.targetLang;
   finished.clear();
   failedIds.clear();
   segments = collected;
   renderer = new DomRenderer(document, settings.displayMode, (segmentId) => void retrySegment(segmentId));
+  // 本轮的页面级提示账本：批次只往里 record，收尾统一弹**优先级最高**的一条。
+  const pageErrors = createNoticeTracker();
 
   for (const segment of segments) renderer.mount(segment, 'pending');
   // 宿主挂完才 enable：首轮挂载不是"页面变动"；种子把首轮已翻译的段落（含不打标记的
@@ -383,7 +458,60 @@ async function translatePage(): Promise<void> {
   incremental.enable(segments);
 
   const textSegments: TextSegment[] = segments.map((s) => ({ id: s.id, text: s.text, order: s.order }));
-  const batches = planBatches(textSegments, {
+  /**
+   * **页内文本去重**（分批之前）：同一页面里字面相同的段落归并成一个请求单元。
+   *
+   * 调度器（`background/scheduler.ts`）只在**单批内**按文本去重，而批次之间互相看不见：
+   * 导航/页脚/"Learn more"这类重复文本按 12 段一批切到 5 个批次上，仍会重发 5 次
+   * （实测 apple.com 首页「Store」出现 59 次）。并发在飞时后面的批次也看不到前面批次
+   * 正在飞的请求，缓存来不及救。归并放到内容脚本这一层，因为它看得见**整页**。
+   *
+   * 省下的只是请求，不是段落：渲染、失败态、重试与 `finished`/`failedIds` 计数都
+   * 按段算（结果摊回给组内每一段，见 `expandBatch` / `expandResults`）；重试走
+   * `retrySegment` 的单段链路，**不**连带重译同文本的其他段。
+   * 缓存粒度不受影响（缓存 key 本来就按文本算，见 scheduler 的 uniqueTexts 注释）。
+   * 增量翻译路径有意不做这套——它有 (容器, 文本) 账本与单轮上限，另成体系。
+   */
+  const membersByText = new Map<string, TextSegment[]>();
+  for (const segment of textSegments) {
+    const group = membersByText.get(segment.text);
+    if (group === undefined) membersByText.set(segment.text, [segment]);
+    else group.push(segment);
+  }
+  /** 代表段 id → 同文本的全部段（含代表段自己）。代表段取每组**首次出现**的那一段。 */
+  const membersByRepId = new Map<string, TextSegment[]>();
+  const representatives: TextSegment[] = [];
+  for (const group of membersByText.values()) {
+    const representative = group[0] as TextSegment;
+    representatives.push(representative);
+    membersByRepId.set(representative.id, group);
+  }
+  /** 本批的全部落地段：代表段摊回同文本组（失败标注、形状兜底都按这个全集算）。 */
+  const expandBatch = (batch: TextSegment[]): TextSegment[] =>
+    batch.flatMap((representative) => membersByRepId.get(representative.id) ?? [representative]);
+  /**
+   * 响应条目按代表段 id 回来，逐条复制给组内每一段（换掉 id、其余原样）。
+   * 认不出 id 的条目（形状不符/不属于任何组）原样交给 `applyResults` 的既有防线。
+   */
+  const expandResults = (results: unknown): unknown => {
+    if (!Array.isArray(results)) return results;
+    const out: unknown[] = [];
+    for (const result of results) {
+      if (!isResultItem(result)) {
+        out.push(result);
+        continue;
+      }
+      const group = membersByRepId.get(result.id);
+      if (group === undefined) {
+        out.push(result);
+        continue;
+      }
+      for (const member of group) out.push({ ...result, id: member.id });
+    }
+    return out;
+  };
+
+  const batches = planBatches(representatives, {
     maxBatchChars: settings.maxBatchChars,
     maxSegmentsPerBatch: settings.maxSegmentsPerBatch,
   });
@@ -397,9 +525,11 @@ async function translatePage(): Promise<void> {
 
         // 整个任务体都在 try/catch 里（不只是 sendMessage）：`core/pool.ts` 的契约是
         // "调用方负责在任务内部捕获"——任何意外异常逃出去都会 reject 掉 runPool，
-        // 于是 applyResults 之后那一行 `if (lastError !== null) toast(...)` 被跳过、
+        // 于是收尾那句 toast 被跳过、
         // running 也在 finally 里被收走，页面就永久留在"翻译中…"（renderer 守卫还在，
         // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
+        // 本批的代表段摊回的全集：请求只发 `batch`（去重后的代表段），**落地**按全集逐段算。
+        const fullBatch = expandBatch(batch);
         try {
           let response: TranslateTextsResponse;
           try {
@@ -414,9 +544,9 @@ async function translatePage(): Promise<void> {
             // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
             // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
-            // `batch` 里的就是 `segments` 里那些对象本身，id 可直接用。
+            // `fullBatch` 含同文本的全部段：一个代表段炸了，摊到的每一段都进失败态。
             if (mine !== generation) return;
-            failBatch(batch, describeTransportError(raw));
+            failBatch(fullBatch, describeTransportError(raw));
             return;
           }
 
@@ -426,20 +556,21 @@ async function translatePage(): Promise<void> {
           // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
           // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
           if (!response.ok) {
-            lastError = describeError(response);
-            failBatch(batch, response.message);
+            pageErrors.record({ code: response.code, message: describeError(response) });
+            failBatch(fullBatch, response.message);
             return;
           }
           // `applyResults` 自己校验响应形状：形状不符时整批进失败态，不抛异常。
-          const notice = applyResults(batch, response.results);
-          if (notice !== null) lastError = notice;
+          // 响应按代表段的 id 回来，先摊回全集再落地（逐段渲染/计数，见上方去重注释）。
+          const notice = applyResults(fullBatch, expandResults(response.results));
+          if (notice !== null) pageErrors.record(notice);
         } catch (raw) {
           // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
           // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
           const detail = raw instanceof Error ? raw.message : String(raw);
           if (mine !== generation) return;
-          lastError = `翻译失败：${detail}`;
-          failBatch(batch, MALFORMED_RESPONSE);
+          pageErrors.record({ code: undefined, message: `翻译失败：${detail}` });
+          failBatch(fullBatch, MALFORMED_RESPONSE);
         }
       }),
       settings.concurrency,
@@ -453,9 +584,12 @@ async function translatePage(): Promise<void> {
   // 一轮的收尾同样只能由当前世代做：还原已经把页面清干净了，就别再弹上一代的错误。
   if (mine !== generation) return;
 
-  // 整轮跑完才弹，且只弹一次：每批各弹一次的话，提示会被后一批顶掉重弹
+  // 整轮跑完才弹，且只弹一条：每批各弹一次的话，提示会被后一批顶掉重弹
   // （`toast()` 是"删旧节点 + 建新节点"），一个多批页面等于把同一件事播 N 遍。
-  if (lastError !== null) toast(lastError);
+  // 弹账本里**优先级最高**的那条（`pickNotice`），不是最后写入的那条：AUTH 不该被
+  // 后到的网络抖动顶掉——那是最需要用户去设置页处理的一条。
+  const pageNotice = pageErrors.peek();
+  if (pageNotice !== null) toast(pageNotice.message);
 }
 
 async function retrySegment(segmentId: string): Promise<void> {
@@ -534,7 +668,9 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
     newSegments.map((segment) => ({ id: segment.id, text: segment.text, order: segment.order })),
     { maxBatchChars: snapshot.maxBatchChars, maxSegmentsPerBatch: snapshot.maxSegmentsPerBatch },
   );
-  let notice: string | null = null;
+  // 与整页共用同一套判择逻辑（同一个 `createNoticeTracker` + `pickNotice`），
+  // 不再两处各写一份覆盖规则。
+  const pageErrors = createNoticeTracker();
   await runPool(
     batches.map((batch) => async () => {
       try {
@@ -554,12 +690,12 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
         }
         if (renderer !== current) return;
         if (!response.ok) {
-          notice = describeError(response);
+          pageErrors.record({ code: response.code, message: describeError(response) });
           failBatch(batch, response.message);
           return;
         }
         const resultNotice = applyResults(batch, response.results);
-        if (resultNotice !== null) notice = resultNotice;
+        if (resultNotice !== null) pageErrors.record(resultNotice);
       } catch {
         if (renderer !== current) return;
         failBatch(batch, MALFORMED_RESPONSE);
@@ -569,7 +705,8 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
   );
 
   // 整批同码的页面级提示照常浮出（规格 §8：绝不静默失败）；页面已经还原就不再打扰。
-  if (notice !== null && renderer === current) toast(notice);
+  const pageNotice = pageErrors.peek();
+  if (pageNotice !== null && renderer === current) toast(pageNotice.message);
 }
 
 /**
@@ -580,7 +717,10 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
  *   绝不能进增量队列；在飞的增量批次由 renderer 身份守卫丢弃）。
  */
 const incremental = createIncrementalObserver({
-  scanOptions: () => (pageSnapshot === null ? null : { targetLang: pageSnapshot.targetLang }),
+  scanOptions: () =>
+    pageSnapshot === null
+      ? null
+      : { targetLang: pageSnapshot.targetLang, pageHasKana: pageKanaSnapshot },
   isTranslated: () => renderer !== null,
   isStale: () => (globalThis as { __jinyiContentInstance?: symbol }).__jinyiContentInstance !== INSTANCE_TOKEN,
   translate: translateIncremental,
@@ -676,9 +816,11 @@ function restorePage(): void {
   renderer = null;
   segments = [];
   pageSnapshot = null;
+  pageKanaSnapshot = false;
   finished.clear();
   failedIds.clear();
-  lastError = null;
+  // 页面级提示账本是每一轮的局部状态（见 translatePage 的 createNoticeTracker），
+  // 还原推进了世代号，在飞那一轮的收尾 toast 本来就被守卫拦下，这里无需再清什么。
   // 还原是一个明确的"都给我撤掉"信号：浮层气泡关掉、悬停描边撤掉、
   // 在飞的悬停/划词结果作废（监听器保持原样——用户接下来还要用）。
   hideTooltip();
