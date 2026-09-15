@@ -603,3 +603,112 @@ describe('设置入口', () => {
     expect(chromeStub.runtime.openOptionsPageCalls).toBe(1);
   });
 });
+
+describe('悬停/划词快捷开关', () => {
+  /**
+   * 开关的三段行为：① 按存储回填勾选；② 改动写进存储并**推给当前页面**
+   * （内容脚本当场重新挂/摘监听器）；③ 拿不到确认回执时如实说要重新加载——
+   * 绝不能静默地让用户以为生效了（任务书点名要求）。
+   */
+
+  function applySettingsResponder(ack: boolean): void {
+    chromeStub.tabs.responder = (_tabId, message) => {
+      const type = (message as { type?: string } | null)?.type;
+      if (type === MSG.GET_PAGE_STATE || type === MSG.TOGGLE_PAGE) {
+        return pageState({ translated: true, total: 2, done: 2 });
+      }
+      // 新版内容脚本对 APPLY_SETTINGS 回 { ok: true }；旧版/没有内容脚本走 undefined / 拒绝分支。
+      return ack ? { ok: true } : undefined;
+    };
+  }
+
+  it('勾选状态按存储里的设置回填', async () => {
+    await seedSettings({ hoverTranslate: false, selectionTranslate: true });
+    await loadPopup();
+
+    const { hoverToggle, selectionToggle } = ui();
+    expect(hoverToggle.checked).toBe(false);
+    expect(selectionToggle.checked).toBe(true);
+  });
+
+  it('默认存储（没写过这两项）按默认值勾选：两个都是 true', async () => {
+    await loadPopup();
+    expect(ui().hoverToggle.checked).toBe(true);
+    expect(ui().selectionToggle.checked).toBe(true);
+  });
+
+  it('取消勾选：写进存储，并把 APPLY_SETTINGS 推给活动标签页', async () => {
+    applySettingsResponder(true);
+    await seedSettings({ hoverTranslate: true, targetLang: 'fr' });
+    await loadPopup();
+
+    const { hoverToggle } = ui();
+    hoverToggle.checked = false;
+    hoverToggle.dispatchEvent(new Event('change'));
+
+    await waitFor(async () => (await storedSettings()).hoverTranslate === false);
+    const pushed = chromeStub.tabs.sent
+      .map(({ message }) => message as { type?: string; payload?: Record<string, unknown> })
+      .find((message) => message.type === MSG.APPLY_SETTINGS);
+    expect(pushed?.payload).toEqual({ hoverTranslate: false, selectionTranslate: true, targetLang: 'fr' });
+    // 只推这一条：不顺手发 TOGGLE_PAGE/TRANSLATE_PAGE，开关不该触发重译或还原。
+    expect(sentTypes().filter((type) => type === MSG.APPLY_SETTINGS)).toHaveLength(1);
+    expect(sentTypes().filter((type) => type === MSG.TOGGLE_PAGE || type === MSG.TRANSLATE_PAGE)).toHaveLength(0);
+  });
+
+  it('内容脚本确认回执：状态行明确说"当前页面即时生效"', async () => {
+    applySettingsResponder(true);
+    await loadPopup();
+
+    const { selectionToggle, status } = ui();
+    selectionToggle.checked = false;
+    selectionToggle.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('即时生效'));
+    expect(status.textContent).toContain('划词翻译');
+  });
+
+  it('没有内容脚本（sendMessage 被拒）：如实说需要重新加载页面，不假装生效', async () => {
+    await seedSettings({ hoverTranslate: true });
+    await loadPopup();
+
+    const { hoverToggle, status } = ui();
+    // 走"端口都没开"的真实拒绝路径（chrome:// 等没有内容脚本的页面）。
+    chromeStub.tabs.rejectSendMessage = true;
+    hoverToggle.checked = false;
+    hoverToggle.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('重新加载页面后生效'));
+    expect(status.textContent).toContain('悬停翻译');
+    // 但设置本身**已经保存**：下次加载的页面会按新值挂监听。
+    expect((await storedSettings()).hoverTranslate).toBe(false);
+  });
+
+  it('内容脚本没回执（旧版不认识 APPLY_SETTINGS）：同样不谎报即时生效', async () => {
+    applySettingsResponder(false); // responder 对 APPLY_SETTINGS 回 undefined
+    await loadPopup();
+
+    const { hoverToggle, status } = ui();
+    hoverToggle.checked = false;
+    hoverToggle.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('重新加载页面后生效'));
+    expect((await storedSettings()).hoverTranslate).toBe(false);
+  });
+
+  it('保存被拒绝：勾选回滚到真正生效的那一档并说明原因', async () => {
+    await seedSettings({ hoverTranslate: true });
+    await loadPopup();
+
+    const { hoverToggle, status } = ui();
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1 } });
+
+    hoverToggle.checked = false;
+    hoverToggle.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('设置未能保存'));
+    expect(hoverToggle.checked).toBe(true);
+    // 保存都没成，就更不该往页面推 APPLY_SETTINGS。
+    expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE]);
+  });
+});
