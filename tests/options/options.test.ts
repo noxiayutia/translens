@@ -585,6 +585,28 @@ describe('设置页：服务商预设', () => {
     expect(page.baseUrl.value).toBe(CUSTOM_BASE_URL);
     expect(page.model.value).toBe('deepseek');
   });
+  /**
+   * 不变式：**加载设置页永远不会重放预设**。
+   *
+   * 上面那条用例里存值恰好等于预设值，所以"init 末尾顺手 applyProviderPreset()"这种
+   * 改法也能通过——那是测试盲区（本条就是补那个洞）。这条故意让存值**偏离**预设：
+   * 用户选了 DeepSeek 之后又改过接口地址（或经别的路径写入过存储），重开设置页必须
+   * 显示存下来的值。用户的凭据与地址不能被界面无声改写回去。
+   */
+  it('存的是非自定义预设但字段已偏离：重开显示存值，绝不重放预设', async () => {
+    await seedSettings({
+      engineId: 'openai-compat',
+      providerPreset: 'deepseek',
+      engineConfig: { apiKey: 'sk-keep', baseUrl: 'https://my-proxy.example/v1', model: 'deepseek-chat' },
+    });
+    const page = await loadOptions();
+
+    // 下拉仍显示用户选过的预设……
+    expect(page.provider.value).toBe('deepseek');
+    // ……但字段必须是他存的那个偏离值，而不是 DeepSeek 预设的地址。
+    expect(page.baseUrl.value).toBe('https://my-proxy.example/v1');
+    expect(page.model.value).toBe('deepseek-chat');
+  });
 });
 
 describe('设置页：清除翻译缓存', () => {
