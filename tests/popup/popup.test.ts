@@ -46,13 +46,15 @@ interface PopupUi {
   toggle: HTMLButtonElement;
   status: HTMLParagraphElement;
   displayMode: HTMLSelectElement;
+  hoverToggle: HTMLInputElement;
+  selectionToggle: HTMLInputElement;
   targetLang: HTMLSelectElement;
   engine: HTMLSelectElement;
   hint: HTMLParagraphElement;
   optionsButton: HTMLButtonElement;
 }
 
-/** `popup.html` 里的七个控件；按 id 取，取不到直接失败。 */
+/** `popup.html` 里的九个控件；按 id 取，取不到直接失败。 */
 function ui(): PopupUi {
   const pick = <T extends HTMLElement>(id: string): T => {
     const found = document.getElementById(id);
@@ -63,6 +65,8 @@ function ui(): PopupUi {
     toggle: pick<HTMLButtonElement>('toggle'),
     status: pick<HTMLParagraphElement>('status'),
     displayMode: pick<HTMLSelectElement>('display-mode'),
+    hoverToggle: pick<HTMLInputElement>('hover-translate'),
+    selectionToggle: pick<HTMLInputElement>('selection-translate'),
     targetLang: pick<HTMLSelectElement>('target-lang'),
     engine: pick<HTMLSelectElement>('engine'),
     hint: pick<HTMLParagraphElement>('engine-hint'),
@@ -151,7 +155,8 @@ describe('popup.html 结构', () => {
     expect(script?.getAttribute('type')).toBe('module');
     expect(script?.getAttribute('src')).toBe('./popup.ts');
     // 测试靠这些 id 取控件；HTML 里少一个，上面 `ui()` 就会失败——这里再钉一次更直白的原因。
-    expect(parsed.querySelectorAll('[id]').length).toBe(7);
+    // 7 个原有控件 + 「悬停翻译」「划词翻译」两个快捷开关（规格 §7.1 第 5 项）。
+    expect(parsed.querySelectorAll('[id]').length).toBe(9);
   });
 });
 

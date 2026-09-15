@@ -87,6 +87,25 @@ body {
   background: transparent;
 }
 
+/* 悬停/划词快捷开关（规格 §7.1 第 5 项）：一行一个 checkbox + 说明文字。 */
+.field-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -2px 0 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.field-toggle input[type="checkbox"] {
+  margin: 0;
+  accent-color: #2b6cb0;
+}
+
+.field-toggle span {
+  opacity: 0.86;
+}
+
 .hint {
   margin: 4px 2px 0;
   font-size: 12px;

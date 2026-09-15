@@ -20,6 +20,16 @@
       <select id="display-mode"></select>
     </label>
 
+    <!-- 规格 §7.1 的快捷开关：紧贴显示模式，改完即推给当前页（见 popup.ts 的推送注释）。 -->
+    <label class="field-toggle">
+      <input id="hover-translate" type="checkbox" />
+      <span>悬停翻译（按住 Shift 悬停段落）</span>
+    </label>
+    <label class="field-toggle">
+      <input id="selection-translate" type="checkbox" />
+      <span>划词翻译（选中文字弹出气泡）</span>
+    </label>
+
     <label class="field">
       <span>目标语言</span>
       <select id="target-lang"></select>
