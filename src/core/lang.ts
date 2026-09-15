@@ -149,6 +149,23 @@ const TARGET_SCRIPT: Record<string, ScriptLang> = {
 export type HanVariant = 'hans' | 'hant' | 'unknown';
 
 /**
+ * 平假名 / 片假名（含半角片假名）的码点区间。
+ * 与 `SCRIPT_RANGES` 里 'ja' 的判定同源再加半角段：半角片假名在老站点与一些
+ * 站內缩写（`ｵﾗ`、`ｱﾃ`）里仍频繁出现，只认全角会漏。
+ */
+const KANA = /[\u3040-\u30ff\uff66-\uff9d]/;
+
+/**
+ * 文本里是否出现过假名。**页面级**判据的构件：调用方在采集前对整页文本扫一遍，
+ * 把结果作为本轮上下文传回来（见 `shouldSkip` 的 `allowSameScriptSkip`）。
+ * 单遍正则、命中即停，拿得起重复调用——但它每次看的都是"一整页"的量，
+ * 所以每个调用点都该自己做缓存，不许逐段跑。
+ */
+export function containsKana(text: string): boolean {
+  return KANA.test(text);
+}
+
+/**
  * 只在某一字体出现的高频字。两组**严格一一对应**：`HANS_ONLY[i]` 与 `HANT_ONLY[i]`
  * 是同一个字的两种写法，增删必须成对，否则计数会天然偏向更长的那一组。
  * 选的都是在两岸三地日常文本里高频出现的字，单段文本里出现一两个就足以定性。
@@ -186,6 +203,20 @@ function targetHanVariant(code: string): HanVariant | undefined {
   return undefined;
 }
 
+/** `shouldSkip` 的本轮上下文选项。 */
+export interface ShouldSkipOptions {
+  /**
+   * 是否允许因「看起来已经是目标语言」而跳过本段。默认 `true`（历史行为）。
+   *
+   * 传 `false` 的正当性来自**页面级**信息：整页出现过假名时，纯汉字段落很可能是
+   * 「只用汉字书写的日文」，而单段层面的 `zh` 检出不再等于"它已经是中文"——
+   * 这一轮就不因字符集/简繁变体的相似而跳过（宁可多翻不可漏翻：这个开关只会
+   * **增加**翻译，永远不会减少）。页面级判定的采集在内容脚本层（那是宿主层的职责），
+   * 本函数保持纯函数：判定结果由调用方算好传进来。
+   */
+  allowSameScriptSkip?: boolean;
+}
+
 /**
  * 段落已经是指定目标语言时无需翻译。
  * 非中文目标：只有目标字符集严格领先才跳过，与其它字符集同分时宁可翻译——
@@ -194,21 +225,17 @@ function targetHanVariant(code: string): HanVariant | undefined {
  * 靠 detectHanVariant 分辨简繁——文本与目标**同变体**才跳过；异变体必须翻译，
  * 简繁互转正是在这一步发生的，一刀切跳过会让它变成静默 no-op。
  *
- * 已知限制：**纯汉字、不含假名的日文**会被判成中文。
- * `'東京都港区赤坂'` 这类只有汉字的日文，字符全部落在 `SCRIPT_RANGES` 的 CJK 区间里，
- * `detectScript` 只能给出 `'zh'`，于是目标为中文时这里把它当成「已是目标语言」：
- * `zh-Hant` 下必跳（東是繁体特征字），`zh-Hans` 下只要整段没有特征字也跳，
- * 这一整段就永远不翻。
- *
- * 这在**单段文本**层面不可判：汉字是简繁日共用的书写系统，不看上下文没有任何依据，
- * 加什么启发式都只是换一种错法。唯一可靠的办法是文档级上下文——整页出现过假名
- * 就把全页按日文处理，段落再继承这个判断。那要求 `shouldSkip` 拿到整页信息
- * （改签名或引入状态），属于内容脚本接线的设计。Plan 1 的 core 是纯函数层，
- * 只回答「这一段像不像目标语言」，不持有页面状态，所以不做；
- * 等它真正接到内容脚本上（目前尚无生产调用点）再在**调用方**补页面级判定，
- * 不要在这里塞启发式。
+ * 「**纯汉字、无假名的日文**会被判成中文」曾是单段层面的已知限制（'東京都港区赤坂'
+ * 这类段落在中文目标下整段跳过，那片区域永远没有译文）：汉字是简繁日共用的书写系统，
+ * 不看页面上下文没有任何可靠依据，加启发式只是换一种错法。
+ * 现在它由调用方带页面级上下文解决：内容脚本采集前扫一遍整页假名（{@link containsKana}），
+ * 页面含假名时本轮传 `allowSameScriptSkip: false`。本函数仍然只回答「这一段像不像目标
+ * 语言」，不持有任何宿主状态。
  */
-export function shouldSkip(text: string, targetLang: string): boolean {
+export function shouldSkip(text: string, targetLang: string, options: ShouldSkipOptions = {}): boolean {
+  // 本轮的页面级上下文判定"相似不再等于同语言"：所有跳过分支一并关闭（见选项注释）。
+  if (options.allowSameScriptSkip === false) return false;
+
   const code = targetLang.toLowerCase();
   const expected = TARGET_SCRIPT[baseLang(code)];
   if (expected === undefined) return false;

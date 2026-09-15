@@ -1357,3 +1357,84 @@ describe('内容脚本编排：同一页面的重复文本去重到一次请求'
     void buttons;
   });
 });
+
+/**
+ * 页面级假名上下文（修「纯汉字日文被静默跳过」的已知限制）：
+ *
+ * `shouldSkip` 在单段层面分不出"中文"与"只用汉字的日文"，所以采集前对整页做一次
+ * 廉价扫描（`document.body.textContent` 是否含假名），结果作为本轮判据传给采集层：
+ * 含假名 → 本轮不因"看起来已是中文"而跳过；不含假名 → 行为与今天逐字相同
+ * （中文页面翻中文仍然零请求）。扫描每轮只做一次，绝不是每段一次。
+ */
+describe('内容脚本编排：含假名页面的纯汉字段落不再被跳过', () => {
+  /**
+   * 数 `document.body.textContent` 被读了多少次（假名扫描的读数）。
+   * 在 body 上盖一个**自有**访问器、代理回原型 getter：jsdom 里现有生产代码
+   * 没有任何一处读 body.textContent（extractor 走 childNodes / nodeValue），
+   * 所以这里的计数只可能来自本轮页面扫描。用例结束必须还原，否则会漏进后续用例。
+   */
+  function spyOnBodyTextContent(): { count: () => number; restore: () => void } {
+    const descriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    const originalGet = descriptor?.get;
+    if (typeof originalGet !== 'function') throw new Error('textContent 必须是 Node.prototype 上的访问器');
+    let reads = 0;
+    Object.defineProperty(document.body, 'textContent', {
+      configurable: true,
+      get(): string | null {
+        reads += 1;
+        return originalGet.call(this) as string | null;
+      },
+    });
+    return {
+      count: () => reads,
+      restore: () => {
+        delete (document.body as unknown as { textContent?: unknown }).textContent;
+      },
+    };
+  }
+
+  it('日文页面（含假名）：纯汉字段落照常送翻并落地译文', async () => {
+    // '日本橋三丁目' 不含任何假名、也没有简繁特征字——默认判据下"已是简体中文"，
+    // 修复前会被整段静默跳过；但它躺在一个有假名的页面上，更可能是日文地名。
+    mount('<p>本日はお日柄もよく</p><p>日本橋三丁目</p><p>English side note here</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    const texts = sentBatches(worker).flat().map((item) => item.text);
+    expect(texts).toContain('日本橋三丁目');
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 3, done: 3, failed: 0 });
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('日本橋三丁目'))).toHaveLength(1);
+  });
+
+  it('纯中文页面（无假名）目标中文：仍然整体跳过、零请求——旧行为逐字不变', async () => {
+    mount('<p>这是一段中文内容</p><p>另一段中文内容在这里</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(sentBatches(worker)).toEqual([]);
+    expect(state).toEqual({ translated: false, mode: 'translated-only', total: 0, done: 0, failed: 0 });
+    expect(document.getElementById('jy-toast')?.shadowRoot?.textContent).toContain('没有找到需要翻译的内容');
+  });
+
+  it('页面扫描整轮只做一次：60 段页面里 body 全文只读一遍', async () => {
+    const lines: string[] = ['<p>本日はお日柄もよく</p>'];
+    for (let i = 0; i < 60; i += 1) lines.push(`<p>段落${String(i)}号の内容です</p>`);
+    mount(lines.join(''));
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    const scan = spyOnBodyTextContent();
+    try {
+      await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+      // 恰好 1 次：0 = 没扫描（纯汉字段会被跳过），61 = 每段扫一遍（性能红线）。
+      expect(scan.count()).toBe(1);
+      // 扫描确实用上了：全部段落都进了请求（含无假名的纯汉字段）。
+      expect(sentBatches(worker).flat()).toHaveLength(61);
+    } finally {
+      scan.restore();
+    }
+  });
+});

@@ -737,6 +737,42 @@ describe('增量翻译：失败处理与布局不变式', () => {
     expect(findHostByText(translate('Layout probe one text'))).toBeDefined();
     expect(findHostByText(translate('Probe loose intro'))).toBeDefined();
   });
+
+  it('增量轮复用页面级假名判定：不重扫整页，纯汉字新段落照常翻译', async () => {
+    // 数 body.textContent 的读取次数（页面级扫描的读数）：只允许整页翻译那一刻的 1 次，
+    // 增量轮必须沿用缓存——每轮重读全文对 3000 段页面就是每轮 O(整页) 的字符串拼接。
+    const descriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    const originalGet = descriptor?.get;
+    if (typeof originalGet !== 'function') throw new Error('textContent 必须是 Node.prototype 上的访问器');
+    let reads = 0;
+    Object.defineProperty(document.body, 'textContent', {
+      configurable: true,
+      get(): string | null {
+        reads += 1;
+        return originalGet.call(this) as string | null;
+      },
+    });
+    try {
+      mount('<article id="a"><p>本日はお日柄もよく</p></article>');
+      const { worker, contentListener } = await loadContentScript();
+      worker.mockImplementation(autoReply());
+      await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+      expect(reads).toBe(1);
+      resetCounts(worker);
+
+      // 无假名、也无简繁特征字的纯汉字段：默认判据下"已是简体中文"。修复前增量轮
+      // 照样跳过；现在沿用首轮"页面含假名"的判定，照常送翻。
+      appendParagraph('日本橋三丁目', document.getElementById('a') as HTMLElement);
+      await runDebounceWindow();
+
+      expect(sentTexts(worker)).toContain('日本橋三丁目');
+      expect(findHostByText(translate('日本橋三丁目'))).toBeDefined();
+      // 增量轮**没有**再读整页文本：判定来自缓存。
+      expect(reads).toBe(1);
+    } finally {
+      delete (document.body as unknown as { textContent?: unknown }).textContent;
+    }
+  });
 });
 
 describe('增量翻译：页面级提示与整页同一套判择逻辑', () => {

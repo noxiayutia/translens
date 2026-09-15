@@ -4,7 +4,7 @@ import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
-import { collectSegments, type ExtractedSegment } from './extractor';
+import { collectSegments, pageHasKana, type ExtractedSegment } from './extractor';
 import { createHoverTranslator, type HoverController } from './hover';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
@@ -36,6 +36,16 @@ let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
  * （改动对新页面生效，本要重来请先还原）。还原时收回。
  */
 let pageSnapshot: UiSettings | null = null;
+/**
+ * 本轮的页面级假名判定（与 `pageSnapshot` 同生同灭）。
+ *
+ * `shouldSkip` 在单段层面分不出"中文"与"只用汉字的日文"（见 `core/lang.ts`），
+ * 这个盲区在整页翻译里表现为「東京都港区赤坂」这类纯汉字段落被当成"已是中文"静默跳过。
+ * 采集前对整页 `textContent` 做一次廉价扫描补足上下文：页面出现过假名 → 本轮所有采集
+ * （含增量轮）不因"看起来已是目标语言"而跳过。**每轮只扫这一次**，增量轮沿用缓存——
+ * 每轮重读全文对大页面就是 O(整页) 的字符串拼接，而页面是不是日文页面不会中途翻转。
+ */
+let pageKanaSnapshot = false;
 const finished = new Set<string>();
 const failedIds = new Set<string>();
 
@@ -366,7 +376,10 @@ async function translatePage(): Promise<void> {
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
 
-  const collected = collectSegments(document.body, { targetLang: settings.targetLang });
+  // 页面级假名判定：**采集之前**对整页文本扫这一次（见 pageKanaSnapshot 的注释），
+  // 本轮整页与后续增量共用这份结果。
+  const kanaOnPage = pageHasKana(document.body);
+  const collected = collectSegments(document.body, { targetLang: settings.targetLang, pageHasKana: kanaOnPage });
   if (collected.length === 0) {
     // 这里到认领之间没有 await，所以自己一定还是当前世代（generation 只能被下一轮
     // 翻译或还原推进，而两者都跑不到这里），守卫直接收回即可。
@@ -378,6 +391,7 @@ async function translatePage(): Promise<void> {
   displayMode = settings.displayMode;
   // 增量层的唯一设置来源：此后新内容一律沿用这份快照（见 translateIncremental）。
   pageSnapshot = settings;
+  pageKanaSnapshot = kanaOnPage;
   // 朗读的目标语言跟着这一轮翻译用的一次刷新（翻译请求本身不依赖它，见 translateInline）。
   inlineTargetLang = settings.targetLang;
   finished.clear();
@@ -652,7 +666,10 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
  *   绝不能进增量队列；在飞的增量批次由 renderer 身份守卫丢弃）。
  */
 const incremental = createIncrementalObserver({
-  scanOptions: () => (pageSnapshot === null ? null : { targetLang: pageSnapshot.targetLang }),
+  scanOptions: () =>
+    pageSnapshot === null
+      ? null
+      : { targetLang: pageSnapshot.targetLang, pageHasKana: pageKanaSnapshot },
   isTranslated: () => renderer !== null,
   isStale: () => (globalThis as { __jinyiContentInstance?: symbol }).__jinyiContentInstance !== INSTANCE_TOKEN,
   translate: translateIncremental,
@@ -748,6 +765,7 @@ function restorePage(): void {
   renderer = null;
   segments = [];
   pageSnapshot = null;
+  pageKanaSnapshot = false;
   finished.clear();
   failedIds.clear();
   // 页面级提示账本是每一轮的局部状态（见 translatePage 的 createNoticeTracker），

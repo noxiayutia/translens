@@ -1,4 +1,4 @@
-import { isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
+import { containsKana, isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
 
 /** 译文宿主的落点。整元素段落交给渲染器按布局规则决定；松散文本段落必须显式给出位置。 */
 export type SegmentAnchor =
@@ -31,7 +31,26 @@ export interface ExtractedSegment {
 
 export interface ExtractorOptions {
   targetLang: string;
+  /**
+   * 页面级判定：**整页**文本里出现过假名（由 {@link pageHasKana} 在采集前算一次，
+   * 调用方负责本轮复用）。true 时本段的"看起来已是目标语言"不再构成跳过理由——
+   * 汉字是中日共用的书写系统，有假名的页面上纯汉字段落更可能是日文。
+   * 省略/false 时行为与逐段判据完全相同。
+   */
+  pageHasKana?: boolean;
   shouldSkipText?: (text: string) => boolean;
+}
+
+/**
+ * 廉价页面级扫描：给定根（通常是 `document.body`）之下是否出现过假名/片假名。
+ *
+ * 读的是整棵子树的 `textContent`——**整页一次**的量，不是每段一次，调用方必须
+ * 缓存本轮结果（`translatePage` 拿它喂采集，增量轮直接沿用，见 index.ts）。
+ * 方向上只会多翻不会漏翻：`<script>`/隐藏节点里的假名也算数（宁可保守），
+ * 换来的是日文页面不再整片静默没有译文。
+ */
+export function pageHasKana(root: ParentNode): boolean {
+  return containsKana(root.textContent ?? '');
 }
 
 /** 这些标签里的内容一律不翻译：代码、表单控件、多媒体与元数据。 */
@@ -382,7 +401,8 @@ function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegm
   const push = (element: Element, text: string, anchor: SegmentAnchor, textRun: boolean): boolean => {
     if (!isTranslatableText(text)) return false;
     if (options.shouldSkipText?.(text)) return false;
-    if (shouldSkip(text, options.targetLang)) return false;
+    // 页面级判定为"本页含假名"时，本轮关闭"看起来已是目标语言"的跳过（见 ExtractorOptions）。
+    if (shouldSkip(text, options.targetLang, { allowSameScriptSkip: !options.pageHasKana })) return false;
 
     const id = `jy-${segments.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
     element.setAttribute('data-jy-id', id);

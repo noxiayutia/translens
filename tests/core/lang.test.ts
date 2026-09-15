@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { detectHanVariant, detectScript, isTranslatableText, normalizeText, shouldSkip } from '../../src/core/lang';
+import {
+  containsKana,
+  detectHanVariant,
+  detectScript,
+  isTranslatableText,
+  normalizeText,
+  shouldSkip,
+} from '../../src/core/lang';
 
 describe('detectScript', () => {
   it('识别纯中文', () => {
@@ -180,5 +187,49 @@ describe('shouldSkip', () => {
 
   it('没有任何简繁特征字的纯中文按字符集判定跳过', () => {
     expect(shouldSkip('没有简繁特征的纯中文', 'zh-Hans')).toBe(true);
+  });
+});
+
+/**
+ * `allowSameScriptSkip` 是页面级上下文的入口（修「纯汉字日文被静默跳过」那条已知限制）：
+ * 内容脚本扫一遍整页发现假名时传 false——本页的"像中文"不再等于"是中文"，
+ * 那些很可能只是不用假名的日文。方向上只会**多翻**，不会少翻。
+ */
+describe('shouldSkip 的 allowSameScriptSkip 选项', () => {
+  it('关掉后：目标中文的纯汉字段落不再因"看起来已是中文"而跳过', () => {
+    // '日本橋三丁目' 整段没有任何简繁特征字（detectHanVariant 判 unknown），
+    // 默认路径会按字符集判定跳过——这正是日文页面上被吞掉的那类段落。
+    expect(shouldSkip('日本橋三丁目', 'zh-Hans')).toBe(true);
+    expect(shouldSkip('日本橋三丁目', 'zh-Hans', { allowSameScriptSkip: false })).toBe(false);
+    // zh-Hant 下「東」是繁体特征字、同样必跳的段落也一样放行。
+    expect(shouldSkip('東京都港区', 'zh-Hant')).toBe(true);
+    expect(shouldSkip('東京都港区', 'zh-Hant', { allowSameScriptSkip: false })).toBe(false);
+  });
+
+  it('非中文目标的"已是目标语言"跳过同样受该开关约束（同一条规则，不留分支）', () => {
+    expect(shouldSkip('This is English', 'en')).toBe(true);
+    expect(shouldSkip('This is English', 'en', { allowSameScriptSkip: false })).toBe(false);
+  });
+
+  it('默认（不传）与显式 true 的行为逐字不变', () => {
+    expect(shouldSkip('日本橋三丁目', 'zh-Hans', { allowSameScriptSkip: true })).toBe(true);
+    expect(shouldSkip('这是一段中文', 'zh-Hans', {})).toBe(true);
+    expect(shouldSkip('This is English', 'zh-Hans', { allowSameScriptSkip: false })).toBe(false);
+    // 关掉开关只会让"跳过"变少，永远不会让它变多。
+    expect(shouldSkip('Hello world 世界', 'zh-Hans', { allowSameScriptSkip: false })).toBe(false);
+  });
+});
+
+describe('containsKana（页面级假名判据）', () => {
+  it('平假名、片假名都算', () => {
+    expect(containsKana('本日はお日柄もよく')).toBe(true);
+    expect(containsKana('東京タワー')).toBe(true);
+    expect(containsKana('ｵﾗｵﾗ')).toBe(true); // 半角片假名（老站点与缩写里都见过）
+  });
+
+  it('纯汉字、假名之外的字符不算', () => {
+    expect(containsKana('東京都港区赤坂')).toBe(false);
+    expect(containsKana('Hello 世界 123！？')).toBe(false);
+    expect(containsKana('')).toBe(false);
   });
 });

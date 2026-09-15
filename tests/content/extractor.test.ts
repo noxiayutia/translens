@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { collectSegments, isBlockDisplay } from '../../src/content/extractor';
+import { collectSegments, isBlockDisplay, pageHasKana } from '../../src/content/extractor';
 
 function mount(html: string): HTMLElement {
   document.body.innerHTML = html;
@@ -311,6 +311,29 @@ describe('collectSegments', () => {
       shouldSkipText: (text) => text.startsWith('Skip'),
     });
     expect(segments.map((s) => s.text)).toEqual(['Keep me']);
+  });
+
+  // ---- 页面级假名上下文（修「纯汉字日文被静默跳过」的已知限制）----
+  it('pageHasKana 探测：整页含假名/片假名时为 true，纯汉字页为 false', () => {
+    expect(pageHasKana(mount('<p>本日はお日柄もよく</p><p>東京タワー</p>'))).toBe(true);
+    expect(pageHasKana(mount('<p>東京都港区赤坂</p><p>漢字 123 abc</p>'))).toBe(false);
+    expect(pageHasKana(mount('<p>这是一段纯中文内容</p>'))).toBe(false);
+    expect(pageHasKana(mount(''))).toBe(false);
+  });
+
+  it('pageHasKana:true 时，纯汉字段落不因"疑似已是中文"被跳过', () => {
+    const root = mount('<p>日本橋</p><p>日本語です</p>');
+    // 默认（无页面上下文）：'日本橋' 无简繁特征、被判定为"已是 zh"→ 跳过。
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).not.toContain('日本橋');
+    // 页面级判定为"有假名"时放行：'日本橋' 很可能只是不用假名的日文。
+    expect(collectSegments(root, { targetLang: 'zh-Hans', pageHasKana: true }).map((s) => s.text)).toContain(
+      '日本橋',
+    );
+  });
+
+  it('pageHasKana:false（无假名页）保留旧行为：纯中文段仍整体跳过', () => {
+    const root = mount('<p>这是一段中文</p><p>另一段中文内容</p>');
+    expect(collectSegments(root, { targetLang: 'zh-Hans', pageHasKana: false })).toEqual([]);
   });
 
   it('混合内容里容器自己的直接文本也成段，且保持文档顺序', () => {
