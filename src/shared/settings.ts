@@ -306,8 +306,10 @@ function resolveArea(area?: StorageArea): StorageArea {
  *
  * 调用方是**扩展自身的受信页面与后台**：service worker、设置页、弹窗——三者同源
  * （`chrome-extension://`），谁也拿不到对方拿不到的东西，所以弹窗读完整设置不是越权。
- * 真正需要结构上隔离的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
- * 那个类型里根本没有 `apiKey` 字段。密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
+ * 真正需要把密钥隔离开的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
+ * 那个类型里根本没有 `apiKey` 字段——注意这是**类型级**投影（下游拿不到字段），不是
+ * 内存级隔离（实现上仍经由本函数读出整份设置，见 `loadUiSettings` 的注释）。密钥不得进入
+ * 日志、消息与导出的 JSON（规格 §7.3）。
  *
  * 这里也是**迁移入口**（规格 §7.3），具体步骤见 `migrate`。
  */
@@ -350,11 +352,20 @@ export async function loadSettings(area?: StorageArea): Promise<Settings> {
   return mergeSettings(migrate(stored, storedVersion), CURRENT_VERSION);
 }
 
-/** 不带 API Key 的设置投影，供**内容脚本**使用（它跑在网页进程里）。 */
+/** 不带 API Key 的接口配置投影，见 {@link loadUiSettings} 的如实定性。 */
 export type UiEngineConfig = Omit<EngineConfigSettings, 'apiKey'>;
 
 export type UiSettings = Omit<Settings, 'engineConfig'> & { engineConfig: UiEngineConfig };
 
+/**
+ * 读出**投影版**设置，供内容脚本一类不该碰凭据的调用方使用。
+ *
+ * 如实定性——这是**类型级**隔离，不是内存级隔离：`UiSettings` 里没有 `apiKey` 字段，
+ * 下游代码拿不到它；而实现上本函数仍调用 `loadSettings` 读出整份设置再丢掉字段，密钥会
+ * **瞬态**出现在调用方所在 world 的堆里。内容脚本处于 isolated world，页面脚本本来就
+ * 访问不到那个堆，实际风险接近 0——但别把投影读成"密钥从不经过网页进程内存"。
+ * 要做到结构性隔离，得把 apiKey 拆成独立存储键、投影版根本不读它（后续工作，尚未做）。
+ */
 export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
   const { engineConfig, ...rest } = await loadSettings(area);
   return { ...rest, engineConfig: { baseUrl: engineConfig.baseUrl, model: engineConfig.model } };

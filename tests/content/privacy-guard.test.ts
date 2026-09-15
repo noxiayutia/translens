@@ -1,10 +1,13 @@
 /**
  * 隐私守卫：`src/content/**` 一行 `loadSettings` 都不许有。
  *
- * 内容脚本跑在**网页的进程里**，`shared/settings.ts` 的 `loadSettings()` 返回的完整设置
- * 含 `engineConfig.apiKey`——用它就等于把 API Key 反序列化进网页进程的堆内存（页面自己
- * 的脚本、同进程的其它扩展都有机会看到），而 README 把"密钥不进内容脚本"写成了已兑现的
- * 承诺（规格 §7.3）。投影版本是 `loadUiSettings()`：类型里根本没有 `apiKey` 字段。
+ * 内容脚本跑在网页进程（isolated world）里，`shared/settings.ts` 的 `loadSettings()` 返回的
+ * 完整设置含 `engineConfig.apiKey`——用它就等于让密钥以"可读字段"的形式流进网页侧的调用链。
+ * 如实定性边界：这是**类型级**约束（投影版类型里没有 apiKey 字段，下游拿不到、也就写不进
+ * 消息与日志），不是内存级隔离（`loadUiSettings` 内部同样会读出整份设置，密钥会瞬态经过本
+ * world 的堆；isolated world 下页面脚本访问不到那个堆）。守卫防的是"内容脚本里出现能直接
+ * 访问 apiKey 的代码"这条扩散路径，README 把"密钥不进内容脚本（投影）"写成了已兑现的承诺
+ * （规格 §7.3）。
  *
  * 断言的是**源码文本本身**而不是某次 import 的行为（同 `tests/core/layering.test.ts`）：
  * 混进来的一行 import 在运行时不一定会被触发，但它已经是这条边界的破口。

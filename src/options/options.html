@@ -76,7 +76,11 @@
         <ul class="privacy">
           <li>
             <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：不上传、不同步、
-            不写入日志，也不会进入发给网页的设置投影——内容脚本拿到的设置里根本没有这个字段。
+            不写入日志。发给内容脚本的设置是<strong>类型级投影</strong>——投影结果里没有这个字段，
+            下游代码拿不到它；内容脚本又运行在浏览器的 isolated world，页面脚本读不到它的内存。
+            （如实说明：这是"字段隔离 + isolated world"，不是内存级隔离——读取设置的瞬间，
+            密钥仍会随整份设置经过扩展自己的 isolated world 堆；彻底的结构性隔离要把密钥拆成
+            独立存储键，属后续工作。）
           </li>
           <li>
             <strong>除翻译请求本身外，不发起任何网络请求</strong>：不采集浏览数据，不做任何统计上报。

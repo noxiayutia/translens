@@ -368,10 +368,15 @@ async function translatePage(): Promise<void> {
   const mine = ++generation;
   running = true;
 
-  // **用投影**（`loadUiSettings`），不是完整设置：内容脚本跑在网页进程里，读完整设置会把
-  // API Key 反序列化进网页进程的堆内存（规格 §7.3）。`UiSettings` 里根本没有 `apiKey`
-  // 字段，本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
-  // maxSegmentsPerBatch 全在投影里——这一层由 `tests/content/privacy-guard.test.ts` 守着。
+  // **用投影**（`loadUiSettings`），不是完整设置。要把话说准：这是**类型级**的边界，
+  // 不是内存级隔离——`loadUiSettings` 内部仍会把**整份设置（含 apiKey）**反序列化出来
+  // 再丢掉字段，只要密钥和设置存在同一个键里，这一次瞬态出现就不可避免。投影买到的是：
+  // 本层下游代码**拿不到** apiKey 字段、不可能把它写进消息或日志（规格 §7.3 的边界，
+  // 由 `tests/content/privacy-guard.test.ts` 守着），而内容脚本跑在 isolated world 里，
+  // 页面脚本本来就访问不到它的堆——残留风险接近 0。真正的结构性隔离要把 apiKey 拆成
+  // 独立存储键（属后续工作，本版本未做，别按"密钥绝不进网页内存"来理解）。
+  // 本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
+  // maxSegmentsPerBatch 全在投影里。
   const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
@@ -754,7 +759,9 @@ export function applyFeatureSettings(next: FeatureSettings): void {
   else pair.selection.disable();
 }
 
-/** 启动时读一次设置（投影，密钥不进网页进程）。读不出来按默认值挂监听——翻译路径会另行报告设置损坏。 */
+/** 启动时读一次设置（投影——类型级隔离，见 translatePage 处的注释：密钥会在读取瞬间
+ *  经过本 isolated world 的堆，但拿不到字段、页面脚本也摸不到这里）。读不出来按默认值挂监听——
+ *  翻译路径会另行报告设置损坏。 */
 function initFeatureSettings(): void {
   void loadUiSettings().then(
     (settings) => {
