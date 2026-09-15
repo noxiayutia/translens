@@ -6801,6 +6801,13 @@ function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: numbe
   if (first.code === 'AUTH') {
     return `${message}（在扩展设置里填好 API Key 后重新翻译此页）`;
   }
+  if (first.code === 'NETWORK') {
+    // 整批网络失败几乎从不是"抖了一下"，而是这个接口根本到不了：默认的免费 Google 接口
+    // 在很多网络下被完全阻断（连超时都不返回）。只说"翻译失败"会让用户以为插件坏了，
+    // 而真正该做的是去设置页换一个自己能访问的接口。规格 §8「免费接口失效」要求的
+    // 就是这条提示。
+    return `${message}。如果反复出现，说明当前网络到不了这个翻译接口——默认的免费 Google 接口在很多网络下无法访问，请在扩展设置里改用你能访问的自定义 API。`;
+  }
   return message;
 }
 

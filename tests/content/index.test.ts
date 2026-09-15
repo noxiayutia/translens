@@ -471,6 +471,27 @@ describe('内容脚本编排：翻译整页', () => {
     }
   });
 
+  it('全部条目网络失败时，toast 要指出「接口到不了」并指向设置页', async () => {
+    // 这不是假想场景：默认的免费 Google 接口在很多网络下被完全阻断，
+    // 表现就是整批 NETWORK 失败。只说"翻译失败"会让用户以为插件坏了，
+    // 而真正该做的是去设置页换成自己能访问的接口（规格 §8「免费接口失效」）。
+    mount('<p>First text</p><p>Second text</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(engineErrorReply('NETWORK', '免费接口请求失败：The operation was aborted'));
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(state.failed).toBe(2);
+    const toastText = document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '';
+    expect(toastText).toContain('免费接口请求失败');
+    // 必须给出可执行的下一步，而不是让用户对着"翻译失败"发呆。
+    expect(toastText).toContain('到不了');
+    expect(toastText).toContain('扩展设置');
+    expect(toastText).toContain('自定义 API');
+    // 网络错误是瞬时错误（RETRYABLE_CODES），逐段重试按钮要保留。
+    for (const host of hosts()) expect(hasRetryButton(host)).toBe(true);
+  });
+
   it('全部条目同码失败（AUTH）时整轮只弹一次 toast，且不挂重试按钮', async () => {
     // 必须按 1 条一批：默认 12 条一批会把三段塞进同一个请求，那样"等整批回完才弹"只是
     // "请求还没回来"的同义反复（审查实测：requestCount = 1）。
