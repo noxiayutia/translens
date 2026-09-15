@@ -5971,12 +5971,35 @@ function rootElements(root: ParentNode): Element[] {
  * `<div>Intro<p>Body</p>Outro</div>` → Intro / Body / Outro 三段。
  * 同一容器的多个直接文本段共享容器锚点（`textRun`），落点由 `anchor` 显式给出。
  *
+ * **语义是「扫 root 的孩子」**：传 `document.body` 时 body 自己的直接文本不在遍历范围，
+ * 传某个新元素时它**自身**的直接文本也采不到。增量翻译要「只扫新增节点本身」，
+ * 用的入口是 {@link collectSegmentsWithin}，别拿本函数凑（见那边注释）。
+ *
  * **副作用（调用方必须知道）**：会给成段元素打上 `data-jy-id`，
  * 给**真正产出过段落的最内层文本块**打上 `data-jy-translated`。因此**每次调用都会让上一轮的全部 id 失效**，
  * 调用方不能拿旧 id 去索引新结果，也不能预期 id 跨调用稳定；
  * 这两类标记由渲染器的 `restore()` 统一清除。
  */
 export function collectSegments(root: ParentNode, options: ExtractorOptions): ExtractedSegment[] {
+  return collectFrom(rootElements(root), options);
+}
+
+/**
+ * 增量翻译的扫描入口：把 **element 自身**当作一个块，连同它的子树一起采段。
+ *
+ * 为什么不能复用 `collectSegments(element)`：那个函数的语义是「扫 element 的孩子」，
+ * 新增的 `<p>新段落</p>`（它自己就是最内层文本块、没有元素孩子）会被整体漏掉。
+ * 除了根语义不同，其余规则——跳过标记、隐藏判定、松散文本段、`data-jy-id` /
+ * `data-jy-translated` 副作用——与 {@link collectSegments} 逐字相同（同一个 {@link collectFrom}）。
+ *
+ * 复杂度 O(这棵子树)：已经成段并标记过的兄弟在被重扫的容器里只付一次属性检查的代价，
+ * 这正是增量层「只扫新增节点/混合父容器」敢按节点逐个调用的底气。
+ */
+export function collectSegmentsWithin(element: Element, options: ExtractorOptions): ExtractedSegment[] {
+  return collectFrom([element], options);
+}
+
+function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegment[] {
   const segments: ExtractedSegment[] = [];
   const styleOf = createStyleLookup();
   const marked = new Set<Element>();
@@ -6156,7 +6179,7 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     visitContent(element, hidden, false, boundaries);
   };
 
-  for (const element of rootElements(root)) visitBlock(element, false);
+  for (const element of roots) visitBlock(element, false);
   return segments;
 }
 ```
@@ -7492,6 +7515,7 @@ import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } f
 import { collectSegments, type ExtractedSegment } from './extractor';
 import { createHoverTranslator, type HoverController } from './hover';
 import type { InlineTranslation } from './inline-types';
+import { createIncrementalObserver } from './observer';
 import { DomRenderer } from './renderer';
 import { createSelectionTranslator, type SelectionController } from './selection';
 import { hideTooltip } from './tooltip';
@@ -7516,8 +7540,24 @@ let running = false;
 /** 本轮翻译攒下的页面级提示：整轮跑完只弹一次，见 `translatePage` 末尾。 */
 let lastError: string | null = null;
 let displayMode: DisplayMode = DEFAULT_SETTINGS.displayMode;
+/**
+ * 页面翻译那一刻的**设置快照**。增量翻译只复用这份快照，绝不重读设置：
+ * 用户中途在弹窗里改了显示模式/目标语言，当前页面也不该一半旧模式一半新模式
+ * （改动对新页面生效，本要重来请先还原）。还原时收回。
+ */
+let pageSnapshot: UiSettings | null = null;
 const finished = new Set<string>();
 const failedIds = new Set<string>();
+
+/**
+ * 本内容脚本实例的身份章。同页出现**更新的一份**实例（扩展热更新；测试里的
+ * resetModules + 重新 import 是同一形状）时，旧实例的 MutationObserver 仍挂在
+ * **同一个** document.body 上、它自己的防抖定时器也还活着——不清理，旧实例就会
+ * 往现在的页面里写自己的宿主、把请求塞进新实例的链路。增量观察者每次被唤醒
+ * 都先对一下这份章：不是我就退役。
+ */
+const INSTANCE_TOKEN = Symbol('jinyi-content-instance');
+(globalThis as { __jinyiContentInstance?: symbol }).__jinyiContentInstance = INSTANCE_TOKEN;
 
 function currentState(): PageState {
   return {
@@ -7785,6 +7825,8 @@ async function translatePage(): Promise<void> {
 
   lastError = null;
   displayMode = settings.displayMode;
+  // 增量层的唯一设置来源：此后新内容一律沿用这份快照（见 translateIncremental）。
+  pageSnapshot = settings;
   // 朗读的目标语言跟着这一轮翻译用的一次刷新（翻译请求本身不依赖它，见 translateInline）。
   inlineTargetLang = settings.targetLang;
   finished.clear();
@@ -7793,6 +7835,9 @@ async function translatePage(): Promise<void> {
   renderer = new DomRenderer(document, settings.displayMode, (segmentId) => void retrySegment(segmentId));
 
   for (const segment of segments) renderer.mount(segment, 'pending');
+  // 宿主挂完才 enable：首轮挂载不是"页面变动"；种子把首轮已翻译的段落（含不打标记的
+  // 松散文本段）交给增量的「已处理」账本，重扫混合容器时才不会二次插宿主。
+  incremental.enable(segments);
 
   const textSegments: TextSegment[] = segments.map((s) => ({ id: s.id, text: s.text, order: s.order }));
   const batches = planBatches(textSegments, {
@@ -7920,6 +7965,85 @@ async function retrySegment(segmentId: string): Promise<void> {
 }
 
 /**
+ * 增量翻译的落地函数：把新采到的段落送进**现有**链路（planBatches + runPool +
+ * sendToBackground + applyResults），不另起炉灶。观察者（observer.ts）保证调用时机：
+ *
+ * - 它在本轮**已翻译**时才会调到这里；
+ * - **不参与世代号（generation）守卫**——增量轮不该把 `running` 卡住（整页那一轮早就
+ *   跑完了，还原→再翻译要随时能进来），它判断"这一轮还算不算数"的依据是 renderer
+ *   的身份：还原会置空它、重新翻译会换一个，在飞的批次在每个 await 后核对身份，
+ *   对不上就安静丢弃（宿主已经随旧 renderer 一起被还原摘掉，写它们只会往新页面里乱插）。
+ *
+ * 对 observer 的两条契约见 `IncrementalDeps.translate`：挂载全部同步发生在第一个
+ * await 之前；promise 永远 resolve。逐段失败沿用现有失败态与重试按钮——不静默。
+ */
+async function translateIncremental(newSegments: ExtractedSegment[]): Promise<void> {
+  const current = renderer;
+  const snapshot = pageSnapshot;
+  if (current === null || snapshot === null) return;
+
+  // 状态面板把新段落纳入总量：retrySegment 也靠这一步查得到它们（重试按钮沿用）。
+  for (const segment of newSegments) segments.push(segment);
+  // —— 同步写入区（observer 的 disconnect 窗口）：挂 pending 宿主。
+  for (const segment of newSegments) current.mount(segment, 'pending');
+
+  const batches = planBatches(
+    newSegments.map((segment) => ({ id: segment.id, text: segment.text, order: segment.order })),
+    { maxBatchChars: snapshot.maxBatchChars, maxSegmentsPerBatch: snapshot.maxSegmentsPerBatch },
+  );
+  let notice: string | null = null;
+  await runPool(
+    batches.map((batch) => async () => {
+      try {
+        let response: TranslateTextsResponse;
+        try {
+          response = await sendToBackground({
+            type: MSG.TRANSLATE_TEXTS,
+            payload: {
+              items: batch.map((segment) => ({ id: segment.id, text: segment.text })),
+              targetLang: snapshot.targetLang,
+            },
+          });
+        } catch (raw) {
+          if (renderer !== current) return; // 页面已还原/已换代：这批作废。
+          failBatch(batch, describeTransportError(raw));
+          return;
+        }
+        if (renderer !== current) return;
+        if (!response.ok) {
+          notice = describeError(response);
+          failBatch(batch, response.message);
+          return;
+        }
+        const resultNotice = applyResults(batch, response.results);
+        if (resultNotice !== null) notice = resultNotice;
+      } catch {
+        if (renderer !== current) return;
+        failBatch(batch, MALFORMED_RESPONSE);
+      }
+    }),
+    snapshot.concurrency,
+  );
+
+  // 整批同码的页面级提示照常浮出（规格 §8：绝不静默失败）；页面已经还原就不再打扰。
+  if (notice !== null && renderer === current) toast(notice);
+}
+
+/**
+ * 增量翻译观察者。生命周期跟着页面翻译状态走：
+ * - `translatePage` 把首轮宿主挂完**之后** enable（我们自己的首轮挂载不产生变动记录，
+ *   而整页请求在飞时页面新长出来的内容正常进防抖队列）；
+ * - `restorePage` 第一件事就是 disable（还原本身就是一场 childList 洪水，
+ *   绝不能进增量队列；在飞的增量批次由 renderer 身份守卫丢弃）。
+ */
+const incremental = createIncrementalObserver({
+  scanOptions: () => (pageSnapshot === null ? null : { targetLang: pageSnapshot.targetLang }),
+  isTranslated: () => renderer !== null,
+  isStale: () => (globalThis as { __jinyiContentInstance?: symbol }).__jinyiContentInstance !== INSTANCE_TOKEN,
+  translate: translateIncremental,
+});
+
+/**
  * 悬停/划词的翻译入口：仍是"一条正常的 `TRANSLATE_TEXTS` 请求"，走后台——
  * 缓存、引擎选择、重试、超时全在 `background/scheduler.ts` 那一份实现里，这里不另起炉灶。
  * `targetLang` 故意**不传**：后台会用它当场读到的设置（永远比内容脚本手里的新鲜）。
@@ -8002,9 +8126,13 @@ function initFeatureSettings(): void {
 initFeatureSettings();
 
 function restorePage(): void {
+  // 增量观察者先停：restore 是一场 childList 洪水（摘宿主、搬回原文），
+  // 断开必须在写之前；在飞的增量批次由 renderer 身份守卫丢弃（见 translateIncremental）。
+  incremental.disable();
   renderer?.restore();
   renderer = null;
   segments = [];
+  pageSnapshot = null;
   finished.clear();
   failedIds.clear();
   lastError = null;

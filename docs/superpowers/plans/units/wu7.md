@@ -923,12 +923,35 @@ function rootElements(root: ParentNode): Element[] {
  * `<div>Intro<p>Body</p>Outro</div>` → Intro / Body / Outro 三段。
  * 同一容器的多个直接文本段共享容器锚点（`textRun`），落点由 `anchor` 显式给出。
  *
+ * **语义是「扫 root 的孩子」**：传 `document.body` 时 body 自己的直接文本不在遍历范围，
+ * 传某个新元素时它**自身**的直接文本也采不到。增量翻译要「只扫新增节点本身」，
+ * 用的入口是 {@link collectSegmentsWithin}，别拿本函数凑（见那边注释）。
+ *
  * **副作用（调用方必须知道）**：会给成段元素打上 `data-jy-id`，
  * 给**真正产出过段落的最内层文本块**打上 `data-jy-translated`。因此**每次调用都会让上一轮的全部 id 失效**，
  * 调用方不能拿旧 id 去索引新结果，也不能预期 id 跨调用稳定；
  * 这两类标记由渲染器的 `restore()` 统一清除。
  */
 export function collectSegments(root: ParentNode, options: ExtractorOptions): ExtractedSegment[] {
+  return collectFrom(rootElements(root), options);
+}
+
+/**
+ * 增量翻译的扫描入口：把 **element 自身**当作一个块，连同它的子树一起采段。
+ *
+ * 为什么不能复用 `collectSegments(element)`：那个函数的语义是「扫 element 的孩子」，
+ * 新增的 `<p>新段落</p>`（它自己就是最内层文本块、没有元素孩子）会被整体漏掉。
+ * 除了根语义不同，其余规则——跳过标记、隐藏判定、松散文本段、`data-jy-id` /
+ * `data-jy-translated` 副作用——与 {@link collectSegments} 逐字相同（同一个 {@link collectFrom}）。
+ *
+ * 复杂度 O(这棵子树)：已经成段并标记过的兄弟在被重扫的容器里只付一次属性检查的代价，
+ * 这正是增量层「只扫新增节点/混合父容器」敢按节点逐个调用的底气。
+ */
+export function collectSegmentsWithin(element: Element, options: ExtractorOptions): ExtractedSegment[] {
+  return collectFrom([element], options);
+}
+
+function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegment[] {
   const segments: ExtractedSegment[] = [];
   const styleOf = createStyleLookup();
   const marked = new Set<Element>();
@@ -1108,7 +1131,7 @@ export function collectSegments(root: ParentNode, options: ExtractorOptions): Ex
     visitContent(element, hidden, false, boundaries);
   };
 
-  for (const element of rootElements(root)) visitBlock(element, false);
+  for (const element of roots) visitBlock(element, false);
   return segments;
 }
 ```
