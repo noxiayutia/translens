@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { TieredCache, TranslationCache } from '../../src/core/cache';
 import { MemoryStorage } from '../helpers/memory-storage';
 
+/** 数 `keys()`（= 全量扫描的入口）被调了多少次。 */
+class ScanningStorage extends MemoryStorage {
+  keyScans = 0;
+
+  override async keys(): Promise<string[]> {
+    this.keyScans += 1;
+    return super.keys();
+  }
+}
+
 /** 让指定序号的存储写失败，用来验证缓存写失败不会冒泡给调用方。 */
 class FailingStorage extends MemoryStorage {
   writeAttempts = 0;
@@ -64,6 +74,56 @@ describe('TranslationCache', () => {
     expect(hit.get('b')).toBe('2');
     expect(hit.get('c')).toBe('3');
     expect(await cache.count()).toBe(2);
+  });
+
+  /**
+   * **性能悬崖回归**：打满之后，旧实现在**每一次** `putMany` 都触发 `scanAndEvict`
+   * （`keys()` 全量反序列化 + 读全部条目 + 排序 + 删除），且全部排在同一个串行队列上。
+   * 一个 3000 段的新页面 = 250 批，就是 250 次 × 5000 条的扫描，批次响应被越堵越长。
+   *
+   * 修复是给淘汰加**迟滞**：一次多删一些（删到低水位），之后要再攒满一截才触发下一次
+   * 扫描。这里断言的是**扫描次数**而不是"删了多少条"——删条数两边都对，悬崖只在扫描。
+   */
+  it('打满之后扫描是摊还的：每 5 次越限写入摊不到 1 次全量扫描（迟滞窗口）', async () => {
+    const storage = new ScanningStorage();
+    const cache = new TranslationCache(storage, 100);
+    // 先正常灌满。
+    for (let i = 0; i < 100; i += 1) {
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    const scansAtFull = storage.keyScans;
+
+    // 再连续写 1000 条越限写入——若"每次超限都全量扫描"，这里会多出 ~1000 次扫描。
+    for (let i = 100; i < 1100; i += 1) {
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    const overflowWrites = 1000;
+    const scans = storage.keyScans - scansAtFull;
+
+    // 迟滞的界：窗口是上限的 10%（10 条），摊还后约每 11 次写入扫一次；1/5 是宽松界。
+    // 旧实现约 1:1（~901 次）→ 这条断言现在就是红的。
+    expect(scans).toBeLessThanOrEqual(overflowWrites / 5);
+    // 内容仍然正确：读得回来、条数仍受上限约束。
+    expect((await cache.getMany(['h1099'])).get('h1099')).toBe('v1099');
+    expect(await cache.count()).toBeLessThanOrEqual(100);
+  });
+
+  it('迟滞只影响扫描时机，不影响正确性：淘汰仍按最旧、上限照旧执行', async () => {
+    const storage = new MemoryStorage();
+    const clock = fakeClock();
+    const cache = new TranslationCache(storage, 50, clock.now);
+    for (let i = 0; i < 50; i += 1) {
+      clock.advance(10);
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    // 超限写入：允许短暂留在上限附近，但最终必须被裁回上限之内，且删的是最旧的。
+    for (let i = 50; i < 62; i += 1) {
+      clock.advance(10);
+      await cache.putMany(new Map([[`h${i}`, `v${i}`]]));
+    }
+    expect(await cache.count()).toBeLessThanOrEqual(50);
+    expect((await cache.getMany(['h0'])).size).toBe(0); // 最旧的必须先出局
+    expect((await cache.getMany(['h61'])).get('h61')).toBe('v61'); // 最新的必须在
   });
 
   it('重复写入同一 key 不重复占位', async () => {
@@ -200,8 +260,11 @@ describe('TranslationCache', () => {
 
     expect(storage.rejectedWrites).toBe(0);
     expect(storage.maxItemBytesSeen).toBeLessThanOrEqual(1024);
-    expect(await cache.count()).toBe(20);
-    // 每写一条就裁掉最旧的，最后留下的是最后写入的 20 条。
+    // 25 次写入、上限 20、迟滞窗口 2：最后一次扫描裁到低水位 18，随后又写入 1 条 → 19。
+    // （旧值 20 是「每次超限都精确裁回上限」的节奏产物；淘汰正确性由上下两组 getMany
+    // 断言继续钉住，本用例的重心——淘汰从不写出大值——不受影响。）
+    expect(await cache.count()).toBe(19);
+    // 每写一条就裁掉最旧的，最后留下的是最后写入的一截（最旧的 5 条已全部出局）。
     expect((await cache.getMany(hashes.slice(0, 5))).size).toBe(0);
     expect((await cache.getMany(hashes.slice(20))).size).toBe(5);
   });

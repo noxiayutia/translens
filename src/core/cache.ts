@@ -26,6 +26,21 @@ const REFRESH_INTERVAL_MS = 5000;
 /** 存储写失败（多半是配额满）时，按这个比例强制淘汰最旧的条目来腾空间。 */
 const QUOTA_EVICT_RATIO = 0.1;
 
+/**
+ * 淘汰迟滞窗口：按上限的这个比例**一次多删一些**（超出时删到 `maxEntries * (1 - 0.1)`）。
+ *
+ * 没有它会有性能悬崖：`putMany` 里近似计数一超过上限就调 `scanAndEvict`，而若一次只裁掉
+ * 溢出的那几条，计数立刻又贴回上限——之后**每一次**写入都触发一次全量扫描（`keys()` 是
+ * 整区反序列化，还要读全部条目 + 排序 + 删除）。打满 5000 条后翻一个 3000 段的新页面
+ * （250 批）就是 250 次全量扫描，而且全部串在同一个写入队列上，把批次响应越堵越长。
+ *
+ * 有了 10% 的窗口，一次扫描腾出的余量要再写满 `maxEntries * 0.1` 条才会触发下一次：
+ * 扫描频率从"每次写入一次"降到摊还每 ~11 条一次（默认上限 5000 ≈ 每 500 条）。
+ * 窗口按比例取整：上限小于 10 时窗口为 0，行为退回"裁到上限"——小上限多出现在测试里，
+ * 那里精确淘汰语义比摊还更重要（见 cache.test.ts 的上限 2/3 用例）。
+ */
+const EVICT_HYSTERESIS_RATIO = 0.1;
+
 interface CacheEntry {
   v: string;
   t: number;
@@ -169,7 +184,9 @@ export class TranslationCache {
       // 扫描，`prune()` 会把计数校正回来，条目本身已经落盘、读得出来。
       const count = (await this.readMeta()) + items.size;
       await this.writeMeta(count);
-      if (count > this.maxEntries) await this.scanAndEvict();
+      // 迟滞（见 `EVICT_HYSTERESIS_RATIO`）：这条路径上的扫描要一次删到低水位，否则
+      // 打满之后每一次 putMany 都全量扫一遍，几百批一起排在串行队列上堵死响应。
+      if (count > this.maxEntries) await this.scanAndEvict(0, true);
     });
   }
 
@@ -215,8 +232,12 @@ export class TranslationCache {
    * `forceEvictRatio > 0` 用于"存储已经写满、但条目数还没到上限"的场景：此时按上限算
    * 没有任何溢出，一条都不删的话新条目永远写不进去，缓存会永久停摆。所以写失败时按比例
    * 多腾一些名额（至少一条），避免每写一条就再扫描一次。
+   *
+   * `withHysteresis` 只给 `putMany` 的超限路径用（见 `EVICT_HYSTERESIS_RATIO` 的理由）。
+   * `prune()` 不带迟滞是刻意的：对账的语义是"收敛到真实值并按上限裁齐"，一次多删
+   * 一成用户缓存需要"写入压力"这样的触发理由，冷启动对账给不出这个理由。
    */
-  private async scanAndEvict(forceEvictRatio = 0): Promise<void> {
+  private async scanAndEvict(forceEvictRatio = 0, withHysteresis = false): Promise<void> {
     const keys = await this.entryKeys();
     if (keys.length === 0) {
       await this.writeMeta(0);
@@ -228,7 +249,8 @@ export class TranslationCache {
       .sort((a, b) => a.t - b.t);
     const overflow = sorted.length - this.maxEntries;
     const forced = forceEvictRatio > 0 ? Math.max(1, Math.floor(sorted.length * forceEvictRatio)) : 0;
-    const target = Math.min(Math.max(overflow, forced), sorted.length);
+    const hysteresis = withHysteresis && overflow > 0 ? Math.floor(this.maxEntries * EVICT_HYSTERESIS_RATIO) : 0;
+    const target = Math.min(Math.max(overflow + hysteresis, forced), sorted.length);
     if (target > 0) await this.area.remove(sorted.slice(0, target).map((item) => item.key));
     await this.writeMeta(Math.min(sorted.length - target, Math.max(0, this.maxEntries)));
   }
