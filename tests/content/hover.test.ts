@@ -41,6 +41,11 @@ function bubbleText(): string {
   return bubble()?.shadowRoot?.querySelector('.jy-text')?.textContent ?? '';
 }
 
+/** 气泡的视觉状态（data-state）：pending / error / done。 */
+function bubbleState(): string | null {
+  return bubble()?.shadowRoot?.querySelector('.jy-bubble')?.getAttribute('data-state') ?? null;
+}
+
 function highlightHost(): HTMLElement | null {
   return document.querySelector('[data-jy-hover-highlight]');
 }
@@ -363,6 +368,74 @@ describe('高亮：outline 描边框，零布局注入', () => {
 
     expect(highlightHost()).toBeNull();
     expect(document.body.innerHTML).toBe(before);
+  });
+});
+
+describe('高亮观感：柔和描边 + 极淡底 + 淡入', () => {
+  async function openHighlight(): Promise<HTMLElement> {
+    givenHover(autoTranslate());
+    pressShift();
+    enter('one');
+    await settle();
+    const host = highlightHost();
+    if (host === null) throw new Error('没有高亮浮层');
+    return host;
+  }
+
+  it('描边是 45% 的强调色、底色是 6% 的强调色，都挂在我们的 fixed 浮层自己的框上', async () => {
+    const host = await openHighlight();
+    const style = host.shadowRoot?.firstElementChild?.getAttribute('style') ?? '';
+    expect(style).toMatch(/outline:\s*2px solid rgba\(37, 99, 235, 0\.45\)/);
+    expect(style).toMatch(/background:\s*rgba\(37, 99, 235, 0\.06\)/);
+  });
+
+  it('圆角与 120ms 淡入写在样式表里；reduced-motion 下不动', async () => {
+    const host = await openHighlight();
+    const css = host.shadowRoot?.querySelector('style')?.textContent ?? '';
+    expect(css).toMatch(/border-radius:\s*6px/);
+    expect(css).toMatch(/animation:\s*jy-hover-in 120ms/);
+    expect(css).toMatch(/@keyframes jy-hover-in\s*\{\s*from\s*\{\s*opacity:\s*0/);
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'))).toMatch(/animation:\s*none/);
+  });
+
+  it('样式全在浮层自己身上：页面元素一个 inline style 都没有（布局不变式照旧）', async () => {
+    const host = await openHighlight();
+    // 描边/底色属于**我们自己的浮层**，不是对页面元素的注入（上一个 border-left 事故的教训）。
+    expect(host.shadowRoot?.firstElementChild?.className).toBe('jy-hover-box');
+    for (const node of Array.from(document.querySelectorAll('article, p, b'))) {
+      expect((node as HTMLElement).hasAttribute('style'), node.tagName).toBe(false);
+    }
+  });
+});
+
+describe('气泡状态跟着结论走', () => {
+  it('请求在飞：pending；成功落地：done', async () => {
+    const slow = deferredTranslate();
+    givenHover(slow.translate, 0);
+    pressShift();
+    enter('one');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bubbleState()).toBe('pending');
+
+    slow.resolve('First paragraph', { ok: true, text: '甲段译文' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bubbleState()).toBe('done');
+    expect(bubbleText()).toBe('甲段译文');
+  });
+
+  it('失败结论：error 态 + 失败文案（不是 pending 的死等）', async () => {
+    const slow = deferredTranslate();
+    givenHover(slow.translate, 0);
+    pressShift();
+    enter('one');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bubbleState()).toBe('pending');
+
+    slow.resolve('First paragraph', { ok: false, message: '无法连接后台' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bubbleState()).toBe('error');
+    expect(bubbleText()).toBe('无法连接后台');
   });
 });
 

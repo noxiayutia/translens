@@ -1,7 +1,7 @@
 // src/content/hover.ts
 import { isTranslatableText, normalizeText } from '../core/lang';
 import { createStyleLookup, findLeafTextAncestor, inlineText } from './extractor';
-import { hideTooltip, showTooltip, type TooltipRect } from './tooltip';
+import { hideTooltip, showTooltip, type TooltipContent, type TooltipRect } from './tooltip';
 import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './inline-types';
 
 /**
@@ -41,8 +41,32 @@ interface HighlightBox {
 }
 
 /**
+ * 高亮框的观感（几何留在 inline style，形状/动效写在样式表里）：
+ * 强调色描边 + 极淡的强调色底，出现时 120ms 淡入。
+ */
+const HIGHLIGHT_CSS = `
+  .jy-hover-box {
+    /* 圆角 6px 与气泡的 10px 是同一族的收角，不是写死的深浅色。 */
+    border-radius: 6px;
+    /* 出现时淡入。元素是每次进入段落时新建的，用 animation 比 transition 可靠
+       （新插入的节点没有"上一态"可过渡）。 */
+    animation: jy-hover-in 120ms ease-out;
+  }
+  @keyframes jy-hover-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .jy-hover-box { animation: none; }
+  }
+`;
+
+/**
  * 段落高亮框：与气泡同样的纪律——fixed、`data-jy-root`、挂 documentElement、
  * `pointer-events:none`（它是描边不是控件，绝不能挡住页面点击），描边只用 `outline`。
+ *
+ * 描边与底色都用**带透明度的强调色**（同一支蓝，深浅两套页面各自混合）：深色页面上
+ * 不写死深色、浅色页面上不写死浅色，两种页面都看得见。
  */
 function createHighlightBox(): HighlightBox {
   let node: HTMLElement | null = null;
@@ -57,10 +81,23 @@ function createHighlightBox(): HighlightBox {
         host.style.cssText = 'position:fixed;z-index:2147483646;left:0;top:0;pointer-events:none';
         const shadow = host.attachShadow({ mode: 'open' });
         const box = document.createElement('div');
+        box.className = 'jy-hover-box';
         // 尺寸属于**我们自己的浮层**（fixed 挂 documentElement），不是对页面元素的注入；
-        // 高亮本体是 outline：不占空间、不影响布局。没有 border / padding / margin。
-        box.style.cssText = 'width:100%;height:100%;outline:2px solid #1a73e8;box-sizing:border-box';
-        shadow.append(box);
+        // 高亮本体是 outline：不占空间、不影响布局。没有 border / padding / margin
+        // （上一个 border-left 事故就是靠这条不变式守住的，测试按字形扫这段 inline style）。
+        box.style.cssText = [
+          'width:100%',
+          'height:100%',
+          'box-sizing:border-box',
+          'outline:2px solid rgba(37, 99, 235, 0.45)',
+          // 极淡的强调色底：描边区域有"被框住"的感觉，又不盖住文字。
+          'background:rgba(37, 99, 235, 0.06)',
+        ].join(';');
+        const style = document.createElement('style');
+        style.textContent = HIGHLIGHT_CSS;
+        // 顺序有意如此：框在前、样式在后——框必须是 shadowRoot 的第一个元素
+        // （"高亮挂在浮层上"的既有断言按 firstElementChild 取框）。
+        shadow.append(box, style);
         document.documentElement.append(host);
         node = host;
         frame = box;
@@ -112,8 +149,8 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
     return normalizeText(inlineText(element, createStyleLookup()));
   }
 
-  function showFor(element: HTMLElement, text: string): void {
-    showTooltip(rectOf(element), { text });
+  function showFor(element: HTMLElement, content: TooltipContent): void {
+    showTooltip(rectOf(element), content);
   }
 
   function remember(text: string, translation: string): void {
@@ -128,12 +165,15 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
   function request(element: HTMLElement, text: string): void {
     lastRequested = element;
     const mine = generation;
-    showFor(element, PENDING_TEXT);
+    // 在飞的这一段用 pending 态：降饱和的次级色 + 脉冲，跟最终译文的观感分得开。
+    showFor(element, { text: PENDING_TEXT, state: 'pending' });
     const present = (result: InlineTranslation): void => {
       // 还原/关闭之后的在飞结果：安静丢弃，不许再把气泡弹回来。
       if (mine !== generation) return;
       // 期间已进入别的段落：结论属于上一段，别覆盖新段的气泡（同段重进走缓存，不受影响）。
-      if (lastRequested === element) showFor(element, result.ok ? result.text : result.message);
+      if (lastRequested === element) {
+        showFor(element, result.ok ? { text: result.text } : { text: result.message, state: 'error' });
+      }
     };
     void deps.translate(text).then(
       (result) => {
@@ -160,7 +200,7 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
     const cached = cache.get(text);
     if (cached !== undefined) {
       lastRequested = element;
-      showFor(element, cached);
+      showFor(element, { text: cached });
       return;
     }
     timer = setTimeout(() => {
