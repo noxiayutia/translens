@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LANGUAGES } from '../../src/core/lang';
-import { ENGINES } from '../../src/engines/registry';
+import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
 import { MSG, type PageState } from '../../src/shared/messages';
 import { CURRENT_VERSION, DISPLAY_MODES, SETTINGS_KEY } from '../../src/shared/settings';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
@@ -161,24 +161,30 @@ describe('popup.html 结构', () => {
 });
 
 describe('弹窗初始化', () => {
-  it('按存储里的设置选中目标语言与引擎，而不是写死默认值', async () => {
+  it('按存储里的设置选中目标语言与档案；下拉 = 免费接口 + 每个档案按名字', async () => {
     await seedSettings({
       targetLang: 'ja',
-      engineId: 'openai-compat',
-      engineConfig: { apiKey: 'sk-test' },
+      engineId: 'p-deep',
+      profiles: [
+        { id: 'p-deep', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-test' },
+      ],
     });
     await loadPopup();
 
     const { targetLang, engine } = ui();
     expect(targetLang.value).toBe('ja');
-    expect(engine.value).toBe('openai-compat');
+    expect(engine.value).toBe('p-deep');
     expect(Array.from(targetLang.selectedOptions).map((option) => option.value)).toEqual(['ja']);
 
-    // 选项清单来自 core/lang 与 engines/registry，弹窗不另抄一份。
+    // 选项清单来自 core/lang 与设置里的档案列表，弹窗不另抄一份。
     expect(Array.from(targetLang.options).map((option) => option.value)).toEqual(
       LANGUAGES.map((lang) => lang.code),
     );
-    expect(Array.from(engine.options).map((option) => option.value)).toEqual(ENGINES.map((item) => item.id));
+    const free = getEngine(DEFAULT_ENGINE_ID);
+    expect(Array.from(engine.options).map((option) => [option.value, option.textContent])).toEqual([
+      [free.id, free.name],
+      ['p-deep', '我的 DeepSeek'],
+    ]);
     // 活动标签页是唯一的查询口径：后台标签页的状态不该被读进来。
     expect(chromeStub.tabs.queries).toEqual([{ active: true, currentWindow: true }]);
   });
@@ -393,10 +399,21 @@ describe('受限页面', () => {
   });
 });
 
-describe('引擎提示区', () => {
-  it('引擎需要 Key 但没填时给出警告', async () => {
-    // 只有空白字符也算没填：提示必须跟引擎真正判断"有没有 Key"的口径一致。
-    await seedSettings({ engineId: 'openai-compat', engineConfig: { apiKey: '   ' } });
+describe('引擎提示区（判据看的是 resolveEngine 解析出来的那一份配置）', () => {
+  /** 档案快捷构造：用例只覆盖自己在意的字段。 */
+  function profileOf(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: 'p-1',
+      label: '我的接口',
+      baseUrl: 'https://api.test.example/v1',
+      model: 'm',
+      apiKey: 'sk-test',
+      ...over,
+    };
+  }
+
+  it('当前档案需要 Key 但没填时给出警告（纯空白也算没填，与引擎口径一致）', async () => {
+    await seedSettings({ engineId: 'p-1', profiles: [profileOf({ apiKey: '   ' })] });
     await loadPopup();
 
     const { hint } = ui();
@@ -404,8 +421,10 @@ describe('引擎提示区', () => {
     expect(hint.textContent).toBe('该引擎需要 API Key，请先在设置中填写。');
   });
 
-  it('填了 Key 就不再警告', async () => {
-    await seedSettings({ engineId: 'openai-compat', engineConfig: { apiKey: 'sk-test' } });
+  it('当前档案填了 Key 就不再警告', async () => {
+    // origin 已授权（真机上这个档案必然在设置页保存过一次才可能有 Key）。
+    chromeStub.permissions.grantedOrigins.add('https://api.test.example/*');
+    await seedSettings({ engineId: 'p-1', profiles: [profileOf()] });
     await loadPopup();
 
     const { hint } = ui();
@@ -413,11 +432,50 @@ describe('引擎提示区', () => {
     // 文案必须与"警告分支"互为补集：这句只在 Key **确实填了**时成立。
     expect(hint.textContent).toBe('已配置你自己的 API Key。');
 
-    // 安全不变式：弹窗为了判断"要不要提示未配置 Key"必须持有完整设置（含密钥），
+    // 安全不变式：弹窗为了判断"要不要提示未配置 Key"必须持有完整设置（含每个档案的密钥），
     // 但密钥绝不能落到 DOM 上。这条属性目前只靠上面那句判断为真，没有别的东西守着——
-    // 日后有人加一句"把当前引擎配置显示出来"就会破，所以在这里钉住。
+    // 日后有人加一句"把当前档案配置显示出来"就会破，所以在这里钉住。
     expect(document.body.textContent).not.toContain('sk-test');
     expect(document.documentElement.outerHTML).not.toContain('sk-test');
+  });
+
+  it('隐私：三个档案各塞不同密钥，一个都不许出现在 DOM 里（列表渲染比单字段更容易带出去）', async () => {
+    chromeStub.permissions.grantedOrigins.add('https://api.test.example/*');
+    await seedSettings({
+      engineId: 'p-2',
+      profiles: [
+        profileOf({ id: 'p-1', label: 'DeepSeek 直连', apiKey: 'sk-alpha' }),
+        profileOf({ id: 'p-2', label: '硅基流动', apiKey: 'sk-beta' }),
+        profileOf({ id: 'p-3', label: 'Ollama 本机', apiKey: 'sk-gamma' }),
+      ],
+    });
+    await loadPopup();
+
+    for (const secret of ['sk-alpha', 'sk-beta', 'sk-gamma']) {
+      expect(document.body.textContent).not.toContain(secret);
+      expect(document.documentElement.outerHTML).not.toContain(secret);
+    }
+    // 下拉按名字列出三个档案——名字带出来了，密钥没带。
+    const { engine } = ui();
+    expect(Array.from(engine.options).map((option) => option.textContent)).toEqual([
+      getEngine(DEFAULT_ENGINE_ID).name,
+      'DeepSeek 直连',
+      '硅基流动',
+      'Ollama 本机',
+    ]);
+  });
+
+  it('切到**未授权**的档案：提示区如实说要回设置页保存一次授权，不静默', async () => {
+    // grantedOrigins 是空的：这个 origin 从没在用户手势里申请过。
+    await seedSettings({ engineId: 'p-1', profiles: [profileOf()] });
+    await loadPopup();
+
+    const { hint } = ui();
+    // Key 检查先过（填了），未授权检查是异步的（chrome.permissions.contains）——等它回来。
+    await waitFor(() => hint.classList.contains('warn'));
+    expect(hint.textContent).toContain('https://api.test.example/*');
+    expect(hint.textContent).toContain('未授权');
+    expect(hint.textContent).toContain('设置页');
   });
 
   it('零配置引擎不警告，并说明无需 Key', async () => {
@@ -429,14 +487,14 @@ describe('引擎提示区', () => {
     expect(hint.textContent).toBe('零配置可用，无需 API Key。');
   });
 
-  it('切换引擎后提示区跟着重算', async () => {
-    await seedSettings({ engineId: 'google' });
+  it('切换引擎后提示区跟着重算（免费 ↔ 没填 Key 的档案）', async () => {
+    await seedSettings({ engineId: 'google', profiles: [profileOf({ apiKey: '' })] });
     await loadPopup();
 
     const { engine, hint } = ui();
     expect(hint.classList.contains('warn')).toBe(false);
 
-    engine.value = 'openai-compat';
+    engine.value = 'p-1';
     engine.dispatchEvent(new Event('change'));
     await waitFor(() => hint.classList.contains('warn'));
     expect(hint.textContent).toBe('该引擎需要 API Key，请先在设置中填写。');
@@ -461,19 +519,27 @@ describe('语言与引擎选择的持久化', () => {
     expect(stored.version).toBe(CURRENT_VERSION);
   });
 
-  it('切换引擎写进存储，且不会抹掉已填的 API Key', async () => {
-    await seedSettings({ engineId: 'google', engineConfig: { apiKey: 'sk-keep' } });
+  it('选中档案即落盘档案 id，且整份回写不会抹掉任何档案已填的 Key', async () => {
+    await seedSettings({
+      engineId: 'google',
+      profiles: [
+        { id: 'p-a', label: 'A 家', baseUrl: 'https://a.example/v1', model: 'ma', apiKey: 'sk-keep-a' },
+        { id: 'p-b', label: 'B 家', baseUrl: 'https://b.example/v1', model: 'mb', apiKey: 'sk-keep-b' },
+      ],
+    });
     await loadPopup();
 
     const { engine } = ui();
-    engine.value = 'openai-compat';
+    engine.value = 'p-b';
     engine.dispatchEvent(new Event('change'));
 
-    await waitFor(async () => (await storedSettings()).engineId === 'openai-compat');
+    await waitFor(async () => (await storedSettings()).engineId === 'p-b');
     const stored = await storedSettings();
-    expect(stored.engineId).toBe('openai-compat');
-    // 保存的是弹窗手里那份**完整**设置：Key 必须原样写回，不能被投影掉的字段覆盖成空。
-    expect((stored.engineConfig as { apiKey?: string }).apiKey).toBe('sk-keep');
+    // 落盘的是档案 id（弹窗与存储的口径：engineId = 档案 id 或 google），不是 label。
+    expect(stored.engineId).toBe('p-b');
+    // 保存的是弹窗手里那份**完整**设置：两份 Key 都必须原样写回，不能被投影掉的字段覆盖成空。
+    const profiles = stored.profiles as Array<Record<string, unknown>>;
+    expect(profiles.map((profile) => profile.apiKey)).toEqual(['sk-keep-a', 'sk-keep-b']);
   });
 
   it('保存被拒绝时说明原因并回滚下拉，不留下"改了其实没生效"', async () => {
