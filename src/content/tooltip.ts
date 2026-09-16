@@ -9,7 +9,10 @@
  * - 带 `data-jy-root` 标记，采集端（extractor）会把整棵子树跳过，不会被二次翻译；
  * - 所有来自接口的文字一律 `textContent` 写入，禁止 innerHTML（引擎返回内容不可信）；
  * - `max-height` + `overflow: auto`：超长译文在气泡内部滚动，不会把页面撑出滚动条；
- * - 与 toast 不同，气泡**必须可交互**（复制/朗读按钮），所以没有 `pointer-events: none`。
+ * - 与 toast 不同，气泡**必须可交互**（复制/朗读按钮），所以没有 `pointer-events: none`；
+ * - **无障碍**：气泡骨架**常驻**（同一次打开期间只造一次），承载译文的 `.jy-text` 挂着
+ *   `role="status"`，状态变化（翻译中 → 译文 / 失败文案）只更新它的文字。
+ *   为什么是这种形状、而不是"给每次新建的节点加个 aria-live"，见 createBubbleSkeleton。
  *
  * 观感上与弹窗/设置页（popup.css / options.css）同一套设计语言：中性深色表面 + 单一强调色，
  * 层级靠一条细边框、一层分层阴影和留白，不靠颜色堆砌。三处共用的颜色值各写一份令牌，
@@ -19,8 +22,8 @@
  * DOM 结构（shadow 内）：
  *   .jy-layer            ← 定位与 caret 的锚（气泡自己 overflow:auto 裁不了探出去的箭头）
  *     .jy-bubble         ← 表面：背景/边框/圆角/阴影/max-height、data-placement、data-state
- *       .jy-text         ← 译文（可选中复制）
- *       .jy-actions      ← 按钮行
+ *       .jy-text         ← 译文（可选中复制），同时是常驻的 ARIA 活区（role=status）
+ *       .jy-actions      ← 按钮行（没有按钮时整行不在树里）
  *         .jy-action     ← 按钮（图标 + 文案）
  */
 
@@ -317,7 +320,23 @@ interface Listeners {
   scroll: () => void;
 }
 
+/**
+ * 气泡骨架的四块（样式表之外的全部节点）。它们是**常驻**的：showTooltip 只往里写内容、
+ * 绝不替换节点——`.jy-text` 是读屏活区，换节点等于换了一个区域，播报就断了
+ * （见 createBubbleSkeleton 的长注释）。
+ */
+interface BubbleParts {
+  layer: HTMLElement;
+  bubble: HTMLElement;
+  /** 承载译文的节点，同时是 role=status 的常驻活区。 */
+  text: HTMLElement;
+  /** 按钮行的容器；没有按钮时不在树里。 */
+  actions: HTMLElement;
+}
+
 let host: HTMLElement | null = null;
+/** 与 host 同生共死的骨架；hideTooltip 摘掉宿主时一起置空。 */
+let skeleton: BubbleParts | null = null;
 /** 打开期间才存在的监听器；hide() 必须逐个摘掉，否则反复开合会把窗口挂满僵尸监听。 */
 let listeners: Listeners | null = null;
 /**
@@ -412,43 +431,73 @@ function createIcon(name: TooltipIcon): SVGElement {
   return svg;
 }
 
-function buildBubble(content: TooltipContent): { layer: HTMLElement; bubble: HTMLElement } {
+/**
+ * 气泡骨架（**常驻**，同一次打开期间只造一次）：
+ *
+ *   .jy-layer > .jy-bubble > .jy-text + .jy-actions
+ *
+ * 为什么必须常驻——无障碍。`.jy-text` 是承载译文的节点，同时是 `role="status"` 的活区。
+ * 读屏只播报**已经存在的活区内部**发生的变化：如果每次 show 都把节点换掉（上一版正是
+ * `replaceChildren(style, layer)`），"翻译中 → 译文"这一步在无障碍树上只是"一个新节点
+ * 带着文字一起出现"，读屏一声不吭——核验实测的静默就是这个形状。骨架只造一次、之后只改
+ * 内容，状态变化就落在同一个活区里，才会被念出来。
+ */
+function createBubbleSkeleton(): BubbleParts {
   const layer = document.createElement('div');
   layer.className = 'jy-layer';
 
   const bubble = document.createElement('div');
   bubble.className = 'jy-bubble';
-  bubble.setAttribute('data-state', content.state ?? 'done');
 
   const text = document.createElement('div');
   text.className = 'jy-text';
-  // 一律 textContent：`<img src=x onerror=…>` 进来也只是这串字符。
-  text.textContent = content.text;
+  // 活区语义挂在**承载译文的那个节点**上，而不是另做一个隐藏的镜像节点：念出来的就是
+  // 气泡里那行字本身，不存在两份文案走神的可能。role=status 隐式带 aria-live=polite +
+  // aria-atomic，这里仍显式写全——隐式值依赖引擎实现，显式声明零成本。
+  text.setAttribute('role', 'status');
+  text.setAttribute('aria-live', 'polite');
+  text.setAttribute('aria-atomic', 'true');
   bubble.append(text);
 
-  if (content.buttons && content.buttons.length > 0) {
-    const actions = document.createElement('div');
-    actions.className = 'jy-actions';
-    for (const entry of content.buttons) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'jy-action';
-      // 主/次只是观感差异，语义上仍是普通按钮（不能靠颜色表达可点性）。
-      button.setAttribute('data-variant', entry.variant ?? 'secondary');
-      if (entry.icon !== undefined) button.append(createIcon(entry.icon));
-      const label = document.createElement('span');
-      label.className = 'jy-action-label';
-      // 按钮文案虽然出自本扩展（不是引擎返回），也不破例：一律 textContent，规则只有一条。
-      label.textContent = entry.label;
-      button.append(label);
-      buttonHandlers.set(button, entry.onClick);
-      actions.append(button);
-    }
-    bubble.append(actions);
-  }
+  // 按钮行按需挂/摘（空行会白留 .jy-actions 的 10px 上边距）；按钮不在活区里，
+  // 重建它不会打断播报——活区只有 .jy-text 一个。
+  const actions = document.createElement('div');
+  actions.className = 'jy-actions';
 
   layer.append(bubble);
-  return { layer, bubble };
+  return { layer, bubble, text, actions };
+}
+
+/** 把内容写进骨架：只改属性与文字，**绝不换节点**（换节点＝活区收不到变化）。 */
+function renderBubble(parts: BubbleParts, content: TooltipContent): void {
+  parts.bubble.setAttribute('data-state', content.state ?? 'done');
+  // 只在文字真的变了时才写：同一段反复进入（缓存命中）拿到的是同一份译文，
+  // 再写一遍等于又制造一次活区变化，读屏会重复念同一句话。
+  if (parts.text.textContent !== content.text) parts.text.textContent = content.text;
+
+  parts.actions.replaceChildren();
+  const buttons = content.buttons ?? [];
+  if (buttons.length === 0) {
+    // 失败态没有可点的东西：整行摘掉。
+    parts.actions.remove();
+    return;
+  }
+  for (const entry of buttons) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'jy-action';
+    // 主/次只是观感差异，语义上仍是普通按钮（不能靠颜色表达可点性）。
+    button.setAttribute('data-variant', entry.variant ?? 'secondary');
+    if (entry.icon !== undefined) button.append(createIcon(entry.icon));
+    const label = document.createElement('span');
+    label.className = 'jy-action-label';
+    // 按钮文案虽然出自本扩展（不是引擎返回），也不破例：一律 textContent，规则只有一条。
+    label.textContent = entry.label;
+    button.append(label);
+    buttonHandlers.set(button, entry.onClick);
+    parts.actions.append(button);
+  }
+  if (parts.actions.parentNode === null) parts.bubble.append(parts.actions);
 }
 
 /**
@@ -468,12 +517,12 @@ function onHostClick(event: Event): void {
   }
 }
 
-/** 拿到（必要时创建）气泡宿主。挂在 documentElement 上——页面脚本看不见我们。 */
-function ensureHost(): { node: HTMLElement; style: HTMLStyleElement } {
-  if (host !== null && host.shadowRoot !== null) {
+/** 拿到（必要时创建）气泡宿主与它的常驻骨架。挂在 documentElement 上——页面脚本看不见我们。 */
+function ensureHost(): { node: HTMLElement; style: HTMLStyleElement; parts: BubbleParts } {
+  if (host !== null && host.shadowRoot !== null && skeleton !== null) {
     // 创建时就注入的 <style>，这里只是把类型收窄回去。
     const style = host.shadowRoot.querySelector('style') as HTMLStyleElement;
-    return { node: host, style };
+    return { node: host, style, parts: skeleton };
   }
   const created = document.createElement('div');
   created.id = HOST_ID;
@@ -491,11 +540,13 @@ function ensureHost(): { node: HTMLElement; style: HTMLStyleElement } {
   const shadow = created.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
   style.textContent = TOOLTIP_CSS;
-  shadow.append(style);
+  const parts = createBubbleSkeleton();
+  shadow.append(style, parts.layer);
   // 委托挂在 host 本身：气泡内容每次重建，接线却只有这一份。
   created.addEventListener('click', onHostClick);
   host = created;
-  return { node: created, style };
+  skeleton = parts;
+  return { node: created, style, parts };
 }
 
 function measure(node: HTMLElement): TooltipSize {
@@ -517,19 +568,22 @@ function detachListeners(): void {
  * hide() 时全部摘掉。
  */
 export function showTooltip(rect: TooltipRect, content: TooltipContent): void {
-  const { node, style } = ensureHost();
-  const { layer, bubble } = buildBubble(content);
-  node.shadowRoot?.replaceChildren(style, layer);
+  const { node, style, parts } = ensureHost();
+  // 顺序有意如此：**先**把骨架（含 role=status 的活区）挂进文档，**再**写内容。
+  // 读屏播报的是"已存在区域内部的变化"；反过来（先写内容、再连节点一起插入）那句文字
+  // 是随区域一起出现的，不会被念。
+  if (parts.layer.parentNode !== node.shadowRoot) node.shadowRoot?.replaceChildren(style, parts.layer);
   // 首次显示、以及被外部（测试清理、扩展热更）摘掉后再显示：一律确保它真的在树上。
   if (!node.isConnected) document.documentElement.append(node);
+  renderBubble(parts, content);
 
   const size = measure(node);
   const layout = layoutTooltip(rect, size, viewportSize());
   node.style.left = `${layout.left}px`;
   node.style.top = `${layout.top}px`;
   // caret 的方向与水平落点都是定位算出来的，写到 DOM 上让样式画——CSS 里不重算一遍。
-  bubble.setAttribute('data-placement', layout.placement);
-  if (layout.caretX !== null) layer.style.setProperty('--jy-caret-x', `${layout.caretX}px`);
+  parts.bubble.setAttribute('data-placement', layout.placement);
+  if (layout.caretX !== null) parts.layer.style.setProperty('--jy-caret-x', `${layout.caretX}px`);
 
   if (listeners !== null) return;
   const onPointerdown = (event: PointerEvent): void => {
@@ -555,6 +609,8 @@ export function hideTooltip(): void {
   if (host === null) return;
   host.remove();
   host = null;
+  // 骨架随宿主一起丢：下次打开重新造一个（活区也随之重生，见 createBubbleSkeleton）。
+  skeleton = null;
   // 旧气泡的按钮回调随节点一起丢；换新的表最干净（WeakMap 本也会回收，这里只是明确生命周期）。
   buttonHandlers = new WeakMap();
 }

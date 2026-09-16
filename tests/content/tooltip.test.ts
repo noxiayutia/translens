@@ -19,6 +19,7 @@ import {
   setActionLabel,
   showTooltip,
 } from '../../src/content/tooltip';
+import { declarations, hasRule, type Declarations } from '../helpers/css';
 
 function host(): HTMLElement | null {
   return document.querySelector('[data-jy-tooltip]');
@@ -42,16 +43,25 @@ function layerNode(): HTMLElement | null {
   return host()?.shadowRoot?.querySelector('.jy-layer') ?? null;
 }
 
+/** 承载译文、同时是 ARIA 活区的那个节点。 */
+function liveRegion(): HTMLElement | null {
+  return host()?.shadowRoot?.querySelector('.jy-text') ?? null;
+}
+
 function css(): string {
   return host()?.shadowRoot?.querySelector('style')?.textContent ?? '';
 }
 
-/** 取样式表里某条规则的声明块（从选择器字面量切到下一个 `}`）。 */
-function rule(selector: string): string {
-  const text = css();
-  const start = text.indexOf(selector);
-  if (start < 0) throw new Error(`样式表里没有 ${selector}`);
-  return text.slice(start, text.indexOf('}', start));
+/**
+ * 取样式表里某条规则的**声明表**（真解析：配对花括号 + 去注释 + 选择器完整相等）。
+ *
+ * 上一版这里是「整表 toContain」＋「indexOf(选择器) 切到下一个 `}`」。核验把 `.jy-bubble`
+ * 的 `max-height: 40vh;` 整条删掉，44 条用例全绿——因为样式表注释里恰好写着
+ * `max-height:40vh` 与 `overflow:auto`，整表查找照样命中。解析成声明表之后，
+ * 删掉哪条声明，哪条断言就查不到这一项。
+ */
+function decls(selector: string, scope?: string): Declarations {
+  return declarations(css(), selector, scope);
 }
 
 /** jsdom 视口默认 1024×768；show() 的定位断言以此为前提。 */
@@ -116,11 +126,13 @@ describe('showTooltip：DOM 纪律', () => {
     expect(node?.style.pointerEvents).toBe('auto');
   });
 
-  it('超长译文：max-height + overflow:auto，不靠撑高页面解决', () => {
+  it('超长译文：max-height + overflow:auto 写在 .jy-bubble 自己身上，不靠撑高页面解决', () => {
     showTooltip(RECT, { text: '很长' });
-    const css = host()?.shadowRoot?.querySelector('style')?.textContent ?? '';
-    expect(css).toContain('max-height');
-    expect(css).toMatch(/overflow:\s*auto/);
+    // 必须真的落在那条规则的声明块里：样式表的注释里也写着 `max-height:40vh`、
+    // `overflow:auto`，整表 toContain 会被注释满足——上一轮的变异核验正是这么漏掉的。
+    const box = decls('.jy-bubble {');
+    expect(box['max-height']).toBe('40vh');
+    expect(box['overflow']).toBe('auto');
   });
 
   it('定位走 positionTooltip：jsdom 下量得尺寸 0，仍按下方 8px 落位', () => {
@@ -220,45 +232,54 @@ describe('关闭途径', () => {
 describe('外观：深色玻璃表面（与弹窗/设置页同一套语言）', () => {
   it('表面：0.97 深底 + 1px 细边框 + 10px 圆角 + 12px/14px 内边距 + 400px 上限', () => {
     showTooltip(RECT, { text: '译文' });
-    expect(css()).toContain('--jy-surface: rgba(24, 26, 30, 0.97)');
-    expect(css()).toContain('--jy-border: rgba(255, 255, 255, 0.1)');
-    expect(css()).toContain('--jy-radius-md: 10px');
+    // 令牌整块钉住：改任何一个色值/圆角，这里当场红（观感是规格，不是随手可调的）。
+    const tokens = decls(':host {');
+    expect(tokens['--jy-surface']).toBe('rgba(24, 26, 30, 0.97)');
+    expect(tokens['--jy-border']).toBe('rgba(255, 255, 255, 0.1)');
+    expect(tokens['--jy-border-strong']).toBe('rgba(255, 255, 255, 0.16)');
+    expect(tokens['--jy-text']).toBe('#ffffff');
+    expect(tokens['--jy-radius-md']).toBe('10px');
+    expect(tokens['--jy-radius-sm']).toBe('6px');
 
-    const box = rule('.jy-bubble {');
-    expect(box).toContain('background: var(--jy-surface)');
-    expect(box).toContain('border: 1px solid var(--jy-border)');
-    expect(box).toContain('border-radius: var(--jy-radius-md)');
-    expect(box).toContain('padding: 12px 14px');
-    expect(box).toContain('max-width: 400px');
+    const box = decls('.jy-bubble {');
+    expect(box['background']).toBe('var(--jy-surface)');
+    expect(box['border']).toBe('1px solid var(--jy-border)');
+    expect(box['border-radius']).toBe('var(--jy-radius-md)');
+    expect(box['padding']).toBe('12px 14px');
+    expect(box['max-width']).toBe('400px');
   });
 
   it('阴影分两层：近处一条细阴影 + 远处一片柔阴影（不是单层大黑影）', () => {
     showTooltip(RECT, { text: '译文' });
-    expect(rule('.jy-bubble {')).toMatch(
-      /box-shadow:\s*0 1px 2px rgba\(0, 0, 0, 0\.28\),\s*0 8px 24px rgba\(0, 0, 0, 0\.32\)/,
+    expect(decls('.jy-bubble {')['box-shadow']).toBe(
+      '0 1px 2px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.32)',
     );
   });
 
   it('文字：13px/1.65 + 抗锯齿 + pre-wrap/break-word + 译文可选中复制', () => {
     showTooltip(RECT, { text: '译文' });
-    const box = rule('.jy-bubble {');
-    expect(box).toContain('font: 13px/1.65');
-    expect(box).toContain('-webkit-font-smoothing: antialiased');
+    const box = decls('.jy-bubble {');
+    expect(box['font']).toBe('13px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif');
+    expect(box['-webkit-font-smoothing']).toBe('antialiased');
 
-    const text = rule('.jy-text {');
-    expect(text).toContain('white-space: pre-wrap');
-    expect(text).toContain('overflow-wrap: break-word');
+    const text = decls('.jy-text {');
+    expect(text['white-space']).toBe('pre-wrap');
+    expect(text['overflow-wrap']).toBe('break-word');
     // 译文要能被框选去复制；页面上的 user-select:none 会顺着继承查到浮层头上，得显式挡住。
-    expect(text).toMatch(/user-select:\s*text/);
+    expect(text['user-select']).toBe('text');
+    expect(text['-webkit-user-select']).toBe('text');
   });
 
   it('滚动条：细 + 深色适配（scrollbar-* 与 ::-webkit-scrollbar 两套都写）', () => {
     showTooltip(RECT, { text: '译文' });
-    const box = rule('.jy-bubble {');
-    expect(box).toContain('scrollbar-width: thin');
-    expect(box).toMatch(/scrollbar-color:\s*rgba\(255, 255, 255, 0\.28\) transparent/);
-    expect(css()).toContain('.jy-bubble::-webkit-scrollbar {');
-    expect(rule('.jy-bubble::-webkit-scrollbar-thumb {')).toMatch(/background:\s*rgba\(255, 255, 255, 0\.28\)/);
+    const box = decls('.jy-bubble {');
+    expect(box['scrollbar-width']).toBe('thin');
+    expect(box['scrollbar-color']).toBe('rgba(255, 255, 255, 0.28) transparent');
+
+    const bar = decls('.jy-bubble::-webkit-scrollbar {');
+    expect(bar['width']).toBe('8px');
+    expect(bar['height']).toBe('8px');
+    expect(decls('.jy-bubble::-webkit-scrollbar-thumb {')['background']).toBe('rgba(255, 255, 255, 0.28)');
   });
 
   /**
@@ -268,11 +289,11 @@ describe('外观：深色玻璃表面（与弹窗/设置页同一套语言）', 
    */
   it('shadow 里统一 border-box：声明的 400px / 26px 就是可见盒子，宿主量与气泡等宽', () => {
     showTooltip(RECT, { text: '译文' });
-    const reset = rule('.jy-layer,\n  .jy-layer * {');
-    expect(reset).toContain('box-sizing: border-box');
+    // 多行选择器（`.jy-layer,` + `.jy-layer *`）按空白归一化之后照样精确命中。
+    expect(decls('.jy-layer, .jy-layer * {')['box-sizing']).toBe('border-box');
     // 上限仍写在气泡上（400px），收边口径的那一层也跟着它。
-    expect(rule('.jy-bubble {')).toContain('max-width: 400px');
-    expect(rule('.jy-layer {')).toContain('max-width: 400px');
+    expect(decls('.jy-bubble {')['max-width']).toBe('400px');
+    expect(decls('.jy-layer {')['max-width']).toBe('400px');
   });
 });
 
@@ -296,24 +317,25 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
     expect(speak?.tagName).toBe('BUTTON');
     expect(speak?.getAttribute('data-variant')).toBe('secondary');
 
-    expect(css()).toContain('--jy-accent: #2563eb');
-    expect(rule('.jy-action[data-variant="primary"] {')).toContain('background: var(--jy-accent)');
-    const base = rule('.jy-action {');
-    expect(base).toMatch(/background:\s*rgba\(255, 255, 255, 0\.1\)/);
-    expect(base).toContain('height: 26px');
-    expect(base).toContain('padding: 0 10px');
-    expect(base).toContain('font-size: 12px');
-    expect(base).toContain('gap: 6px');
-    expect(base).toContain('border-radius: var(--jy-radius-sm)');
+    expect(decls(':host {')['--jy-accent']).toBe('#2563eb');
+    expect(decls('.jy-action[data-variant="primary"] {')['background']).toBe('var(--jy-accent)');
+    const base = decls('.jy-action {');
+    expect(base['background']).toBe('rgba(255, 255, 255, 0.1)');
+    expect(base['height']).toBe('26px');
+    expect(base['padding']).toBe('0 10px');
+    expect(base['font-size']).toBe('12px');
+    expect(base['gap']).toBe('6px');
+    expect(base['border-radius']).toBe('var(--jy-radius-sm)');
   });
 
   it('三态齐全：hover / active / focus-visible（焦点环是浅色，深底上看得见）', () => {
     twoButtons();
-    expect(rule('.jy-action:hover {')).toMatch(/background:\s*rgba\(255, 255, 255, 0\.16\)/);
-    expect(rule('.jy-action:active {')).toMatch(/background:\s*rgba\(255, 255, 255, 0\.22\)/);
-    expect(rule('.jy-action[data-variant="primary"]:hover {')).toContain('var(--jy-accent-hover)');
-    expect(rule('.jy-action[data-variant="primary"]:active {')).toContain('filter: brightness(0.94)');
-    expect(rule('.jy-action:focus-visible {')).toMatch(/outline:\s*2px solid rgba\(255, 255, 255, 0\.85\)/);
+    expect(decls(':host {')['--jy-accent-hover']).toBe('#1d4ed8');
+    expect(decls('.jy-action:hover {')['background']).toBe('rgba(255, 255, 255, 0.16)');
+    expect(decls('.jy-action:active {')['background']).toBe('rgba(255, 255, 255, 0.22)');
+    expect(decls('.jy-action[data-variant="primary"]:hover {')['background']).toBe('var(--jy-accent-hover)');
+    expect(decls('.jy-action[data-variant="primary"]:active {')['filter']).toBe('brightness(0.94)');
+    expect(decls('.jy-action:focus-visible {')['outline']).toBe('2px solid rgba(255, 255, 255, 0.85)');
   });
 
   it('每个按钮前面一个内联 SVG 图标：14×14、currentColor、纯装饰、排在标签之前', () => {
@@ -334,8 +356,9 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
       expect(button.querySelector('.jy-action-label')?.textContent).toBeTruthy();
     });
 
-    expect(rule('.jy-action-icon {')).toMatch(/width:\s*14px/);
-    expect(rule('.jy-action-icon {')).toMatch(/height:\s*14px/);
+    const icon = decls('.jy-action-icon {');
+    expect(icon['width']).toBe('14px');
+    expect(icon['height']).toBe('14px');
   });
 
   it('点图标本身也算点按钮：委托认的是 composedPath 里的按钮，不是 event.target', () => {
@@ -389,22 +412,22 @@ describe('状态：翻译中与失败', () => {
   it('pending：降饱和的次级色 + 轻微脉冲，reduced-motion 下不动', () => {
     showTooltip(RECT, { text: '翻译中…', state: 'pending' });
     expect(bubbleNode()?.getAttribute('data-state')).toBe('pending');
-    expect(css()).toContain('--jy-text-2: #a8b0bb');
+    expect(decls(':host {')['--jy-text-2']).toBe('#a8b0bb');
 
-    const pending = rule('.jy-bubble[data-state="pending"] .jy-text {');
-    expect(pending).toContain('color: var(--jy-text-2)');
-    expect(pending).toContain('animation: jy-pulse');
-    expect(css()).toContain('@keyframes jy-pulse');
-    // 降级在 media query 里：拿第一段 pending 规则之后的整块来核对 animation:none。
-    const reduced = css().slice(css().indexOf('@media (prefers-reduced-motion: reduce)'));
-    expect(reduced).toMatch(/animation:\s*none/);
+    const pending = decls('.jy-bubble[data-state="pending"] .jy-text {');
+    expect(pending['color']).toBe('var(--jy-text-2)');
+    expect(pending['animation']).toBe('jy-pulse 1.4s ease-in-out infinite');
+    expect(hasRule(css(), '@keyframes jy-pulse')).toBe(true);
+    // 降级在媒体查询里那条**同名**规则上：按作用域取，拿到的不会是顶层这条。
+    const reduced = decls('.jy-bubble[data-state="pending"] .jy-text {', '@media (prefers-reduced-motion: reduce)');
+    expect(reduced['animation']).toBe('none');
   });
 
   it('error：深底上提亮过的红，且只是文字——不挂可点的按钮', () => {
     showTooltip(RECT, { text: '无法连接后台：Receiving end does not exist.', state: 'error' });
     expect(bubbleNode()?.getAttribute('data-state')).toBe('error');
-    expect(css()).toContain('--jy-danger: #f87171');
-    expect(rule('.jy-bubble[data-state="error"] .jy-text {')).toContain('color: var(--jy-danger)');
+    expect(decls(':host {')['--jy-danger']).toBe('#f87171');
+    expect(decls('.jy-bubble[data-state="error"] .jy-text {')['color']).toBe('var(--jy-danger)');
     expect(buttons()).toHaveLength(0);
   });
 
@@ -512,12 +535,96 @@ describe('caret：方向跟着定位走，水平跟着选区中心', () => {
 
   it('caret 画在 .jy-layer 上（气泡 overflow:auto 会把挂在它身上的箭头裁掉）', () => {
     showTooltip(RECT, { text: '译文' });
-    const caret = rule('.jy-layer::after {');
-    expect(caret).toMatch(/width:\s*8px/);
-    expect(caret).toMatch(/height:\s*8px/);
-    expect(caret).toContain('rotate(45deg)');
-    expect(caret).toContain('background: var(--jy-surface)');
+    const caret = decls('.jy-layer::after {');
+    expect(caret['width']).toBe('8px');
+    expect(caret['height']).toBe('8px');
+    expect(caret['transform']).toBe('translateX(-50%) rotate(45deg)');
+    expect(caret['background']).toBe('var(--jy-surface)');
     // 方向跟着气泡上的 data-placement：翻到上方时箭头改露在下边缘。
-    expect(css()).toContain('.jy-layer:has(> .jy-bubble[data-placement="top"])::after');
+    expect(hasRule(css(), '.jy-layer:has(> .jy-bubble[data-placement="top"])::after {')).toBe(true);
+  });
+});
+
+/**
+ * 无障碍：气泡里的状态变化要能被读屏播报。
+ *
+ * 规则是"读屏只播报**已经存在的活区内部**发生的变化"。活区如果随内容一起被插进来
+ * （上一版每次 show 都 `replaceChildren` 重建整个气泡），"翻译中 → 译文"在无障碍树上
+ * 就只是"一个新节点出现了"，读屏一声不吭。所以这里钉两件事：
+ *   ① 活区语义确实挂在**承载译文**的那个节点上（不是另做一个空壳镜像）；
+ *   ② 这个节点跨多次 show **是同一个**——变化落在同一个区域内部，才谈得上播报。
+ */
+describe('无障碍：状态变化能被播报（常驻活区）', () => {
+  it('承载译文的 .jy-text 就是 role=status 的活区，且没有被藏起来', () => {
+    showTooltip(RECT, { text: '译文' });
+
+    const region = liveRegion();
+    expect(region).not.toBeNull();
+    expect(region?.getAttribute('role')).toBe('status');
+    expect(region?.getAttribute('aria-live')).toBe('polite');
+    expect(region?.getAttribute('aria-atomic')).toBe('true');
+    // 活区里装的就是译文本身：念出来的和看到的是同一份文案。
+    expect(region?.textContent).toBe('译文');
+    // 在文档里、且没有被 aria-hidden 或 hidden 藏掉（藏起来的活区不播报）。
+    expect(region?.isConnected).toBe(true);
+    expect(region?.closest('[aria-hidden="true"], [hidden]')).toBeNull();
+  });
+
+  it('pending → 译文：还是同一个活区节点，只是文字变了（换节点＝这次变化收不到）', () => {
+    showTooltip(RECT, { text: '翻译中…', state: 'pending' });
+    const region = liveRegion();
+
+    showTooltip(RECT, { text: '译文' });
+
+    expect(liveRegion()).toBe(region);
+    expect(region?.textContent).toBe('译文');
+    expect(bubbleNode()?.getAttribute('data-state')).toBe('done');
+  });
+
+  it('pending → 失败：错误文案同样落在同一个活区里（不是静默）', () => {
+    showTooltip(RECT, { text: '翻译中…', state: 'pending' });
+    const region = liveRegion();
+
+    showTooltip(RECT, { text: '无法连接后台', state: 'error' });
+
+    expect(liveRegion()).toBe(region);
+    expect(region?.textContent).toBe('无法连接后台');
+    expect(bubbleNode()?.getAttribute('data-state')).toBe('error');
+  });
+
+  it('活区里只有译文：按钮行不在里面，重建按钮不会把整块文案再念一遍', () => {
+    showTooltip(RECT, { text: '翻译中…', state: 'pending' });
+    const region = liveRegion();
+
+    showTooltip(RECT, { text: '译文', buttons: [{ label: '复制', onClick: () => {} }] });
+
+    expect(liveRegion()).toBe(region);
+    expect(region?.querySelector('button')).toBeNull();
+    expect(buttons()).toHaveLength(1);
+  });
+
+  it('同一段重复显示（缓存命中）：文字没变就不重写，不制造第二次播报', () => {
+    showTooltip(RECT, { text: '译文' });
+    const region = liveRegion();
+    const written = region?.firstChild;
+
+    showTooltip(RECT, { text: '译文' });
+
+    expect(region?.textContent).toBe('译文');
+    // 再写一遍等于又制造一次活区变化（读屏会重复念同一句话）：文本节点都没被换。
+    expect(region?.firstChild).toBe(written);
+  });
+
+  it('关闭再打开：活区随宿主重生（旧节点不残留在文档里）', () => {
+    showTooltip(RECT, { text: '译文' });
+    const first = liveRegion();
+
+    hideTooltip();
+    showTooltip(RECT, { text: '第二段' });
+
+    const second = liveRegion();
+    expect(second).not.toBe(first);
+    expect(first?.isConnected).toBe(false);
+    expect(second?.textContent).toBe('第二段');
   });
 });

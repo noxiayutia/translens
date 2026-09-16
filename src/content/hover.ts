@@ -41,7 +41,7 @@ interface HighlightBox {
 }
 
 /**
- * 高亮框的观感（几何留在 inline style，形状/动效写在样式表里）：
+ * 高亮框的观感（几何与两支颜色值都留在 inline style，形状/动效写在样式表里）：
  * 强调色描边 + 极淡的强调色底，出现时 120ms 淡入。
  */
 const HIGHLIGHT_CSS = `
@@ -67,6 +67,12 @@ const HIGHLIGHT_CSS = `
  *
  * 描边与底色都用**带透明度的强调色**（同一支蓝，深浅两套页面各自混合）：深色页面上
  * 不写死深色、浅色页面上不写死浅色，两种页面都看得见。
+ *
+ * 两个不透明度是**核验给死的**：上一版 0.45 / 0.06 那组，描边与它框住的底色在浅色页面上
+ * 只有约 1.8:1 的对比，只算"可辨"；0.6 / 0.08 是约 2.3:1——描边明显深了一档，底色仍留得
+ * 很淡，观感还是柔和的描边，不是生硬的实线框。两个值各管一件事：描边管"这条线看得清"，
+ * 底色管"这块区域被框住了"；要让线更清楚就加深描边，而不是把底色抹掉（底色没了，
+ * 高亮就只剩一条孤线）。
  */
 function createHighlightBox(): HighlightBox {
   let node: HTMLElement | null = null;
@@ -89,9 +95,9 @@ function createHighlightBox(): HighlightBox {
           'width:100%',
           'height:100%',
           'box-sizing:border-box',
-          'outline:2px solid rgba(37, 99, 235, 0.45)',
+          'outline:2px solid rgba(37, 99, 235, 0.6)',
           // 极淡的强调色底：描边区域有"被框住"的感觉，又不盖住文字。
-          'background:rgba(37, 99, 235, 0.06)',
+          'background:rgba(37, 99, 235, 0.08)',
         ].join(';');
         const style = document.createElement('style');
         style.textContent = HIGHLIGHT_CSS;

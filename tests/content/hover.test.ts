@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHoverTranslator, type HoverController } from '../../src/content/hover';
 import { hideTooltip } from '../../src/content/tooltip';
+import { declarationBlock, declarations, parseDeclarations } from '../helpers/css';
 import { dispatchSynthetic, dispatchTrusted } from '../helpers/trusted-events';
 import type { InlineTranslation } from '../../src/content/inline-types';
 
@@ -382,21 +383,35 @@ describe('高亮观感：柔和描边 + 极淡底 + 淡入', () => {
     return host;
   }
 
-  it('描边是 45% 的强调色、底色是 6% 的强调色，都挂在我们的 fixed 浮层自己的框上', async () => {
+  /**
+   * 两个不透明度是核验给死的（上一轮 0.45 / 0.06 那组在浅色页面上只有约 1.8:1，
+   * 描边只算"可辨"）：0.6 / 0.08 约 2.3:1。断言取的是**解析后的声明表**，
+   * 不是"整段字符串里有这几个字"——删掉声明或改掉数值都必须当场红。
+   */
+  it('描边是 60% 的强调色、底色是 8% 的强调色，都挂在我们的 fixed 浮层自己的框上', async () => {
     const host = await openHighlight();
-    const style = host.shadowRoot?.firstElementChild?.getAttribute('style') ?? '';
-    expect(style).toMatch(/outline:\s*2px solid rgba\(37, 99, 235, 0\.45\)/);
-    expect(style).toMatch(/background:\s*rgba\(37, 99, 235, 0\.06\)/);
+    const style = parseDeclarations(host.shadowRoot?.firstElementChild?.getAttribute('style') ?? '');
+    expect(style['outline']).toBe('2px solid rgba(37, 99, 235, 0.6)');
+    expect(style['background']).toBe('rgba(37, 99, 235, 0.08)');
+    // 尺寸口径与 shadow 里那套一致：100% × 100% + border-box = 正好是段落的可见矩形。
+    expect(style['width']).toBe('100%');
+    expect(style['height']).toBe('100%');
+    expect(style['box-sizing']).toBe('border-box');
+    // 描边不参与布局：只有尺寸，没有任何边框/内边距/外边距。
+    expect(Object.keys(style).filter((key) => /^(border|padding|margin)/.test(key))).toEqual([]);
   });
 
   it('圆角与 120ms 淡入写在样式表里；reduced-motion 下不动', async () => {
     const host = await openHighlight();
     const css = host.shadowRoot?.querySelector('style')?.textContent ?? '';
-    expect(css).toMatch(/border-radius:\s*6px/);
-    expect(css).toMatch(/animation:\s*jy-hover-in 120ms/);
-    expect(css).toMatch(/@keyframes jy-hover-in\s*\{\s*from\s*\{\s*opacity:\s*0/);
-    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'))).toMatch(/animation:\s*none/);
+    const box = declarations(css, '.jy-hover-box {');
+    expect(box['border-radius']).toBe('6px');
+    expect(box['animation']).toBe('jy-hover-in 120ms ease-out');
+    // 关键帧真的存在，并且从透明开始淡入。
+    expect(declarationBlock(css, '@keyframes jy-hover-in').replace(/\s+/g, ' ')).toContain('from { opacity: 0; }');
+    // 同名的第二条规则在媒体查询里：降级为不动（按作用域取，不会拿到顶层那条）。
+    const reduced = declarations(css, '.jy-hover-box {', '@media (prefers-reduced-motion: reduce)');
+    expect(reduced['animation']).toBe('none');
   });
 
   it('样式全在浮层自己身上：页面元素一个 inline style 都没有（布局不变式照旧）', async () => {
