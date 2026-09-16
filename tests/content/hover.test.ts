@@ -23,6 +23,8 @@ const HTML = [
   '  <p id="two">Second paragraph</p>',
   '  <div id="wrap"><p id="three">Third <b id="threeb">bold section</b> tail</p></div>',
   '</article>',
+  '<button id="btn"><span id="btnspan">Products</span>' +
+    '<svg id="btnsvg" viewBox="0 0 12 12"><polyline points="2,4 6,8 10,4"/></svg></button>',
 ].join('\n');
 
 function byId(id: string): HTMLElement {
@@ -274,6 +276,30 @@ describe('请求去重与缓存', () => {
 
     // 而不是只翻加粗的那一截。
     expect(translate).toHaveBeenCalledWith('Third bold section tail');
+  });
+
+  /**
+   * BUTTON 从 SKIP_TAGS 移除后，悬停落在按钮里的文字上不再是"这里不该翻译"：
+   * 段落判据要命中按钮整块（svg 不并入文本），描边与气泡照常。
+   */
+  it('悬停按钮里的 span：整块按钮成段、请求只带可见文字、描边与气泡正常', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    enter('btnspan');
+    await settle();
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(translate).toHaveBeenCalledWith('Products');
+    expect(bubbleText()).toBe('译文:Products');
+
+    const host = highlightHost();
+    expect(host).not.toBeNull();
+    expect(host?.parentElement).toBe(document.documentElement);
+    const frame = host?.shadowRoot?.firstElementChild;
+    expect(frame?.getAttribute('style') ?? '').toContain('outline:');
+    // 页面元素一个属性都不加。
+    expect(byId('btn').hasAttribute('style')).toBe(false);
   });
 
   it('先请求的段落结果更晚回来时不覆盖当前段的气泡（迟到结果作废）', async () => {

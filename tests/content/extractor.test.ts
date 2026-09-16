@@ -35,8 +35,10 @@ const REF_SKIP_TAGS = new Set([
   'TITLE',
   'META',
   'LINK',
-  'BUTTON',
 ]);
+// BUTTON 刻意**不在**名单里：按钮上承载的是界面文字，该翻（2026-09 修 digitalocean
+// 导航 Products/Solutions 不翻的事故）；`<input>` / `<select>` / `<textarea>` /
+// `<option>` 的值不是正文，仍然全数保留。
 const REF_WORD = /[\p{L}\p{N}]/u;
 const REF_CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u;
 
@@ -248,6 +250,54 @@ describe('collectSegments', () => {
     );
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
     expect(segments.map((s) => s.text)).toEqual(['Real content here']);
+  });
+
+  // ---- 按钮文字进采集（修 digitalocean 顶部导航 Products/Solutions 不翻的事故）----
+  it('<button>Products</button> 的可见文字被采集', () => {
+    const root = mount('<button>Products</button>');
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Products']);
+  });
+
+  it('digitalocean 导航形态：span 里的按钮文字成段，svg 与隐藏面板都不并入', () => {
+    const root = mount(
+      '<nav><ul><li>' +
+        '<button type="button" aria-expanded="false"><span>Products</span>' +
+        '<svg viewBox="0 0 12 12"><polyline points="2,4 6,8 10,4"/></svg></button>' +
+        '<div class="dd" style="display:none"><a>Dropdown panel entry</a></div>' +
+        '</li></ul></nav>',
+    );
+    const texts = collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text);
+    expect(texts).toContain('Products');
+    // svg 仍被跳过（符号也进不了文本）；隐藏面板照旧一个字都不采。
+    expect(texts.join(' ')).not.toContain('Dropdown');
+  });
+
+  it('图标按钮不送采集：× / ☰ / ⌄ / 单个数字都被既有噪声闸挡住', () => {
+    const root = mount(
+      '<div><button type="button" aria-label="Close">×</button>' +
+        '<button aria-label="Menu">☰</button><button>3</button>' +
+        '<button aria-label="Fold">⌄</button><button>→</button></div>' +
+        '<p>Real english sentence</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Real english sentence']);
+  });
+
+  it('其余 SKIP 项一个不少：pre / code / input / select / textarea / svg 内 text 都不被采集', () => {
+    const root = mount(
+      '<pre>const answer = compute;</pre>' +
+        '<p>Inline <code>npm run build</code> command</p>' +
+        '<input value="Submit form label"><textarea>Textarea draft content</textarea>' +
+        '<select><option>Option label here</option></select>' +
+        '<div><svg viewBox="0 0 9 9"><text>Label inside svg</text></svg></div>' +
+        '<p>Genuine paragraph text</p>',
+    );
+    // 段落里环绕 code 的正文照常成段，但被跳过标签的内容一个字都不进文本。
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual([
+      'Inline command',
+      'Genuine paragraph text',
+    ]);
   });
 
   it('跳过隐藏元素', () => {
@@ -542,6 +592,7 @@ describe('抽出文本的不变量', () => {
     'Hello <b>bold</b>, and <i>italic</i>.',
     '東京<b>タワー</b>へ行く',
     'Home <a href="/pricing"><span>Pricing</span></a> page',
+    'Click <button type="button">submit</button> to continue',
     'Mixed <em>mark</em>up &amp; entities  spaced   out',
     'Prefix<span>suffix</span>5 $<b>+</b>tax',
   ];

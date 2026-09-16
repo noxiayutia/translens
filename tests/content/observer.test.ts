@@ -713,7 +713,9 @@ describe('增量翻译：失败处理与布局不变式', () => {
       [
         '<aside id="side" aria-hidden="true"><p>Sidebar hidden text</p></aside>',
         '<pre id="keepme">const answer = 42;</pre>',
-        '<nav id="nav"><button>Push the button</button></nav>',
+        // 曾是 `<button>Push the button</button>`：BUTTON 从 SKIP_TAGS 放开后按钮文字**会**被
+        // 翻译（digitalocean 导航修复），"不该被波及的元素"改用仍然跳过的下拉框来钉。
+        '<nav id="nav"><select id="pick"><option>Push the option</option></select></nav>',
         '<article id="feed"><p>Hello world</p></article>',
       ].join(''),
     );

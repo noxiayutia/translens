@@ -53,7 +53,15 @@ export function pageHasKana(root: ParentNode): boolean {
   return containsKana(root.textContent ?? '');
 }
 
-/** 这些标签里的内容一律不翻译：代码、表单控件、多媒体与元数据。 */
+/**
+ * 这些标签里的内容一律不翻译：代码、表单控件**的值**、多媒体与元数据。
+ *
+ * **BUTTON 刻意不在名单里**：当初把 BUTTON 放进来是为了"别翻表单控件"，加错了对象——
+ * `<input>` / `<select>` / `<textarea>` / `<option>` 的值不是页面正文，该跳；
+ * 而 `<button>` 上承载的正是用户最想翻的界面文字（digitalocean 顶部导航
+ * Products / Solutions / Developers / Partners 整排不翻的事故）。图标按钮（`×`、`☰`、`3`）
+ * 仍然由 {@link isTranslatableText} 的噪声闸挡在门外，不会送接口。
+ */
 const SKIP_TAGS = new Set([
   'SCRIPT',
   'STYLE',
@@ -75,8 +83,17 @@ const SKIP_TAGS = new Set([
   'TITLE',
   'META',
   'LINK',
-  'BUTTON',
 ]);
+
+/**
+ * `SKIP_TAGS` 的成员判定。**必须按大小写不敏感来对**：`Element.tagName` 只对 HTML
+ * 命名空间的元素大写化——内联 `<svg>`（以及它里面的 `<title>` / `<style>` / `<script>`）
+ * 的 tagName 是**小写**的，`SKIP_TAGS.has('SVG')` 永远对不上，"svg 一律跳过"其实一直没生效。
+ * 两处各写一份大写化的判断迟早漂移，所以只留这一个谓词给三个调用点用。
+ */
+function hasSkipTag(element: Element): boolean {
+  return SKIP_TAGS.has(element.tagName) || SKIP_TAGS.has(element.tagName.toUpperCase());
+}
 
 const BLOCK_DISPLAYS = new Set([
   'block',
@@ -168,7 +185,7 @@ export function isHidden(element: Element, styleOf: StyleLookup): boolean {
  * 免得「这里跳过、那里不跳过」两处规则漂移。
  */
 function isSkippedForText(element: Element): boolean {
-  return SKIP_TAGS.has(element.tagName) || isEditable(element) || element.closest('[data-jy-root]') !== null;
+  return hasSkipTag(element) || isEditable(element) || element.closest('[data-jy-root]') !== null;
 }
 
 /**
@@ -206,7 +223,8 @@ export function isEditable(element: Element): boolean {
  *
  * 一个元素是"叶子文本块"，当且仅当：
  * 1. 它自己不在被跳过的范围里（`[data-jy-root]` 子树、`SKIP_TAGS`、可编辑区域）——
- *    命中即**直接返回 null**：右键/悬停落在按钮或输入框上不是"段落没找到"，是"这里不该翻译"；
+ *    命中即**直接返回 null**：右键/悬停落在输入框、下拉框或代码块上不是"段落没找到"，是"这里不该翻译"；
+ *    （按钮不在跳过名单里：悬停落在按钮文字上就该翻按钮那段——见 `SKIP_TAGS` 的注释。）
  * 2. 它内部没有块级边界子元素（有就是容器，块级子元素各自成段，见 collectSegments 的注释）；
  * 3. 它的可见文本可翻译（{@link isTranslatableText}，与采集端同一条判据）；
  * 4. 它是"块"——自身是块级边界（{@link isBlockBoundary}），或其父是 body
@@ -225,7 +243,7 @@ export function findLeafTextAncestor(element: Element | null): HTMLElement | nul
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     // 1. 命中即停：这些区域不是"还没找到段落"，是"这里永远不翻译"。
     if (node.closest('[data-jy-root]') !== null) return null;
-    if (SKIP_TAGS.has(node.tagName) || isEditable(node)) return null;
+    if (hasSkipTag(node) || isEditable(node)) return null;
     // 隐藏元素本身没有可悬停的字面（display:none 不产生盒），但它的可见祖先照常是段落，
     // 所以不返回、继续向上。（aria-hidden 的可见节点走到下面的正常判定。）
     if (isHidden(node, styleOf)) continue;
@@ -346,7 +364,7 @@ export function inlineText(element: Element, styleOf: StyleLookup): string {
 }
 
 function isSkippable(element: Element): boolean {
-  if (SKIP_TAGS.has(element.tagName)) return true;
+  if (hasSkipTag(element)) return true;
   // 可编辑区域整棵子树都不采：用户没写完的草稿不上传到外部翻译接口（见 isEditable）。
   if (isEditable(element)) return true;
   if (element.hasAttribute('data-jy-translated')) return true;

@@ -391,6 +391,60 @@ describe('内容脚本编排：翻译整页', () => {
     expect(batches.flat().map((item) => item.text).sort()).toEqual([...expected].sort());
   });
 
+  /**
+   * 用户主诉求（digitalocean 顶部导航 Products/Solutions/Developers/Partners 完全没被翻）：
+   * 按钮文字从 SKIP_TAGS 放开后，双语与仅译文两种显示模式都要走到"发请求→渲染"。
+   */
+  it('仅译文模式：导航按钮里的文字被翻译', async () => {
+    mount(
+      '<nav><ul><li><button type="button" aria-expanded="false">' +
+        '<span>Products</span><svg viewBox="0 0 12 12"><polyline points="2,4 6,8 10,4"/></svg>' +
+        '</button></li><li><p>Pricing</p></li></ul></nav>',
+    );
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(sentBatches(worker).flat().map((item) => item.text)).toEqual(['Products', 'Pricing']);
+    expect(state.mode).toBe('translated-only');
+    expect(state.total).toBe(2);
+    expect(authedHosts().map((host) => bodyTextOf(host))).toEqual(['译:Products', '译:Pricing']);
+  });
+
+  it('双语模式：按钮文字同样被翻译，原文留在原位', async () => {
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: { version: CURRENT_VERSION, displayMode: 'bilingual' },
+    });
+    mount('<button>Products</button>');
+    const button = document.querySelector('button') as HTMLElement;
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(sentBatches(worker).flat().map((item) => item.text)).toEqual(['Products']);
+    expect(state.mode).toBe('bilingual');
+    expect(bodyTextOf(hosts()[0] as Element)).toBe('译:Products');
+    // 原文一个字符没动，双语宿主插在按钮之后。
+    expect(button.textContent).toBe('Products');
+    expect(button.nextElementSibling?.tagName).toBe('JY-TRANSLATION');
+  });
+
+  it('图标按钮不送接口：× / ☰ / 3 一个请求都不发（噪声闸还在）', async () => {
+    mount(
+      '<div><button type="button" aria-label="Close">×</button>' +
+        '<button aria-label="Menu">☰</button><button>3</button></div>',
+    );
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(sentBatches(worker)).toEqual([]);
+    expect(state.total).toBe(0);
+  });
+
   it('批次按设置切分：maxSegmentsPerBatch 为 1 时逐条发请求', async () => {
     await chromeStub.storage.local.set({
       'jinyi:settings': { version: 1, maxSegmentsPerBatch: 1, concurrency: 2 },
