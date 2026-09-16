@@ -2,7 +2,7 @@
  * 隐私守卫：`src/content/**` 一行 `loadSettings` 都不许有。
  *
  * 内容脚本跑在网页进程（isolated world）里，`shared/settings.ts` 的 `loadSettings()` 返回的
- * 完整设置含 `engineConfig.apiKey`——用它就等于让密钥以"可读字段"的形式流进网页侧的调用链。
+ * 完整设置含**每个服务商档案的 `apiKey`**——用它就等于让密钥以"可读字段"的形式流进网页侧的调用链。
  * 如实定性边界：这是**类型级**约束（投影版类型里没有 apiKey 字段，下游拿不到、也就写不进
  * 消息与日志），不是内存级隔离（`loadUiSettings` 内部同样会读出整份设置，密钥会瞬态经过本
  * world 的堆；isolated world 下页面脚本访问不到那个堆）。守卫防的是"内容脚本里出现能直接
