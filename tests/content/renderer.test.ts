@@ -390,6 +390,113 @@ describe('DomRenderer 仅译文模式', () => {
   });
 });
 
+/**
+ * 放开 BUTTON 采集之后的另一半修复：`<button><span>Products</span><svg>箭头</svg></button>`
+ * 在仅译文模式下只该藏起**承载文字**的节点。svg / img / 纯空白文本节点不承载任何文字，
+ * 必须留在原位保持可见——否则"产品"两个字后面的箭头会跟着原文一起消失，比不翻更糟。
+ */
+describe('DomRenderer 仅译文模式：纯视觉节点不被藏起来', () => {
+  const ARROW_SVG = '<svg id="arrow" viewBox="0 0 12 12"><polyline points="2,4 6,8 10,4"/></svg>';
+
+  it('按钮带箭头：文字进隐藏容器、宿主紧跟容器、svg 留在原位且仍在译文之后', () => {
+    document.body.innerHTML = `<button><span>Products</span>${ARROW_SVG}</button>`;
+    const button = document.querySelector('button') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.element).toBe(button);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '产品');
+
+    const span = originalsOf(button);
+    expect(span.textContent).toBe('Products');
+
+    const arrow = document.getElementById('arrow') as Element;
+    expect(arrow.parentElement, 'svg 不该被搬进隐藏容器').toBe(button);
+    expect(span.contains(arrow)).toBe(false);
+    // 顺序：[隐藏容器, 宿主(译文), svg] —— 图标仍跟在译文后面。
+    expect(arrow.previousElementSibling?.tagName).toBe('JY-TRANSLATION');
+    expect(bodyTextOf(button.querySelector('jy-translation') as Element)).toBe('产品');
+    expect(visibleText(button)).toBe('产品');
+
+    // 失败态把原文放回来：隐藏容器里的原文重新可见，图标本来就没藏。
+    renderer.fail(segment.id, '网络错误');
+    expect(visibleText(button)).toContain('Products');
+    expect(visibleText(button)).toContain('网络错误');
+  });
+
+  it('锚点 + 文字：<a><img src=logo>Docs</a> 的图片留在原位，不被藏起来', () => {
+    document.body.innerHTML = '<a id="l" href="/docs"><img id="logo" src="logo.png" alt="">Docs</a>';
+    const a = document.getElementById('l') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.element).toBe(a);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '文档');
+
+    const logo = document.getElementById('logo') as Element;
+    expect(logo.parentElement).toBe(a);
+    expect(originalsOf(a).contains(logo)).toBe(false);
+    const order = Array.from(a.childNodes).map((node) =>
+      node.nodeType === Node.TEXT_NODE ? '#text' : (node as Element).nodeName,
+    );
+    expect(order).toEqual(['IMG', 'SPAN', 'JY-TRANSLATION']);
+    expect(visibleText(a)).toBe('文档');
+  });
+
+  it('svg 里有 <text> 也留在原位：判据走 inlineText 口径，不看 textContent', () => {
+    document.body.innerHTML = '<p id="p">Read the <svg id="chart" viewBox="0 0 9 9"><text>chart label</text></svg> first</p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const before = document.body.outerHTML;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    // 采集端就把 svg 里的文字排除在段文本外（它压根不会被翻译）——藏它反而制造"消失了段里没有的东西"。
+    expect(segment.text).toBe('Read the first');
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '先读图');
+
+    const chart = document.getElementById('chart') as Element;
+    expect(chart.parentElement).toBe(p);
+    for (const span of Array.from(p.querySelectorAll('[data-jy-originals]'))) {
+      expect(span.contains(chart), '带文字的 svg 不该按 textContent 被误判为文字节点').toBe(false);
+    }
+    expect(visibleText(p)).toContain('先读图');
+    expect(visibleText(p)).not.toContain('Read the');
+
+    renderer.restore();
+    // 文字被 svg 断成两组：逐字节还原钉住"每连续一段各自一个容器"的分组搬运。
+    expect(document.body.outerHTML).toBe(before);
+  });
+
+  it('还原逐字节：图标 + 图片 + 空白 + 带文字 svg 的混合结构，还原后无 data-jy-* 残留', () => {
+    document.body.innerHTML = [
+      '<button><img id="logo" src="logo.png" alt=""><span>Products</span> ' + ARROW_SVG + '</button>',
+      '<p>Read the <svg id="chart" viewBox="0 0 9 9"><text>chart label</text></svg> first</p>',
+    ].join('');
+    const before = document.body.outerHTML;
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments).toHaveLength(2);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.order}`);
+
+    // 视觉节点全部留在隐藏容器之外；被搬走的文字全部带着自己的容器。
+    for (const id of ['logo', 'arrow', 'chart']) {
+      const node = document.getElementById(id) as Element;
+      expect(node.closest('[data-jy-originals]'), `#${id} 不该在隐藏容器里`).toBeNull();
+    }
+    const visible = visibleText(document.body);
+    expect(visible).toContain('【译】0');
+    expect(visible).toContain('【译】1');
+    expect(visible).not.toContain('Products');
+    expect(visible).not.toContain('Read the');
+    expect(visible).not.toContain(' first');
+
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+    expect(document.querySelectorAll(JY_MARKERS)).toHaveLength(0);
+  });
+});
+
 describe('DomRenderer 仅译文模式：单一链接为主的段落保留链接指引', () => {
   /** nature.com 作者署名行的形状：整段几乎就是一个链接。 */
   const BYLINE_HTML =

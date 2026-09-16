@@ -853,9 +853,13 @@ describe('内容脚本编排：翻译整页', () => {
 
     await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
+    // 一段可能有多个隐藏容器（不承载文字的节点留原位会把搬走的断成几串），
+    // 所以"可见的只有译文"的计数基准是译文宿主数，不是 span 数。
     const hidden = document.querySelectorAll('[data-jy-originals]');
     expect(hidden.length).toBeGreaterThan(5);
-    expect(visibleTextOf(document.body)).toBe('MOCK'.repeat(hidden.length));
+    expect(visibleTextOf(document.body)).toBe('MOCK'.repeat(hosts().length));
+    expect(hosts().length).toBeGreaterThan(5);
+    expect(hidden.length).toBeGreaterThanOrEqual(hosts().length);
 
     await dispatch(contentListener, MSG.RESTORE_PAGE);
 

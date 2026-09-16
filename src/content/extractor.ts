@@ -363,6 +363,29 @@ export function inlineText(element: Element, styleOf: StyleLookup): string {
   return result;
 }
 
+/**
+ * 「这个子节点为它所在的段落承载可见文字吗」——采集端 `visitContent` 扫子节点用的
+ * 同一组谓词（{@link isSkippedForText} / {@link isHidden} / {@link isBlockBoundary} /
+ * {@link inlineText}）合成一份，**导出给渲染器复用**（仅译文模式据此决定搬谁、留谁，
+ * 见 `content/renderer.ts` 的 `hideOriginals`）。
+ *
+ * 为什么不直接把 `inlineText` 当判据：`inlineText(element)` 算的是 element **子节点**
+ * 贡献的文字，它不检查 element 自己——一个内联 `<svg>` 里带 `<text>` 时，
+ * `inlineText(svg)` 会返回那段文字，而采集端根本不会把它并进任何段落（svg 整体被跳过）。
+ * 「带文字的图标」要是按 `inlineText` 非空就被搬进隐藏容器，正是本文件开头说的
+ * 两处口径漂移。判"自己算不算文字节点"必须连自身的跳过/隐藏/块级判定一起做，
+ * 这一份合成只留在这里一处，谁要用谁 import。
+ */
+export function carriesVisibleText(node: Node, styleOf: StyleLookup): boolean {
+  if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue ?? '').trim() !== '';
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const element = node as Element;
+  if (element.nodeName === 'BR') return false;
+  if (isSkippedForText(element) || isHidden(element, styleOf)) return false;
+  if (isBlockBoundary(element, styleOf, 0)) return false;
+  return inlineText(element, styleOf) !== '';
+}
+
 function isSkippable(element: Element): boolean {
   if (hasSkipTag(element)) return true;
   // 可编辑区域整棵子树都不采：用户没写完的草稿不上传到外部翻译接口（见 isEditable）。

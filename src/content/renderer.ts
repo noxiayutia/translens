@@ -1,5 +1,5 @@
 import type { ExtractedSegment } from './extractor';
-import { createStyleLookup, inlineText, isBlockDisplay, isHidden } from './extractor';
+import { carriesVisibleText, createStyleLookup, inlineText, isBlockDisplay, isHidden } from './extractor';
 import { normalizeText } from '../core/lang';
 import type { DisplayMode } from '../shared/settings';
 import { TRANSLATION_CSS, TRANSLATION_INLINE_CSS } from './styles';
@@ -76,12 +76,18 @@ interface InsertionTarget {
   before: Node | null;
 }
 
-/** 仅译文模式下被藏起来的一段原文：节点都还在，只是被移进了这个 span。 */
+/**
+ * 仅译文模式下被藏起来的一段原文：节点都还在，只是被移进了隐藏 span。
+ *
+ * 一段可能有**多个**隐藏容器：不承载文字的节点（svg / img / 纯空白文本）留在原位，
+ * 会把搬走的节点断成若干连续段，每段各自一个容器（见 `hideOriginals`）。
+ * 单容器跨着留底节点搬会把文本节点边界搬乱，`restore()` 就回不到逐字节原样了。
+ */
 interface HiddenOriginals {
   element: HTMLElement;
-  span: HTMLElement;
+  spans: HTMLElement[];
   /**
-   * 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都在 span 里。
+   * 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，承载文字的子节点都在 span 里。
    * 元素被框架整体换掉时可以把原文搬进新元素（松散文本段不行——它的父元素是容器，
    * 里面还有别的段落，整块替换会把兄弟段落删掉）。
    */
@@ -142,7 +148,7 @@ function escapeAttributeValue(value: string): string {
 export class DomRenderer {
   private readonly hosts = new Map<string, HTMLElement>();
   /**
-   * 仅译文模式下被藏起来的原文 → 装载它的 span。
+   * 仅译文模式下被藏起来的原文 → 装载它们的隐藏 span（一串连续被搬走的节点一个，见 {@link HiddenOriginals}）。
    *
    * 用 `Map` 而不是 `WeakMap`：`restore()` 必须能**遍历**全部条目（双语模式不需要它——
    * 那边的原文一直可见，压根没有要还原的东西）。
@@ -204,18 +210,21 @@ export class DomRenderer {
   private setOriginalsHidden(segmentId: string, hidden: boolean): void {
     const record = this.hiddenOriginals.get(segmentId);
     if (record === undefined) return;
-    record.span.style.display = hidden ? 'none' : '';
+    for (const span of record.spans) span.style.display = hidden ? 'none' : '';
   }
 
   /**
    * 仅译文模式：把原文**包起来藏掉**，而不是删掉它。
    *
-   * 三步（见 `hideOriginals`）：
-   * 1. 新建 `<span data-jy-originals data-jy-root style="display:none">`；
-   * 2. 把这一段的原文节点**按原相对顺序**搬进去（是搬移不是克隆：还原就是把它们搬回去）；
-   * 3. 把 span 与 `<jy-translation>` 译文宿主放进元素内部，宿主在 span 之后。
+   * 步骤（见 `hideOriginals`）：
+   * 1. 把这一段的原文节点按「承载文字 / 不承载文字」分成两类：承载文字的**按原相对顺序**
+   *    搬进隐藏 span（是搬移不是克隆：还原就是把它们搬回去），不承载文字的（svg / img /
+   *    图标 / 纯空白）**留在原位、保持可见**；每一串连续被搬走的节点各用一个 span；
+   * 2. span 站在它那一串节点原来的位置上，`<jy-translation>` 译文宿主**紧跟在第一个
+   *    span 之后**——`[文字, svg]` 于是变成 `[隐藏容器, 宿主(译文), svg]`，图标仍在译文后面。
    *
-   * 于是元素里**可见的只有译文**，而原文节点一个都没销毁。为什么是包起来而不是替换掉：
+   * 于是元素里**可见的只有译文和本来就没有文字的视觉节点**，被翻的原文节点一个都没销毁。
+   * 为什么是包起来而不是替换掉：
    * - 行内标记（链接、图片、加粗）全留在 DOM 里，还原时不需要重建任何东西；
    * - 对任何元素都成立——表格单元格、列表项、弹性/网格布局的子元素都只需要往元素**内部**
    *   追加，不必像双语模式那样分情况判断该插到兄弟位置还是内部；
@@ -247,15 +256,22 @@ export class DomRenderer {
   /**
    * 把这一段的原文节点搬进隐藏 span，并把 span 与宿主放进元素里。
    *
-   * 两种段落形态的搬法不同，区别在于**这个元素是不是这一段的专属容器**：
-   * - 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都搬走，
-   *   span 落在原来第一个子节点的位置（子节点全搬空后就是"元素末尾"）；
+   * 两种段落形态的节点集合取法不同，区别在于**这个元素是不是这一段的专属容器**：
+   * - 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都是候选；
    * - 松散文本段（`anchor.kind === 'before'`）：元素是**容器**，里面还有别的块级子元素各自成段
    *   （`<div>Intro<p>Body</p>Outro</div>`），整块搬走会把兄弟段落连同它们自己的译文一起藏掉。
-   *   只搬本段真正贡献了文字的那一串节点（见 `runNodes`），span 留在本段原来的位置。
+   *   候选只取本段真正贡献了文字的那一串节点（见 `runNodes`）。
    *
-   * 宿主两种形态都放在 span 之后：整元素段落是追加到元素末尾（规格就是这三步），
-   * 松散文本段则仍按 `anchor` 给出的落点插入——那正是"紧跟这段原文"的位置。
+   * 两类节点两种命运（判据复用 extractor 的 {@link carriesVisibleText}，不另写一份）：
+   * - 承载文字的（非空白文本节点、`inlineText` 非空的元素）→ 搬进隐藏容器；
+   * - 不承载任何文字的（`<svg>`、`<img>`、图标 `<i>`、纯空白文本节点、隐藏子树）
+   *   → **留在原位、保持可见**。BUTTON 进采集后按钮是「文字 + 箭头 svg」的形态，
+   *   连图标一起藏掉比不翻更难看。
+   *
+   * 每**一串连续**被搬走的节点用各自的一个 span，站在该串原来的位置上——留底节点把文字
+   * 断成两串时（`An image <img> inside`），单容器跨着搬会打乱文本节点边界，逐字节还原
+   * 就回不去原样了。宿主在整元素段落里紧跟**第一个** span；松散文本段仍按 `anchor`
+   * 给出的落点插入——那正是"紧跟这段原文"的位置。
    */
   private hideOriginals(segment: ExtractedSegment, host: HTMLElement): void {
     const element = segment.element;
@@ -263,18 +279,38 @@ export class DomRenderer {
     const wholeElement = anchor.kind === 'auto';
     const nodes: Node[] = wholeElement ? Array.from(element.childNodes) : this.runNodes(element, anchor.node);
 
-    if (nodes.length > 0) {
-      const span = this.createOriginals();
-      const first = nodes[0];
-      // span 站在第一个原文节点原来的位置上，还原时把子节点搬回"span 之前"就回到原位。
-      if (first !== undefined && first.parentNode === element) element.insertBefore(span, first);
-      else element.append(span);
-      span.append(...nodes);
-      this.hiddenOriginals.set(segment.id, { element, span, wholeElement });
+    const styleOf = createStyleLookup();
+    const groups: Node[][] = [];
+    for (const node of nodes) {
+      if (!carriesVisibleText(node, styleOf)) continue;
+      const current = groups[groups.length - 1];
+      const last = current?.[current.length - 1];
+      // 「连续」= 文档序上直接相邻；中间夹着留底节点就另起一个容器。
+      if (current !== undefined && last !== undefined && node.previousSibling === last) current.push(node);
+      else groups.push([node]);
     }
 
-    if (wholeElement) element.append(host);
-    else this.insertHostAtAnchor(segment, host);
+    const spans: HTMLElement[] = [];
+    for (const group of groups) {
+      const span = this.createOriginals();
+      const first = group[0] as Node;
+      // span 站在这一串第一个原文节点原来的位置上，还原时把子节点搬回"span 之前"就回到原位。
+      if (first.parentNode === element) element.insertBefore(span, first);
+      else element.append(span);
+      span.append(...group);
+      spans.push(span);
+    }
+    if (spans.length > 0) this.hiddenOriginals.set(segment.id, { element, spans, wholeElement });
+
+    if (!wholeElement) {
+      this.insertHostAtAnchor(segment, host);
+      return;
+    }
+    // 宿主紧跟第一个隐藏容器：`[文字, svg]` → `[隐藏容器, 宿主(译文), svg]`，
+    // 图标留在译文后面，阅读顺序自然。没有容器可跟（一段都没搬）才退回追加。
+    const firstSpan = spans[0];
+    if (firstSpan !== undefined && firstSpan.parentNode === element) element.insertBefore(host, firstSpan.nextSibling);
+    else element.append(host);
   }
 
   /**
@@ -514,22 +550,32 @@ export class DomRenderer {
     this.hosts.clear();
     this.linkPlans.clear();
 
-    for (const { element, span, wholeElement } of this.hiddenOriginals.values()) {
+    for (const { element, spans, wholeElement } of this.hiddenOriginals.values()) {
       // 页面在翻译之后重建过节点时，缓存的引用指向的是脱离文档的孤儿：
       // 往孤儿里写原文等于什么也没还原，活着的节点会一直显示译文。
       const live = this.resolveLive(element) ?? element;
-      // span 还挂在这个元素里（含"元素被整体移出文档"——那时它的父节点仍然是它）
-      // 就直接拆；元素被框架**换掉**时按兜底那一条处理。
-      const target = span.parentNode === live ? span : live.querySelector(`[${ORIGINALS_ATTR}]`);
-      if (target instanceof HTMLElement) {
-        this.unwrapOriginals(target);
-      } else if (wholeElement && live !== element && span.childNodes.length > 0) {
-        // 元素被框架整体换掉了：原文并没有丢——它就在 span 里。整元素段落的 span 装的就是
-        // 这个元素的全部内容，所以可以整块搬进活着的那一个（与双语模式把快照写回活节点等价）。
-        // 松散文本段不能这么干：它的父元素是容器，整块替换会把兄弟段落删掉。那种情况下
-        // 只能清掉标记（原文留在已脱离文档的 span 里，不再可恢复）。
-        live.replaceChildren(...Array.from(span.childNodes));
-        span.remove();
+      // 还挂在 live 里的容器（含"元素被整体移出文档"——那时它们的父节点仍然是它）
+      // 直接逐个拆；元素被框架**换掉**时按下面两条兜底。
+      let unwrapped = false;
+      for (const span of spans) {
+        if (span.parentNode === live) {
+          this.unwrapOriginals(span);
+          unwrapped = true;
+        }
+      }
+      if (!unwrapped) {
+        const stale = live.querySelector(`[${ORIGINALS_ATTR}]`);
+        if (stale instanceof HTMLElement) {
+          this.unwrapOriginals(stale);
+        } else if (wholeElement && live !== element) {
+          // 元素被框架整体换掉了：原文并没有丢——它就在容器里。整元素段落的容器装的就是
+          // 这个元素承载文字的全部内容，所以可以整块搬进活着的那一个（与双语模式把快照写回
+          // 活节点等价）。松散文本段不能这么干：它的父元素是容器，整块替换会把兄弟段落删掉。
+          // 那种情况下只能清掉标记（原文留在已脱离文档的 span 里，不再可恢复）。
+          const contents = spans.flatMap((span) => Array.from(span.childNodes));
+          if (contents.length > 0) live.replaceChildren(...contents);
+          for (const span of spans) span.remove();
+        }
       }
       element.removeAttribute('data-jy-translated');
       if (live !== element) live.removeAttribute('data-jy-translated');

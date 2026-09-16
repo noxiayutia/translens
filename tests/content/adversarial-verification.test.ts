@@ -59,7 +59,7 @@ function translateAll(
 }
 
 describe('核验 1：可见性（含链接与图片的段落）', () => {
-  it('computed display 为 none，原文节点在同一批里，可见文本只有译文', () => {
+  it('computed display 为 none，文字节点在同一批里；不承载文字的图片留在原位，可见文本只有译文', () => {
     document.body.innerHTML =
       '<p id="p">Read <a id="link" href="/x">this page</a> and <img id="pic" src="a.png" alt="pic"> now</p>';
     const p = document.getElementById('p') as HTMLElement;
@@ -72,26 +72,30 @@ describe('核验 1：可见性（含链接与图片的段落）', () => {
     expect(segments).toHaveLength(1);
     expect(segments[0].element).toBe(p);
 
-    const span = originals(p);
+    // 图片留原位把搬走的断成两串：'Read + 链接 + and' 一串、'now' 一串，各一个隐藏容器。
+    const spans = Array.from(p.querySelectorAll('[data-jy-originals]'));
+    expect(spans).toHaveLength(2);
+    const span = spans[0] as HTMLElement;
     // ① display:none —— 内联样式与 computed 两处都要成立（页面 CSS 覆盖不掉）。
     expect(span.style.display).toBe('none');
     expect(getComputedStyle(span).display).toBe('none');
-    // ② 原文节点是**同一批**节点（不是克隆/重建）：补段落全部 5 个子节点
+    // ② 原文节点是**同一批**节点（不是克隆/重建）：链接连同它两侧的文本全在第一串里
     expect(span.contains(linkIdentity)).toBe(true);
-    expect(span.contains(picIdentity)).toBe(true);
     expect(linkIdentity.isConnected).toBe(true);
-    expect(span.childNodes).toHaveLength(5);
+    expect(span.childNodes).toHaveLength(3);
     expect(Array.from(span.childNodes).map((node) => (node as Element).nodeName)).toEqual([
       '#text',
       'A',
       '#text',
-      'IMG',
-      '#text',
     ]);
+    // ③ 图片不承载任何文字：留在原位、不被搬进隐藏容器（搬走它就是"翻译把图标弄没了"的事故）。
+    expect(picIdentity.parentElement).toBe(p);
+    expect(picIdentity.closest('[data-jy-originals]')).toBeNull();
+    expect(picIdentity.isConnected).toBe(true);
     // href / src 原样
     expect(linkIdentity.getAttribute('href')).toBe('/x');
     expect(picIdentity.getAttribute('src')).toBe('a.png');
-    // ③ 可见文本只剩译文
+    // ④ 可见文本只剩译文（藏起来的与留在原位的空白都不产出文字）
     expect(visibleText(p)).toBe('请读这一页');
     // 元素自己的 textContent 仍然含原文 —— 证明"用 textContent 断言可见性"会假通过
     expect(p.textContent).toContain('Read');
@@ -118,7 +122,7 @@ describe('核验 1：可见性（含链接与图片的段落）', () => {
     expect(span.previousSibling).toBeNull();
   });
 
-  it('段落同时含 <a>/<b>/<em>/<img>：四个行内标记都被保留、都被藏起来，可见的只有译文', () => {
+  it('段落同时含 <a>/<b>/<em>/<img>：承载文字的标记都被保留并藏起来，图片留在原位，可见的只有译文', () => {
     document.body.innerHTML =
       '<p id="p">Read <a id="l" href="/x">this</a> <b id="b">bold</b> <em id="e">em</em> <img id="i" src="a.png" alt="pic"> now</p>';
     const p = document.getElementById('p') as HTMLElement;
@@ -130,19 +134,28 @@ describe('核验 1：可见性（含链接与图片的段落）', () => {
 
     const { renderer } = translateAll('translated-only', () => '译文');
 
-    const span = originals(p);
-    expect(getComputedStyle(span).display).toBe('none');
-    for (const node of [link, bold, em, img]) {
-      expect(span.contains(node)).toBe(true);
+    const spans = Array.from(p.querySelectorAll('[data-jy-originals]')) as HTMLElement[];
+    // 纯空白文本节点也留在原位，把搬走的断成几串：'Read + a' / b / em / ' now' 各一串。
+    expect(spans).toHaveLength(4);
+    for (const span of spans) {
+      expect(span.style.display).toBe('none');
+      expect(getComputedStyle(span).display).toBe('none');
+    }
+    for (const node of [link, bold, em]) {
+      expect(node.closest('[data-jy-originals]'), `${node.tagName} 该被藏起来`).not.toBeNull();
       expect(node.isConnected).toBe(true);
     }
+    // 图片不承载文字：留在可见层原位，没被搬进任何隐藏容器。
+    expect(img.parentElement).toBe(p);
+    expect(img.closest('[data-jy-originals]')).toBeNull();
+    expect(img.isConnected).toBe(true);
     expect(link.getAttribute('href')).toBe('/x');
     expect(img.getAttribute('src')).toBe('a.png');
-    // 可见的只有译文：四个行内标记一个都不在可见层
-    expect(visibleText(p)).toBe('译文');
+    // 可见的只有译文与留在原位的空白：一个原文字符都不在可见层。
+    expect(visibleText(p).replace(/\s+/g, '')).toBe('译文');
     for (const node of [link, bold, em, img]) {
-      expect(node.ownerDocument.defaultView?.getComputedStyle(node).display).not.toBe('none');
-      expect(getComputedStyle(node).visibility).toBe('visible');
+      // 标记自己不被改写：藏起来的是容器，不是给节点加 display/visibility。
+      expect(node.hasAttribute('style'), node.tagName).toBe(false);
     }
 
     renderer.restore();
