@@ -173,8 +173,13 @@ body {
 /*
  * 禁用态必须与可用态一眼可分：原来没有这条规则，禁用时仍是满亮蓝、看着完全可点
  * （“此页面不可用” / “翻译进行中” / 设置还没读出来时都是这个状态）。
+ *
+ * 三条分开写而不是合并：渲染层在这三种态下都会 `delete dataset.active`，但**不能靠它**——
+ * 规则本身要保证无论按钮处于哪种态，禁用样式都盖得住（列表里排最后，同特异度也稳赢）。
  */
-.primary:disabled {
+.primary:disabled,
+.primary[data-active="true"]:disabled,
+.primary[data-active="false"]:disabled {
   color: var(--text-3);
   background: var(--surface-3);
   cursor: not-allowed;

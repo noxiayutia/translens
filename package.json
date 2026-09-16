@@ -12,6 +12,7 @@
     "verify:dist": "node scripts/verify-dist.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "zip": "node scripts/zip-dist.mjs",
+    "icons": "node scripts/make-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:main": "vite build --watch",
