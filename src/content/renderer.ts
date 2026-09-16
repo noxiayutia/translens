@@ -1,5 +1,6 @@
 import type { ExtractedSegment } from './extractor';
-import { createStyleLookup, inlineText, isBlockDisplay } from './extractor';
+import { createStyleLookup, inlineText, isBlockDisplay, isHidden } from './extractor';
+import { normalizeText } from '../core/lang';
 import type { DisplayMode } from '../shared/settings';
 import { TRANSLATION_CSS, TRANSLATION_INLINE_CSS } from './styles';
 
@@ -9,6 +10,54 @@ export type RenderState = 'pending' | 'done' | 'error';
 
 const HOST_TAG = 'jy-translation';
 const PENDING_TEXT = '翻译中…';
+
+/**
+ * 「这段文本几乎全部来自同一个链接」的占比阈值：链接可见文本长度 / 段文本长度。
+ *
+ * 有阈值才有边界：自然句里嵌一个小链接（"…see the <a>supplement</a>"）占段不足六成，
+ * 包起来等于把一整段正文涂蓝、伪装成可点区；而作者署名行（"By <a>人名</a>"）链接
+ * 就是这段的全部语义，不包才是把链接指引弄丢。0.6 取在"链接是段落的主体"这一侧。
+ */
+export const LINK_WRAPPING_MIN_SHARE = 0.6;
+
+/** 仅译文模式下允许包译文链接的协议——来自页面的 href 一律过白名单，绝不放行可执行协议。 */
+const ALLOWED_HREF_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+
+/** 相对协议前缀：`//` 与反斜杠族（`\` 对特殊协议等同 `/`，浏览器按 `//` 解析）。 */
+const PROTOCOL_RELATIVE = /^[\\/][\\/]/;
+
+/**
+ * 校验来自页面的 href：解析成功后**只认协议白名单**，返回绝对化后的安全 href；
+ * 一切不合规（`javascript:` / `data:` / `vbscript:` / 自定义协议 / 相对协议
+ * `//host` 与其反斜杠变体 / 解析失败）返回 null，由调用方降级为纯文本译文——
+ * 不抛错、不"清洗"后保留、也不留一个不带 href 的空壳 `<a>`。
+ *
+ * 相对协议先按原始字符串拦：`new URL('//x/y', base)` 会把它升级成页面的对案协议
+ * 从而溜过白名单，而任务书点名它不许设 href。
+ */
+export function resolveSafeHref(raw: string | null, baseURI: string): string | null {
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  if (PROTOCOL_RELATIVE.test(trimmed)) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed, baseURI);
+  } catch {
+    return null;
+  }
+  return ALLOWED_HREF_PROTOCOLS.has(url.protocol) ? url.href : null;
+}
+
+/**
+ * 仅译文模式下把译文渲染成链接所需、且必须在原文被搬走**之前**采集好的一切。
+ * Shadow DOM 隔离了页面 CSS，颜色与下划线只能趁链接还挂在页面上时从计算样式抄下来。
+ */
+interface LinkPlan {
+  href: string;
+  color: string;
+  textDecorationLine: string;
+}
 
 /**
  * 仅译文模式下装原文的容器。
@@ -99,6 +148,15 @@ export class DomRenderer {
    * 那边的原文一直可见，压根没有要还原的东西）。
    */
   private readonly hiddenOriginals = new Map<string, HiddenOriginals>();
+  /**
+   * 仅译文模式下的"这段译文应当渲染成链接"方案，按段落 id 记。
+   *
+   * 只在**首次 mount（pending 或 done）**、原文节点还没被搬进隐藏 span 时计算一次：
+   * 链接的可见性判定与样式抄取都必须发生在链接还挂在页面原位、页面 CSS 还作用于它
+   * 的时候。之后的 `update`（异步落地）只读这份快照，不再回页面 DOM 问样式——
+   * 那时链接已经 `display:none`，再问抄到的就是一套死样式。
+   */
+  private readonly linkPlans = new Map<string, LinkPlan>();
 
   constructor(
     private readonly document: Document,
@@ -173,6 +231,9 @@ export class DomRenderer {
     }
 
     const host = this.createHost(segment.id);
+    // 链接方案必须在 hideOriginals 把 <a> 搬进隐藏 span **之前**定下来（见 linkPlans 注释）。
+    const plan = this.planLinkWrapping(segment);
+    if (plan !== undefined) this.linkPlans.set(segment.id, plan);
     this.hideOriginals(segment, host);
 
     // 标记原文已翻译：即使后续被重复采集，extractor 也会跳过它（与双语模式同一条规则）。
@@ -214,6 +275,76 @@ export class DomRenderer {
 
     if (wholeElement) element.append(host);
     else this.insertHostAtAnchor(segment, host);
+  }
+
+  /**
+   * 判定"这一段几乎全部来自同一个链接"，并抄下把译文渲染成链接所需的信息。
+   *
+   * 三条闸，缺一不包（保持纯文本现状）：
+   * 1. 本段范围内**恰好一个** `<a href>`——多个链接时译文该整体指向谁没有答案；
+   *    且它必须**可见**（隐藏子树里的链接没有文字进过段文本，采集端同一口径排除，
+   *    不然会把它错算进"恰好一个"或搅黄占比）。
+   * 2. 链接可见文本长度占段文本长度 **≥ 0.6**（见 {@link LINK_WRAPPING_MIN_SHARE}）。
+   * 3. href 过协议白名单（见 {@link resolveSafeHref}）。
+   *
+   * 范围按段落形态收紧到"真正属于这一段的节点"：整元素段落查元素子树（含元素自身——
+   * 段落本身就是 `<a>` 的形态也存在）；松散文本段只查它自己那一串节点，
+   * 兄弟段落里的链接绝不串台（与 {@link runNodes}/hideOriginals 同一份节点判据）。
+   */
+  private planLinkWrapping(segment: ExtractedSegment): LinkPlan | undefined {
+    const candidates = this.segmentLinks(segment).filter((link) => this.linkVisibleInSegment(link, segment));
+    if (candidates.length !== 1) return undefined;
+    const link = candidates[0] as Element;
+
+    const [linkText, segmentText] = [
+      normalizeText(inlineText(link, createStyleLookup())),
+      normalizeText(segment.text),
+    ];
+    if (linkText === '' || segmentText === '') return undefined;
+    if (linkText.length / segmentText.length < LINK_WRAPPING_MIN_SHARE) return undefined;
+
+    const href = resolveSafeHref(link.getAttribute('href'), this.document.baseURI);
+    if (href === null) return undefined;
+
+    // Shadow DOM 把页面 CSS 隔离在门外：不抄的话用户看到的是默认色、没有下划线——
+    // 这正是要修的事故本身。趁链接还在原位，把它的 color / text-decoration-line 抄下来。
+    const computed = link.ownerDocument.defaultView?.getComputedStyle(link);
+    return {
+      href,
+      color: computed?.color ?? '',
+      textDecorationLine: computed?.textDecorationLine ?? '',
+    };
+  }
+
+  /** 段落范围内所有带 href 的 `<a>`（嵌套不可能，节点两两不相交，无需去重）。 */
+  private segmentLinks(segment: ExtractedSegment): Element[] {
+    const found: Element[] = [];
+    const consider = (element: Element): void => {
+      if (element.matches('a[href]')) found.push(element);
+      found.push(...Array.from(element.querySelectorAll('a[href]')));
+    };
+    if (segment.anchor.kind === 'auto') {
+      consider(segment.element);
+    } else {
+      for (const node of this.runNodes(segment.element, segment.anchor.node)) {
+        if (node.nodeType === Node.ELEMENT_NODE) consider(node as Element);
+      }
+    }
+    return found.filter((link) => link.closest('[data-jy-root]') === null);
+  }
+
+  /**
+   * 链接在**本段范围内**有效可见：从自身向上查到段落元素为止（含），任一环被
+   * extractor 的 `isHidden` 判隐藏就不算——"藏着的链接不该参与是否包链接的判断"，
+   * 与采集端"隐藏子树一个字都不采"共用同一份隐藏判据。
+   */
+  private linkVisibleInSegment(link: Element, segment: ExtractedSegment): boolean {
+    const styleOf = createStyleLookup();
+    for (let node: Element | null = link; node !== null; node = node.parentElement) {
+      if (isHidden(node, styleOf)) return false;
+      if (node === segment.element) return true;
+    }
+    return false;
   }
 
   /**
@@ -355,6 +486,19 @@ export class DomRenderer {
       body.append(button);
       return;
     }
+    // 双语模式下没有段落登记过链接方案（只有仅译文模式会写 linkPlans），这段天然短路。
+    const plan = this.linkPlans.get(host.getAttribute('data-jy-for') ?? '');
+    if (plan !== undefined) {
+      // 译文进链接：仍然一律 textContent，绝不 innerHTML——包的是我们自己的 <a> 壳，
+      // 里面只有引擎返回的字符。
+      const anchor = this.document.createElement('a');
+      anchor.setAttribute('href', plan.href);
+      if (plan.color !== '') anchor.style.color = plan.color;
+      if (plan.textDecorationLine !== '') anchor.style.textDecorationLine = plan.textDecorationLine;
+      anchor.textContent = text ?? '';
+      body.append(anchor);
+      return;
+    }
     body.textContent = text ?? '';
   }
 
@@ -368,6 +512,7 @@ export class DomRenderer {
   restore(): void {
     for (const host of this.hosts.values()) host.remove();
     this.hosts.clear();
+    this.linkPlans.clear();
 
     for (const { element, span, wholeElement } of this.hiddenOriginals.values()) {
       // 页面在翻译之后重建过节点时，缓存的引用指向的是脱离文档的孤儿：

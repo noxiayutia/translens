@@ -390,6 +390,222 @@ describe('DomRenderer 仅译文模式', () => {
   });
 });
 
+describe('DomRenderer 仅译文模式：单一链接为主的段落保留链接指引', () => {
+  /** nature.com 作者署名行的形状：整段几乎就是一个链接。 */
+  const BYLINE_HTML =
+    '<p id="p">By <a id="l" href="https://example.com/auth" ' +
+    'style="color: rgb(0, 102, 204); text-decoration-line: underline">Davide Castelvecchi</a></p>';
+  const TRANSLATION = '作者：达维德·卡斯泰尔韦基';
+
+  function hostOf(element: Element): Element | undefined {
+    return element.querySelector('jy-translation') ?? undefined;
+  }
+
+  function shadowAnchor(element: Element): HTMLAnchorElement | null {
+    return (element.querySelector('jy-translation')?.shadowRoot?.querySelector('a') as HTMLAnchorElement) ?? null;
+  }
+
+  it('译文渲染成 <a>：href 正确、下划线与颜色抄自原链接（shadow 隔离了页面 CSS，必须抄）', () => {
+    document.body.innerHTML = BYLINE_HTML;
+    const p = document.getElementById('p') as HTMLElement;
+    const before = document.body.outerHTML;
+    const originalLink = document.getElementById('l') as HTMLElement;
+    const view = document.defaultView as Window;
+    const expectedColor = view.getComputedStyle(originalLink).color;
+    expect(expectedColor).toBe('rgb(0, 102, 204)'); // 探针确认 cssstyle 会规范化十六进制/rgb 写法
+
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', TRANSLATION);
+
+    const anchor = shadowAnchor(p);
+    expect(anchor).not.toBeNull();
+    expect(anchor?.getAttribute('href')).toBe('https://example.com/auth'); // 存在且正确 = 可点；不做真导航断言
+    expect(anchor?.textContent).toBe(TRANSLATION);
+    expect(anchor?.style.textDecorationLine).toBe('underline');
+    expect(anchor?.style.color).toBe(expectedColor);
+    // 可见文本仍是译文本身（包成链接没有把文字弄丢或弄脏）。
+    expect(visibleText(p)).toBe(TRANSLATION);
+    // 原文节点一个没动：还原之后依旧逐字节回到原样。
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+  });
+
+  it('pending 与失败态不包链接；重试成功后的 update 让链接回来', () => {
+    document.body.innerHTML = BYLINE_HTML;
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+
+    renderer.mount(segment, 'pending');
+    expect(shadowAnchor(p)).toBeNull(); // 「翻译中…」只是占位文本
+
+    renderer.fail(segment.id, '网络错误');
+    expect(shadowAnchor(p)).toBeNull(); // 错误标注不包链接（原文此刻已放回可见，真链接就在原地可点）
+
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, TRANSLATION);
+    expect(shadowAnchor(p)?.getAttribute('href')).toBe('https://example.com/auth');
+    expect(visibleText(p)).toBe(TRANSLATION);
+  });
+
+  it('一段正文里只有一个小链接（占比 < 0.6）：译文保持纯文本，防止整段变蓝', () => {
+    document.body.innerHTML =
+      '<p id="p">Introduction paragraph text about climate research findings ' +
+      'with plenty more words describing the study in detail <a href="https://example.com/supplement">supplement</a></p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '译文');
+
+    expect(shadowAnchor(p)).toBeNull();
+    expect(bodyTextOf(hostOf(p) as Element)).toBe('译文');
+    expect(visibleText(p)).toBe('译文');
+  });
+
+  it('阈值恰好取到 0.6 时包；0.5x 时不包（边界钉死）', () => {
+    // 段文本 'Lead-in abcdefghijkl' = 20 字符，链接文本 12 → 12/20 = 0.6 → 包。
+    document.body.innerHTML = '<p id="p">Lead-in <a href="https://example.com/x">abcdefghijkl</a></p>';
+    let p = document.getElementById('p') as HTMLElement;
+    let [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.text).toBe('Lead-in abcdefghijkl');
+    let renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '译文');
+    expect(shadowAnchor(p)).not.toBeNull();
+
+    // 段文本多一个字符 → 12/21 < 0.6 → 不包。
+    document.body.innerHTML = '<p id="p">Lead-in1 <a href="https://example.com/x">abcdefghijkl</a></p>';
+    p = document.getElementById('p') as HTMLElement;
+    [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '译文');
+    expect(shadowAnchor(p)).toBeNull();
+  });
+
+  it('段落里有两个 <a href>：语义不明，保持纯文本（哪怕第一个单独看已过阈值）', () => {
+    // 形状刻意让 link1 占 19/31 ≥ 0.6——拦住它的必须**只有**"恰好一个"这条闸，
+    // 不然变异实验分不清是占比救的还是数量闸生效的。
+    document.body.innerHTML =
+      '<p id="p"><a href="https://a.example/one">Davide Castelvecchi</a> &amp; <a href="https://b.example/two">Liz Else</a></p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.text).toBe('Davide Castelvecchi & Liz Else');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '译文');
+
+    expect(shadowAnchor(p)).toBeNull();
+    expect(bodyTextOf(hostOf(p) as Element)).toBe('译文');
+  });
+
+  it.each([
+    ['javascript:', 'javascript:document.title="pwned"'],
+    ['带前导空白的 javascript:', ' JavaScript:document.title="pwned"'],
+    ['data:', 'data:text/html,<script>document.title="pwned"</script>'],
+    ['vbscript:', 'vbscript:msgbox("pwned")'],
+    ['自定义协议', 'weird-thing:whatever'],
+    ['相对协议 //host', '//evil.example/x'],
+    ['反斜杠变体 \\\\host', '\\\\evil.example\\x'],
+  ])('危险/不可用协议 %s：不设置 href，降级为纯文本译文，且无脚本执行', (_label, href) => {
+    document.body.innerHTML =
+      `<p id="p">By <a href="${href}">Davide Castelvecchi</a></p>`;
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    expect(() => renderer.mount(segment, 'done', TRANSLATION)).not.toThrow();
+
+    expect(shadowAnchor(p)).toBeNull(); // 连不带 href 的 <a> 都不许出现——纯文本才是这份契约
+    expect(bodyTextOf(hostOf(p) as Element)).toBe(TRANSLATION);
+    expect(document.title).not.toBe('pwned');
+  });
+
+  it('mailto 与页内锚点在允许名单内：照常包成链接', () => {
+    document.body.innerHTML =
+      '<p id="p1">By <a href="mailto:author@example.com">Davide Castelvecchi</a></p>' +
+      '<p id="p2">Jump to <a href="#section-one">Section One</a> for details of the section</p>';
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `译:${segment.text}`);
+
+    const mail = shadowAnchor(document.getElementById('p1') as HTMLElement);
+    expect(mail).not.toBeNull();
+    expect(mail?.getAttribute('href')).toBe('mailto:author@example.com');
+    // 页内 #锚点：p2 整段文本里链接占比不足，不包是**占比规则**的正确行为——
+    // 协议允许性由 mailto 分支钉；相对 http 解析在阈值用例里天然是通过协议校验的。
+    expect(shadowAnchor(document.getElementById('p2') as HTMLElement)).toBeNull();
+  });
+
+  it('隐藏的子树里的链接不计数也不参与包裹（占比按可见文本算）', () => {
+    document.body.innerHTML =
+      '<p id="p">By <a id="l" href="https://example.com/auth">Davide Castelvecchi</a>' +
+      '<span style="display:none"><a href="https://example.com/hidden">gone</a></span></p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    // 采集端就把隐藏 span 排除了——链接判据必须同一口径，否则"恰好一个"被隐藏链接搅黄。
+    expect(segment.text).toBe('By Davide Castelvecchi');
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', TRANSLATION);
+    expect(shadowAnchor(p)?.getAttribute('href')).toBe('https://example.com/auth');
+  });
+
+  it('松散文本段：只在本段节点里找链接，兄弟段落（含它自己的链接）绝不串台', () => {
+    document.body.innerHTML =
+      '<div id="box">By <a href="https://example.com/auth">Davide Castelvecchi</a>' +
+      '<p id="body">See <a href="https://other.example/doc">unrelated doc link</a> for details about this</p></div>';
+    const box = document.getElementById('box') as HTMLElement;
+    const body = document.getElementById('body') as HTMLElement;
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual([
+      'By Davide Castelvecchi',
+      'See unrelated doc link for details about this',
+    ]);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `译:${segment.text}`);
+
+    // 本段（容器直接文本）几乎全是它的链接 → 包；链接节点已搬进本段的隐藏 span。
+    const bylineHosts = Array.from(box.querySelectorAll(':scope > jy-translation'));
+    expect(bylineHosts).toHaveLength(1);
+    const anchor = bylineHosts[0]?.shadowRoot?.querySelector('a') as HTMLAnchorElement | null;
+    expect(anchor?.getAttribute('href')).toBe('https://example.com/auth');
+
+    // 兄弟段落自己链接占比不足 → 纯文本；它的链接没有污染本段判定。
+    expect(bodyTextOf(hostOf(body) as Element)).toBe('译:See unrelated doc link for details about this');
+    const bodyAnchor = body.querySelector('jy-translation')?.shadowRoot?.querySelector('a');
+    expect(bodyAnchor).toBeNull();
+  });
+
+  it('双语模式：这个段落的行为与改动前逐字一致（不藏原文、译文纯文本、还原回原样）', () => {
+    document.body.innerHTML = BYLINE_HTML;
+    const p = document.getElementById('p') as HTMLElement;
+    const pristine = p.outerHTML;
+    const originalLink = document.getElementById('l') as HTMLAnchorElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    // 既有形状：段里有行内子元素 → 整元素段仍成段，但带 textRun（不可就地替换），
+    // 双语宿主因此落在**段尾内部**。本条钉的是"链接包译文不渗透进双语模式"。
+
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'pending');
+    renderer.update(segment.id, TRANSLATION);
+
+    // 原文没有被搬进任何隐藏 span：链接节点还在原位、属性未动、一个字符没改。
+    expect(p.querySelector('[data-jy-originals]')).toBeNull();
+    expect(originalLink.parentElement).toBe(p);
+    expect(originalLink.getAttribute('href')).toBe('https://example.com/auth');
+    expect(originalLink.textContent).toBe('Davide Castelvecchi');
+    expect(p.firstChild?.textContent).toBe('By ');
+
+    // 译文是纯文本：链接包译文**不**渗透进双语模式。
+    const host = p.querySelector('jy-translation') as Element;
+    expect(host).not.toBeNull();
+    expect(host.shadowRoot?.querySelector('a')).toBeNull();
+    expect(host.shadowRoot?.querySelector('.jy-body')?.textContent).toBe(TRANSLATION);
+
+    // 更强的"逐字一致"证据：还原之后整段回到翻译前的原样（标记全清、结构未动）。
+    renderer.restore();
+    expect(p.outerHTML).toBe(pristine);
+  });
+});
+
 describe('译文样式：两种模式的诉求相反', () => {
   /** 宿主 Shadow DOM 里实际注入的那份样式表。 */
   const injectedCss = (): string =>
