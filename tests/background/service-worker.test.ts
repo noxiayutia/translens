@@ -149,8 +149,9 @@ describe('runtime.onMessage 消息路由', () => {
    * **语言由内容脚本带进来（或回落当前设置），凭据永远现读当前设置**。
    * 用户点重试往往正是刚去设置页填好 Key 回来——后台要是拿着旧快照，那次重试
    * 还会用旧凭据失败。这条钉的是"每条消息各读一次设置"，不是缓存掉的长驻配置。
+   * v3 形状：凭据住在 `profiles` 里被选中的那一份，`engineId` 是档案 id。
    */
-  it('引擎配置（含 API Key）逐条消息现读：中途保存新 Key，下一条消息直接用新 Key', async () => {
+  it('档案配置（含 API Key）逐条消息现读：中途保存新 Key，下一条消息直接用新 Key', async () => {
     const authHeaders: Array<string | null> = [];
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       authHeaders.push(new Headers(init?.headers).get('authorization'));
@@ -161,8 +162,10 @@ describe('runtime.onMessage 消息路由', () => {
     });
     stub.permissions.grantedOrigins.add('https://api.openai.com/*');
     const configFor = (apiKey: string) => ({
-      engineId: 'openai-compat',
-      engineConfig: { apiKey, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      engineId: 'p-open',
+      profiles: [
+        { id: 'p-open', label: '我的 OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey },
+      ],
     });
 
     await useSettings(configFor('sk-old'));
@@ -175,12 +178,97 @@ describe('runtime.onMessage 消息路由', () => {
     expect(authHeaders).toEqual(['Bearer sk-old', 'Bearer sk-new']);
   });
 
+  /**
+   * 缓存 key 的归属（任务书点名）：`configHash` 只由 **baseUrl + model** 构成——
+   * apiKey 不进 key（换 Key 不该让全部缓存失效），档案 id 也不进 key
+   * （同地址同模型的两个档案各存一份纯属浪费）。两个档案的 Key 刻意不同：
+   * 若实现把 apiKey（或档案 id）混进 key，第二次翻译就会 miss 并多打一次请求。
+   */
+  it('两个档案同 baseUrl 同 model → 命中同一份缓存；换 model 不串', async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: init?.body });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    const same = (id: string, model: string, apiKey: string) => ({
+      id,
+      label: id,
+      baseUrl: 'https://api.example.com/v1',
+      model,
+      apiKey,
+    });
+
+    await useSettings({ engineId: 'p-a', profiles: [same('p-a', 'm-1', 'sk-a'), same('p-b', 'm-1', 'sk-b'), same('p-c', 'm-2', 'sk-a')] });
+    await expect(translateTexts({ items: [{ id: 'i1', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: true,
+      results: [{ id: 'i1', text: '你好' }],
+    });
+    expect(calls).toHaveLength(1);
+
+    // 切到同地址同模型的另一个档案：必须命中同一份缓存，一次请求都不发。
+    await useSettings({ engineId: 'p-b', profiles: [same('p-a', 'm-1', 'sk-a'), same('p-b', 'm-1', 'sk-b'), same('p-c', 'm-2', 'sk-a')] });
+    await expect(translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: true,
+      results: [{ id: 'i2', text: '你好' }],
+    });
+    expect(calls).toHaveLength(1);
+    // 存储里确实只有这一条缓存（两个档案没有各存一份）。
+    expect(cacheEntries('local')).toHaveLength(1);
+    expect(cacheEntries('session')).toHaveLength(1);
+
+    // 换 model 的档案：缓存不能串过去，得按新模型再请求一次。
+    await useSettings({ engineId: 'p-c', profiles: [same('p-a', 'm-1', 'sk-a'), same('p-b', 'm-1', 'sk-b'), same('p-c', 'm-2', 'sk-a')] });
+    await expect(translateTexts({ items: [{ id: 'i3', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: true,
+      results: [{ id: 'i3', text: '你好' }],
+    });
+    expect(calls).toHaveLength(2);
+    expect((JSON.parse(String(calls[1].body)) as { model: string }).model).toBe('m-2');
+  });
+
+  /**
+   * 弹窗切到一个**还没授权**的档案（授权只在设置页的用户手势里申请）：翻译时报的必须是
+   * 可行动的 AUTH（「到设置页保存一次以授权」），不能伪装成 NETWORK（断网）。
+   * 判据在引擎侧（host-permission 的 contains），这里端到端钉住 service worker 转达的形状。
+   */
+  it('切到未授权的档案：给出可行动的 AUTH 提示而不是网络错误，且一个请求都不发', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    // grantedOrigins 保持空：模拟"这个 origin 从没在设置页保存过"。
+    await useSettings({
+      engineId: 'p-new',
+      profiles: [
+        { id: 'p-new', label: '新伙伴', baseUrl: 'https://never-granted.example/v1', model: 'm', apiKey: 'sk-x' },
+      ],
+    });
+
+    const dispatch = await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response();
+    expect(dispatch).toEqual({
+      ok: true,
+      results: [
+        {
+          id: 'item-1',
+          text: null,
+          code: 'AUTH',
+          message: '未授权访问该接口地址，请到设置页保存一次以授权',
+        },
+      ],
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('引擎报错（缺 API Key）时把 AUTH 记在条目上，不抛错也不发请求', async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     await useSettings({
-      engineId: 'openai-compat',
-      engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      engineId: 'p-open',
+      profiles: [
+        { id: 'p-open', label: '我的 OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: '' },
+      ],
     });
 
     const dispatch = translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] });
