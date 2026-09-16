@@ -269,6 +269,61 @@ describe('划词触发（mouseup 路径）', () => {
   });
 });
 
+/**
+ * 译文现在可以被框选去复制（.jy-text 的 user-select:text），于是多出一条以前不存在的路径：
+ * 划中气泡里的译文 → mouseup → 又把译文发去翻译一次（自翻译循环，还要白烧用户付费的额度）。
+ *
+ * 两种选区形状都要挡住：① 浏览器把 shadow 里的选区**重定位**到宿主上（Chrome 的做法，
+ * 边上那个既有用例钉的就是它）；② 端点仍指向 shadow 内部的节点——`closest()` 不跨 shadow
+ * 边界，这时它一个 `data-jy-root` 也找不到，得靠 `getRootNode()` 摸到宿主。
+ */
+describe('气泡内选中译文：零请求（自翻译循环的口子）', () => {
+  function openBubble(): Text {
+    showTooltip({ top: 10, left: 10, width: 5, height: 5 }, { text: '已有气泡译文' });
+    const node = bubble()?.shadowRoot?.querySelector('.jy-text')?.firstChild;
+    if (!(node instanceof Text)) throw new Error('气泡里没有译文文本节点');
+    return node;
+  }
+
+  it('选区端点落在气泡 Shadow DOM 内部的 .jy-text 上：零请求、气泡不被替换', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    const textNode = openBubble();
+
+    mockSelection({ text: '已有气泡译文', anchor: textNode });
+    mouseup();
+    await settle();
+    expect(calls).toEqual([]);
+    expect(bubbleText()).toBe('已有气泡译文');
+  });
+
+  it('锚点在正文、焦点端落在气泡里：同样零请求（anchor/focus 两端都判）', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    const textNode = openBubble();
+
+    mockSelection({
+      text: 'Some page text 已有气泡译文',
+      anchor: document.getElementById('page'),
+      focus: textNode,
+    });
+    mouseup();
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+  it('成对断言：同一现场把锚点换成页面正文 → 照常翻译（否则上面两条只是「永远拒绝」的假通过）', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate);
+    openBubble();
+
+    mockSelection({ text: 'Some page text', anchor: document.getElementById('page') });
+    mouseup();
+    await settle();
+    expect(calls).toEqual(['Some page text']);
+  });
+});
+
 describe('安全闸门：只响应真实用户手势（isTrusted）', () => {
   it('合成 mouseup（isTrusted=false）即便选区有效也零请求、不出气泡', async () => {
     const { translate, calls } = autoTranslate();

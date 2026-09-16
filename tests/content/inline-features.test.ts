@@ -105,6 +105,11 @@ function bubbleText(): string {
   return bubble()?.shadowRoot?.querySelector('.jy-text')?.textContent ?? '';
 }
 
+/** 气泡的视觉状态（data-state）：pending / error / done。 */
+function bubbleState(): string | null {
+  return bubble()?.shadowRoot?.querySelector('.jy-bubble')?.getAttribute('data-state') ?? null;
+}
+
 function highlightHost(): HTMLElement | null {
   return document.querySelector('[data-jy-hover-highlight]');
 }
@@ -476,6 +481,48 @@ describe('验收重点：布局不变式', () => {
     expect(document.querySelectorAll('body [data-jy-root], body [data-jy-id], body [data-jy-translated]')).toHaveLength(0);
     // 段落没有被打上任何 inline style。
     for (const node of Array.from(document.querySelectorAll('article, h1, p, li, td, button, a'))) {
+      expect((node as HTMLElement).hasAttribute('style'), node.tagName).toBe(false);
+    }
+  });
+
+  /**
+   * 第二轮（界面美化）在真实链路上的验收：观感都在浮层自己的 shadow 里，
+   * 页面拿不到、也不被改动——气泡的状态位、图标按钮、高亮框全挂 documentElement。
+   */
+  it('划词全流程：气泡走 pending → done、按钮带内联 SVG 图标，页面 body 仍逐字节不变', async () => {
+    mount('<p>Hello world</p>');
+    const { worker } = await loadContentScript();
+    const queued: (() => void)[] = [];
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      queued.push(() =>
+        sendResponse({ ok: true, results: items.map((item) => ({ id: item.id, text: `译:${item.text}` })) }),
+      );
+      return true; // 挂住：先看 pending 态，再放行看 done 态
+    });
+    await settle();
+    const before = document.body.innerHTML;
+
+    mockSelection('Hello world');
+    mouseup();
+    await settle();
+    expect(bubbleText()).toBe('翻译中…');
+    expect(bubbleState()).toBe('pending');
+
+    queued.forEach((release) => release());
+    await settle();
+    expect(bubbleState()).toBe('done');
+    expect(bubbleText()).toBe('译:Hello world');
+
+    const iconButtons = Array.from(bubble()?.shadowRoot?.querySelectorAll('button') ?? []);
+    expect(iconButtons.map((button) => button.textContent)).toEqual(['复制', '朗读']);
+    expect(iconButtons.every((button) => button.querySelector('svg') !== null)).toBe(true);
+    // 按钮仍是可点的普通按钮（不能为了好看变成 pointer-events:none 的装饰）。
+    expect(bubble()?.style.pointerEvents).toBe('auto');
+
+    expect(document.body.innerHTML).toBe(before);
+    for (const node of Array.from(document.querySelectorAll('p, h1, article'))) {
       expect((node as HTMLElement).hasAttribute('style'), node.tagName).toBe(false);
     }
   });

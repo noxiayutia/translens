@@ -1,7 +1,7 @@
 // src/content/selection.ts
 import { normalizeText } from '../core/lang';
 import { isEditable } from './extractor';
-import { hideTooltip, isTooltipVisible, showTooltip, type TooltipRect } from './tooltip';
+import { hideTooltip, isTooltipVisible, setActionLabel, showTooltip, type TooltipRect } from './tooltip';
 import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './inline-types';
 
 /**
@@ -50,15 +50,33 @@ function selectionEndpointElement(node: Node | null | undefined): Element | null
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
 }
 
+/**
+ * 选区端点是不是落在插件自己的浮层里（气泡里的译文被顺手划中）。
+ *
+ * 两种形状都得认：① 浏览器把 shadow 里的选区**重定位**到宿主上（Chrome 的做法），
+ * 那时端点上带着 `data-jy-root`，`closest()` 一下就命中；② 端点仍指向 shadow 内部的节点——
+ * `closest()` **不跨 shadow 边界**，这时它一个 `data-jy-root` 也找不到，必须顺着
+ * `getRootNode()` 摸到宿主再判。
+ *
+ * 漏掉 ② 的后果是真的：译文现在可以被框选去复制（.jy-text 的 user-select:text），
+ * 一旦划中就把译文再发去翻译——自翻译循环，还要白烧用户自己付费的额度。
+ */
+function isOwnOverlay(element: Element | null): boolean {
+  if (element === null) return false;
+  if (element.closest('[data-jy-root]') !== null) return true;
+  const root = element.getRootNode();
+  return root instanceof ShadowRoot && root.host.closest('[data-jy-root]') !== null;
+}
+
 /** 从 window.getSelection() 读出一份可翻译的划词；不合法返回 null。 */
 function readSelection(): { text: string; rect: TooltipRect } | null {
   const selection = window.getSelection();
   if (selection === null || selection.rangeCount === 0) return null;
   const text = normalizeText(selection.toString());
   if (text === '' || text.length > MAX_CHARS) return null;
-  // 选区起点落在插件自己的浮层里（气泡文本被顺手划中）：那不是页面内容，不翻。
+  // 选区起点落在插件自己的浮层里：那不是页面内容，不翻。
   const anchorElement = selectionEndpointElement(selection.anchorNode);
-  if (anchorElement?.closest('[data-jy-root]')) return null;
+  if (isOwnOverlay(anchorElement)) return null;
   /**
    * 可编辑区域（contenteditable 子树）里的文本是用户**正在写、还没保存**的草稿——隐私，
    * 不是页面内容。整页采集早就不采它（extractor 的 isSkippedForText），划词必须同一口径，
@@ -68,6 +86,7 @@ function readSelection(): { text: string; rect: TooltipRect } | null {
    */
   const focusElement = selectionEndpointElement(selection.focusNode);
   if (anchorElement !== null && isEditable(anchorElement)) return null;
+  if (focusElement !== null && isOwnOverlay(focusElement)) return null;
   if (focusElement !== null && isEditable(focusElement)) return null;
   const range = selection.getRangeAt(0);
   return { text, rect: rectFromRange(range) };
@@ -90,19 +109,21 @@ function speak(text: string, lang: string): void {
  * 复制译文。分层守卫不管 src/content，这里用 `navigator` 是正当的：
  * 剪贴板是用户点「复制」这一动作的直接后果，没有别的通道可走。
  * 非安全上下文里 `navigator.clipboard` 根本不存在——如实降级成一条提示，不静默。
+ *
+ * 文案一律走 `setActionLabel`：按钮里还有图标，直接写 `button.textContent` 会把图标抹掉。
  */
 function copyTranslation(text: string, button: HTMLButtonElement): void {
   const clipboard = navigator.clipboard;
   if (clipboard === undefined) {
-    button.textContent = '复制不可用';
+    setActionLabel(button, '复制不可用');
     return;
   }
   clipboard.writeText(text).then(
     () => {
-      button.textContent = '已复制';
+      setActionLabel(button, '已复制');
     },
     () => {
-      button.textContent = '复制失败';
+      setActionLabel(button, '复制失败');
     },
   );
 }
@@ -116,19 +137,25 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
       showTooltip(rect, {
         text: translation.text,
         buttons: [
-          { label: '复制', onClick: (button) => copyTranslation(translation.text, button) },
-          { label: '朗读', onClick: () => speak(translation.text, deps.targetLang()) },
+          // 复制是这一屏唯一的实心强调色按钮（主操作），朗读是半透明白底的次操作。
+          {
+            label: '复制',
+            variant: 'primary',
+            icon: 'copy',
+            onClick: (button) => copyTranslation(translation.text, button),
+          },
+          { label: '朗读', icon: 'speak', onClick: () => speak(translation.text, deps.targetLang()) },
         ],
       });
       return;
     }
     // 后台/网络失败：气泡里显示错误文案，不静默（失败态没有可复制/朗读的东西，不挂按钮）。
-    showTooltip(rect, { text: translation.message });
+    showTooltip(rect, { text: translation.message, state: 'error' });
   }
 
   function run(text: string, rect: TooltipRect): void {
     const mine = ++generation;
-    showTooltip(rect, { text: PENDING_TEXT });
+    showTooltip(rect, { text: PENDING_TEXT, state: 'pending' });
     const present = (result: InlineTranslation): void => {
       // 更新的划词/还原已经发生，或用户已把气泡关掉（点外部/Escape/滚动）：结论丢弃。
       if (mine !== generation || !isTooltipVisible()) return;
