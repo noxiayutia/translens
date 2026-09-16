@@ -844,6 +844,288 @@ describe('增量翻译：页面级提示与整页同一套判择逻辑', () => {
   });
 });
 
+/**
+ * 可见性变化触发增量翻译（下拉菜单 / mega menu）。
+ *
+ * 场景取自 nature.com 顶部导航 "Explore content"：菜单内容**一开始就在 DOM 里**，
+ * 被 CSS 类藏起来，悬停/点击展开只是**切换 class 改变可见性**，没有任何节点增删——
+ * 纯 childList 观察者收不到一条记录，展开后露出的内容就永远没人翻。
+ *
+ * 这一组用样式表（而不是内联样式）来隐藏/显示，形状与真实站点一致：
+ * `.c-header__dropdown { display: none }` + `.c-header__item--open .c-header__dropdown { display: block }`。
+ * jsdom 的 getComputedStyle 会对文档里的 <style> 规则求值（含后代组合器），实测可用。
+ */
+const DROPDOWN_CSS = `
+  <style>
+    .c-header__dropdown { display: none; }
+    .c-header__item--open .c-header__dropdown { display: block; }
+  </style>
+`;
+
+/** nature.com 形状的导航：li 挂开关类，真正变可见的是它内部的 dropdown 子树。 */
+function mountHeader(): void {
+  mount(
+    `${DROPDOWN_CSS}
+     <ul class="c-header">
+       <li id="mi" class="c-header__item">
+         <div id="dd" class="c-header__dropdown">
+           <h2 class="c-header__heading">Explore content heading</h2>
+           <p>Nobel prize roundup text</p>
+           <p>Quantum physics explainer text</p>
+         </div>
+       </li>
+     </ul>
+     <article id="feed"><p>Visible body paragraph</p></article>`,
+  );
+}
+
+function setMenuOpen(open: boolean): void {
+  document.getElementById('mi')?.classList.toggle('c-header__item--open', open);
+}
+
+describe('增量翻译：可见性变化（下拉菜单展开也要翻）', () => {
+  it('整页翻译不碰 CSS 隐藏的菜单内容（保留"不翻看不见的东西"的正确行为）', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    await runDebounceWindow();
+
+    expect(sentTexts(worker)).toEqual(['Visible body paragraph']);
+    expect(findHostByText(translate('Nobel prize roundup text'))).toBeUndefined();
+    expect(findHostByText(translate('Explore content heading'))).toBeUndefined();
+    expect(hosts()).toHaveLength(1);
+  });
+
+  it('给父 li 加 class 展开菜单 → dropdown 子树里的段落被翻译（候选根 = 被改动元素的子树）', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    setMenuOpen(true); // 模拟站点 JS 展开菜单：class 一翻，没有任何节点增删。
+    await runDebounceWindow();
+
+    expect(sentTexts(worker).sort()).toEqual(
+      ['Explore content heading', 'Nobel prize roundup text', 'Quantum physics explainer text'].sort(),
+    );
+    // 候选根是**被改动的 li**（class 加在 li 上，变可见的是它的后代）——整轮只扫这一棵子树。
+    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.getElementById('mi')]);
+    expect(fullPageCollect).not.toHaveBeenCalled();
+    expect(findHostByText(translate('Nobel prize roundup text'))).toBeDefined();
+  });
+
+  it('反复开合同一个菜单（class 来回切 5 次）：请求数与宿主数一点不涨（去重账本挡住）', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    setMenuOpen(true);
+    await runDebounceWindow();
+    const requestsAfterOpen = translateRequests(worker).length;
+    const hostsAfterOpen = hosts().length;
+    expect(requestsAfterOpen).toBeGreaterThan(0);
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      setMenuOpen(false);
+      await runDebounceWindow();
+      setMenuOpen(true);
+      await runDebounceWindow();
+    }
+
+    expect(translateRequests(worker)).toHaveLength(requestsAfterOpen);
+    expect(hosts()).toHaveLength(hostsAfterOpen);
+    // 每段菜单文本恰好一个宿主。
+    for (const text of ['Explore content heading', 'Nobel prize roundup text', 'Quantum physics explainer text']) {
+      expect(hosts().filter((host) => bodyTextOf(host) === translate(text))).toHaveLength(1);
+    }
+  });
+
+  it('属性风暴但都与可见性无关（隐藏子树狂改 class + 可见元素改 data-*）：零扫描', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    const dd = document.getElementById('dd') as HTMLElement;
+    const feed = document.getElementById('feed') as HTMLElement;
+    const hiddenParagraph = dd.querySelector('p') as HTMLElement;
+    for (let i = 0; i < 12; i += 1) {
+      // 仍然隐藏的 dropdown 子树内部狂改 class（动画/埋点类名的形状）：早退必须丢弃，不许扫。
+      dd.classList.add(`noise-${String(i)}`);
+      dd.classList.remove(`noise-${String(i)}`);
+      // **自身可见、被祖先的 display:none 罩住**的元素改 class：display 不随祖先级联计算，
+      // 只看自身的 isHidden 会放行——必须沿祖先链判。
+      hiddenParagraph.classList.toggle(`pulse-${String(i)}`);
+      // 可见元素改**不在 attributeFilter 里**的 data-*：连记录都不该入队。
+      feed.setAttribute('data-jy-analytic', String(i));
+    }
+    for (let i = 0; i < 4; i += 1) await runDebounceWindow();
+
+    expect(subtreeCollect).not.toHaveBeenCalled();
+    expect(fullPageCollect).not.toHaveBeenCalled();
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
+  it('自触发防护：失败的增量轮写自家隐藏 span 的 style，不滚出下一轮扫描', async () => {
+    // 混合容器形态：松散文本段的容器**不带** data-jy-translated（Fix 5 的取舍），
+    // 失败态把隐藏 span 的 display 放回可见时，如果属性路径不排插件自己的子树，
+    // 这个 span 会当场变成候选根多出一轮扫描（collectSegmentsWithin 的调用计数可见）。
+    mount(
+      `${DROPDOWN_CSS}
+       <ul><li id="mi" class="c-header__item">
+         <div id="dd" class="c-header__dropdown">Loose menu intro text<p>Menu nested body text</p></div>
+       </li></ul>
+       <article><p>Standing visible paragraph</p></article>`,
+    );
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation((message, _sender, sendResponse) => {
+      if (!isTranslateRequest(message)) return false;
+      const { items } = asTranslateRequest(message).payload;
+      const mine = items.filter((item) => item.text.includes('menu') || item.text.includes('Menu'));
+      sendResponse({
+        ok: true,
+        results: items.map((item) =>
+          mine.includes(item)
+            ? { id: item.id, text: null, code: 'NETWORK' as const, message: `网络错误：${item.text}` }
+            : { id: item.id, text: translate(item.text) },
+        ),
+      });
+      return true;
+    });
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    setMenuOpen(true);
+    await runDebounceWindow();
+    expect(sentTexts(worker).sort()).toEqual(['Loose menu intro text', 'Menu nested body text'].sort());
+    // **恰好一次采集、就在那棵 li 上**：这一轮的全部页面写入（隐藏 span 插入、
+    // 失败态 display 放回可见）都不许变成属性候选往队列里多塞一棵子树。
+    // 拆掉回调里的 `[data-jy-root]` 排除，失败写回的可见 span 会多出一轮扫描——这里当场见红。
+    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.getElementById('mi')]);
+    const scans = subtreeCollect.mock.calls.length;
+    const requests = translateRequests(worker).length;
+    expect(scans).toBe(1);
+
+    // 反复 flush + 推窗口：计数一个都不许多。
+    for (let i = 0; i < 5; i += 1) {
+      await flushMicrotasks();
+      await runDebounceWindow();
+    }
+    expect(subtreeCollect.mock.calls.length).toBe(scans);
+    expect(translateRequests(worker)).toHaveLength(requests);
+  });
+
+  it('收起菜单（改动元素自己从可见变隐藏）：不触发任何扫描', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    setMenuOpen(true);
+    await runDebounceWindow();
+    resetCounts(worker);
+
+    // 折叠面板的常见形态：display 直接切在内容容器自己身上。
+    (document.getElementById('dd') as HTMLElement).style.display = 'none';
+    for (let i = 0; i < 4; i += 1) await runDebounceWindow();
+
+    expect(subtreeCollect).not.toHaveBeenCalled();
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
+  it('已译整元素段自身被站点改属性（hover 高亮类）：祖先短路，不重扫', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // <p>Visible body paragraph</p> 已作为整元素段译好（带着 data-jy-translated）。
+    // 站点给它自身加高亮类：这属于"改动已译内容"，按既定范围不重译——观察者的
+    // insideTranslatedBlock 必须让它连 collectSegmentsWithin 都进不去（extractor 的
+    // 短路只是第二道防线，扫描计数才是这道闸的证据）。
+    const paragraph = document.querySelector('#feed p') as HTMLElement;
+    for (let i = 0; i < 6; i += 1) paragraph.classList.toggle(`hover-${String(i)}`);
+    for (let i = 0; i < 4; i += 1) await runDebounceWindow();
+
+    expect(subtreeCollect).not.toHaveBeenCalled();
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
+  it('一个防抖窗口里同时攒下属性变动与节点新增：合并成同一轮处理（共用链路，不开第二条）', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    setMenuOpen(true); // 属性路径的候选
+    appendParagraph('Same window childList addition', document.getElementById('feed') as HTMLElement); // childList 路径的候选
+    await runDebounceWindow();
+
+    // 两路各交出自己的段，且都落在**同一个**防抖轮里（窗口只排了一次队）。
+    expect(sentTexts(worker).sort()).toEqual(
+      [
+        'Explore content heading',
+        'Nobel prize roundup text',
+        'Quantum physics explainer text',
+        'Same window childList addition',
+      ].sort(),
+    );
+    const roots = new Set(subtreeCollect.mock.calls.map((call) => call[0]));
+    expect(roots.has(document.getElementById('mi') as HTMLElement)).toBe(true); // li 来自属性路径
+    // 每轮上限只裁一次：这里远不到 60 段，一轮吃干净，没有滚出第二轮。
+    const scans = subtreeCollect.mock.calls.length;
+    for (let i = 0; i < 3; i += 1) {
+      await flushMicrotasks();
+      await runDebounceWindow();
+    }
+    expect(subtreeCollect.mock.calls.length).toBe(scans);
+  });
+
+  it('防抖窗口内"改了又撤"（最终态仍隐藏）：丢弃候选，零扫描', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // 折叠面板型：display 直接切在内容容器自己身上。窗口内打开又关闭——
+    // 属性路径按轮内**最终态**判可见性，"闪现过又消失"的子树一次采集都不该有。
+    const dd = document.getElementById('dd') as HTMLElement;
+    dd.style.display = 'block';
+    await vi.advanceTimersByTimeAsync(200);
+    dd.style.display = 'none';
+    await runDebounceWindow();
+
+    expect(subtreeCollect).not.toHaveBeenCalled();
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
+  it('li 类翻转的开合相抵：最终态隐藏时零请求（li 自身可见，允许付一次空采集）', async () => {
+    mountHeader();
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // nature 形态：类翻在 li 上，li 自己**始终**可见——早退判据看不见"里面曾闪过一帧"，
+    // 允许付一次对着隐藏子树的空采集（extractor 的隐藏短路兜住内容），但绝不允许
+    // 把看不见的菜单文本送接口。这一条把"承诺的边界"写死：省的是请求，不是那一次函数调用。
+    setMenuOpen(true);
+    await vi.advanceTimersByTimeAsync(200);
+    setMenuOpen(false);
+    await runDebounceWindow();
+
+    expect(sentTexts(worker)).toEqual([]);
+    expect(hosts()).toHaveLength(1); // 只有首轮的 Visible body paragraph
+  });
+});
+
 describe('增量翻译：无限滚动模拟（X/Twitter 型验收）', () => {
   it(
     '50 轮 × 每轮 20 段：请求线性于段落数、同一文本恰好请求一次、宿主不重复',

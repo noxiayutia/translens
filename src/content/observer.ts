@@ -3,6 +3,7 @@ import {
   collectSegmentsWithin,
   createStyleLookup,
   isBlockDisplay,
+  isHidden,
   type ExtractedSegment,
   type ExtractorOptions,
   type StyleLookup,
@@ -47,7 +48,8 @@ export interface IncrementalDeps {
    * 把新段落送进**现有**的批次/并发/缓存链路（planBatches + runPool + sendToBackground）。
    * 两条硬契约（自变更防护窗口的收口方式依赖它们）：
    * 1. 所有页面写入（挂宿主、搬原文）**必须在第一个 await 之前同步完成**——本函数的同步段
-   *    跑在观察者 disconnect 的窗口里，异步段只写 Shadow DOM（childList 看不到，天然安全）；
+   *    跑在观察者 disconnect 的窗口里，异步段只写 Shadow DOM（childList 看不到，天然安全）
+   *    与 `[data-jy-root]` 子树内的属性（回调的属性排除挡下，见下）；
    * 2. 永远 resolve、不要 reject——逐段失败在链路内部已经收敛成失败态，抛出来只会让观察者
    *    这一轮烂尾。防御性地，这里也会兜住违约的 reject。
    */
@@ -67,7 +69,28 @@ export interface IncrementalObserver {
   disable(): void;
 }
 
-const OBSERVE_OPTIONS: MutationObserverInit = { childList: true, subtree: true };
+/**
+ * 观察哪些变动会「让内容变得可见」。
+ *
+ * - `childList`：新内容进 DOM（无限滚动、SPA 追加楼层）。
+ * - `attributes` + **attributeFilter**：内容本来就在 DOM 里、只是改可见性——
+ *   nature.com 顶部 "Explore content" 这类悬停下拉菜单是实证的形状：
+ *   `<div class="c-header__dropdown">`（CSS 规则 `display:none`）在 hover 时被
+ *   JS 在父 `<li>` 上切换 class 点亮，**整棵子树零节点增删**，只看 childList 的
+ *   观察者一条记录都收不到，展开后露出的内容就永远没人翻。
+ *
+ * 为什么必须带 `attributeFilter` 而不是裸 `attributes: true`：动画库逐帧改 style、
+ * 埋点脚本乱加 `data-*` 会疯狂触发回调；这里只认领**能改变可见性**的那 5 个属性
+ * （class / style / hidden / aria-hidden / inert）。而且插件自己高频写的
+ * `data-jy-id`、`data-jy-translated` **恰好都不在名单里**——整页标记根本不会入队，
+ * 自触发面只剩「给隐藏 span 设 display」这一条，由回调里的 `[data-jy-root]` 排除挡下。
+ */
+const OBSERVE_OPTIONS: MutationObserverInit = {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'inert'],
+};
 
 /**
  * 同页共存的增量观察者注册表（挂在 globalThis：内容脚本被二次注入时是**两份模块实例**，
@@ -87,23 +110,38 @@ function globalRegistry(): InternalHandle[] {
 /**
  * 增量翻译观察者：页面翻译好之后**新出现**的内容也走同一条翻译链路。
  *
- * 三条骨架规则，各自钉着一类真实事故（细节与测试对应见各方法注释）：
- * 1. **自变更防护**：我们每译一段都会写 DOM（宿主、仅译文模式的隐藏 span），这些插入
- *    本身会触发 MutationObserver。轮次全程在 `disconnect()` 的窗口里写、写完
- *    `takeRecords()` 丢弃攒下的记录、最后一步才重新 `observe()`。两者的分工经实测钉过
- *    （见 `process()` 内注释与测试的变异结论）：disconnect 让自写入不进队列并丢弃未投递
- *    积压；写后的 takeRecords 兜住「注册态开轮」（溢出补轮从定时器直接起步）时漏进队列的
- *    那批记录——两个一起拆，第二轮无效扫描当场可见；只拆任何一个，另一个都还兜得住。
- * 2. **只扫新增子树**：候选根取自 `addedNodes`（新增元素的父容器是混合容器时改扫父容器），
- *    绝不重跑整页采集——3000 段的页面上每次变动都 O(整页) 会把主线程打满。
- * 3. **(容器元素, 段文本) 去重**：松散文本段不带「已处理」标记，重扫必然再采到；
+ * 四条骨架规则，各自钉着一类真实事故（细节与测试对应见各方法注释）：
+ * 1. **自变更防护**：我们每译一段都会写 DOM（宿主、仅译文模式的隐藏 span——包括给它
+ *    设 `display` 这类属性写入），这些变动本身会触发 MutationObserver。轮次全程在
+ *    `disconnect()` 的窗口里写、写完 `takeRecords()` 丢弃攒下的记录、最后一步才重新
+ *    `observe()`。两者的分工经实测钉过（见 `process()` 内注释与测试的变异结论）：
+ *    disconnect 让自写入不进队列并丢弃未投递积压；写后的 takeRecords 兜住「注册态开轮」
+ *    （溢出补轮从定时器直接起步）时漏进队列的那批记录——两个一起拆，第二轮无效扫描当场
+ *    可见；只拆任何一个，另一个都还兜得住。异步阶段剩下的 light DOM 属性写入
+ *    （`setOriginalsHidden` 的 style.display）由回调里的 `[data-jy-root]` 排除挡下。
+ * 2. **只扫新增/新可见的子树**：候选根取自 `addedNodes`（新增元素的父容器是混合容器时
+ *    改扫父容器）与「属性变化后变得可见的被改动元素」，绝不重跑整页采集——
+ *    3000 段的页面上每次变动都 O(整页) 会把主线程打满。
+ * 3. **属性路径只为「变得可见」服务**：被改动元素连同祖先链仍然隐藏的当场丢弃
+ *    （hover 高亮、埋点类名、动画——绝大多数属性变化都是这类），从可见变隐藏的收起
+ *    同样不触发；两类都走不到扫描那一步，测试按 `collectSegmentsWithin` 的调用计数钉死。
+ * 4. **(容器元素, 段文本) 去重**：松散文本段不带「已处理」标记，重扫必然再采到；
  *    这张 WeakMap 是防重复插宿主的唯一屏障。键带元素——纯文本集合会把页面另一处
- *    恰好同文的段落误判成已处理。
+ *    恰好同文的段落误判成已处理。反复开合的菜单每轮都会重新扫到同一批文本，
+ *    靠这一层加上整元素段的 `data-jy-translated` 短路保证请求数不涨。
  */
 export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObserver {
   /** 「已处理」记录：容器元素 → 该容器内已采集过的段文本。enable 时整体换新（新一轮翻译重新记账）。 */
   let processed = new WeakMap<HTMLElement, Set<string>>();
   let pendingNodes: Set<Node> = new Set();
+  /**
+   * 属性变化的候选：通过「回调时的廉价排除」（非元素节点 / 插件自己的 `[data-jy-root]` 子树）
+   * 后被改动的元素。**可见性判定推迟到这里**（每轮一次、按元素去重），不在回调里逐条做：
+   * jsdom 与浏览器都可能在同一个防抖窗口里为同一元素排进多条记录（class+style 一起改），
+   * 回调里读 `getComputedStyle` 会把样式解析塞进每一批微任务；轮内一次判"最终态"不仅便宜，
+   * 还天然处理了「窗口内又开又合」的翻转——开合相抵时最终是隐藏的，直接丢弃。
+   */
+  let pendingAttrTargets: Set<Element> = new Set();
   /** 单轮上限裁下来的溢出段 + 处理期间新攒的节点，都并进下一轮：不丢。 */
   let queued: ExtractedSegment[] = [];
   let enabled = false;
@@ -129,6 +167,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
     observer.disconnect();
     observer.takeRecords();
     pendingNodes = new Set();
+    pendingAttrTargets = new Set();
     queued = [];
     dirty = false;
   }
@@ -211,17 +250,49 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
     return roots;
   }
 
+  /**
+   * 「这个元素现在到底看不看得见」：自身与**整条祖先链**逐个过 extractor 的 `isHidden`。
+   *
+   * 只看自身会漏：`display:none` 不向后代级联计算值（子元素自己的 computed display
+   * 照常是 block——实测钉在探针里），所以「隐藏子树里的元素狂改 class」这种风暴
+   * 必须沿祖先链查才能当场丢弃、一次都不扫。与整页采集 `visitBlock` 的 `ancestorHidden`
+   * 传递同为"祖先隐藏即短路"的口径（不认子树上 `visibility:visible` 的重新点亮，
+   * 两边一致比各自更聪明重要）。走到 body 即可停：body 是观察根，链外的 <html>
+   * 没有属性路径能把它变成候选根。
+   */
+  function isEffectivelyHidden(element: Element, styleOf: StyleLookup): boolean {
+    for (let node: Element | null = element; node !== null; node = node.parentElement) {
+      if (isHidden(node, styleOf)) return true;
+      if (node === document.body) return false;
+    }
+    return false;
+  }
+
   const observer = new MutationObserver((records) => {
     if (deps.isStale()) {
       teardown();
       return;
     }
     for (const record of records) {
-      for (const node of Array.from(record.addedNodes)) pendingNodes.add(node);
+      if (record.type === 'childList') {
+        for (const node of Array.from(record.addedNodes)) pendingNodes.add(node);
+        continue;
+      }
+      // —— 属性记录：只做**不进样式解析**的廉价排除，可见性判定留到轮内。
+      const target = record.target;
+      if (target.nodeType !== Node.ELEMENT_NODE) continue;
+      // **插件自己的子树一票否决**：属性路径比 childList 更容易自触发——翻译链路每落地
+      // 一批都高频写 style（失败/重试时 `setOriginalsHidden` 把隐藏 span 的 display 放回
+      // 可见）。这些写入不是"页面露出了新内容"，永远不该开新一轮。不能靠可见性判定兜：
+      // 失败态放回原文时那个 span **就是可见的**（里面还装着没藏好的原文），
+      // 全靠这道排除把自触发循环掐死。刻意不用 attributeOldValue——旧值可读不等于
+      // 旧状态可复原（class 字符串无法重放样式级联），判"是谁写的"比判"写成什么样"稳。
+      if ((target as Element).closest('[data-jy-root]') !== null) continue;
+      pendingAttrTargets.add(target as Element);
     }
     if (!enabled) return;
     if (processing) {
-      // 一轮在飞：变动已经收进 pendingNodes，标个记号等它跑完接着扫——不丢、也不并发。
+      // 一轮在飞：变动已经收进两个待办集，标个记号等它跑完接着扫——不丢、也不并发。
       dirty = true;
       return;
     }
@@ -240,6 +311,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         const options = deps.scanOptions();
         if (options === null || !deps.isTranslated()) {
           pendingNodes = new Set();
+          pendingAttrTargets = new Set();
           return;
         }
         dirty = false;
@@ -263,6 +335,21 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         const styleOf = createStyleLookup();
         const roots = candidateRoots(pendingNodes, styleOf);
         pendingNodes = new Set();
+
+        // —— 属性候选：**在这一刻**判可见性（回调时只做了非样式的廉价排除）。
+        // 判"最终态"意味着：防抖窗口内开了又合的菜单（合是最终态）与收起动作一起丢弃；
+        // 展开后一直开着的才作为候选根，扫**被改动元素的子树**——class 常常加在父 <li>
+        // 上，真正变可见的是它的后代，所以根取 li 而不是更深处的谁。
+        // insideTranslatedBlock 与文本节点路径同一条理由：属性改动落在**已译整元素段的
+        // 后代**上（比如站点给译好的段落里的 span 加 hover 类）属于"改动已译内容"，
+        // 按既定范围不重译。
+        for (const element of pendingAttrTargets) {
+          if (!element.isConnected) continue; // 改完就被移除：锚点已失效。
+          if (insideTranslatedBlock(element)) continue;
+          if (isEffectivelyHidden(element, styleOf)) continue; // 仍隐藏 / 变隐藏：不扫。
+          roots.add(element);
+        }
+        pendingAttrTargets = new Set();
 
         const fresh: ExtractedSegment[] = [];
         for (const root of roots) {
@@ -322,6 +409,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
 
       processed = new WeakMap(); // 新一轮翻译：增量记账从零开始，再灌首轮种子。
       pendingNodes = new Set();
+      pendingAttrTargets = new Set();
       queued = [];
       dirty = false;
       for (const segment of alreadyTranslated) claimProcessed(segment);
@@ -329,7 +417,9 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
       enabled = true;
       // 首轮挂载发生在 enable **之前**，我们的写入不会生成变动记录；
       // 从这里起页面新长出来的内容才进防抖队列（整页翻译还在飞时到达的也一样——
-      // 观察者只记 childList，异步阶段我们的写入都在 Shadow DOM 里，互不污染）。
+      // 异步阶段我们的 light DOM 写入只有两类：`[data-jy-root]` 子树内的 span 搬运与
+      // 它的 style.display（回调的属性排除一票否决），以及属性名单外的 data-jy-* 标记
+      // （attributeFilter 连记录都不生成）；Shadow DOM 更是根本看不见，互不污染）。
       observer.disconnect();
       observer.takeRecords();
       observer.observe(document.body, OBSERVE_OPTIONS);

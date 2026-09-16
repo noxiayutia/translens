@@ -145,7 +145,16 @@ export function createStyleLookup(): StyleLookup {
   };
 }
 
-function isHidden(element: Element, styleOf: StyleLookup): boolean {
+/**
+ * 「这个元素自己藏没藏」的**唯一**判据（`hidden` / `aria-hidden` / `display:none` / `visibility`）。
+ *
+ * **导出**：增量观察者的属性路径（`observer.ts`）要用同一条口径判断"被改动的元素
+ * 现在到底可不可见"——"什么算看不见"在整页采集与增量触发里必须逐字相同，两处各写
+ * 一份必然随改动漂移（`isEditable` 是同一个教训）。
+ * 注意它只看元素**自身**：祖先的隐藏由调用方沿祖先链自行处理（见 observer 的
+ * `isEffectivelyHidden`），整页采集则是自顶向下把 `ancestorHidden` 传下去。
+ */
+export function isHidden(element: Element, styleOf: StyleLookup): boolean {
   if (element.hasAttribute('hidden')) return true;
   if (element.getAttribute('aria-hidden') === 'true') return true;
   const style = styleOf(element);
