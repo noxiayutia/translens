@@ -5795,8 +5795,10 @@ const REF_SKIP_TAGS = new Set([
   'TITLE',
   'META',
   'LINK',
-  'BUTTON',
 ]);
+// BUTTON 刻意**不在**名单里：按钮上承载的是界面文字，该翻（2026-09 修 digitalocean
+// 导航 Products/Solutions 不翻的事故）；`<input>` / `<select>` / `<textarea>` /
+// `<option>` 的值不是正文，仍然全数保留。
 const REF_WORD = /[\p{L}\p{N}]/u;
 const REF_CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u;
 
@@ -6008,6 +6010,54 @@ describe('collectSegments', () => {
     );
     const segments = collectSegments(root, { targetLang: 'zh-Hans' });
     expect(segments.map((s) => s.text)).toEqual(['Real content here']);
+  });
+
+  // ---- 按钮文字进采集（修 digitalocean 顶部导航 Products/Solutions 不翻的事故）----
+  it('<button>Products</button> 的可见文字被采集', () => {
+    const root = mount('<button>Products</button>');
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Products']);
+  });
+
+  it('digitalocean 导航形态：span 里的按钮文字成段，svg 与隐藏面板都不并入', () => {
+    const root = mount(
+      '<nav><ul><li>' +
+        '<button type="button" aria-expanded="false"><span>Products</span>' +
+        '<svg viewBox="0 0 12 12"><polyline points="2,4 6,8 10,4"/></svg></button>' +
+        '<div class="dd" style="display:none"><a>Dropdown panel entry</a></div>' +
+        '</li></ul></nav>',
+    );
+    const texts = collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text);
+    expect(texts).toContain('Products');
+    // svg 仍被跳过（符号也进不了文本）；隐藏面板照旧一个字都不采。
+    expect(texts.join(' ')).not.toContain('Dropdown');
+  });
+
+  it('图标按钮不送采集：× / ☰ / ⌄ / 单个数字都被既有噪声闸挡住', () => {
+    const root = mount(
+      '<div><button type="button" aria-label="Close">×</button>' +
+        '<button aria-label="Menu">☰</button><button>3</button>' +
+        '<button aria-label="Fold">⌄</button><button>→</button></div>' +
+        '<p>Real english sentence</p>',
+    );
+    const segments = collectSegments(root, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.text)).toEqual(['Real english sentence']);
+  });
+
+  it('其余 SKIP 项一个不少：pre / code / input / select / textarea / svg 内 text 都不被采集', () => {
+    const root = mount(
+      '<pre>const answer = compute;</pre>' +
+        '<p>Inline <code>npm run build</code> command</p>' +
+        '<input value="Submit form label"><textarea>Textarea draft content</textarea>' +
+        '<select><option>Option label here</option></select>' +
+        '<div><svg viewBox="0 0 9 9"><text>Label inside svg</text></svg></div>' +
+        '<p>Genuine paragraph text</p>',
+    );
+    // 段落里环绕 code 的正文照常成段，但被跳过标签的内容一个字都不进文本。
+    expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual([
+      'Inline command',
+      'Genuine paragraph text',
+    ]);
   });
 
   it('跳过隐藏元素', () => {
@@ -6302,6 +6352,7 @@ describe('抽出文本的不变量', () => {
     'Hello <b>bold</b>, and <i>italic</i>.',
     '東京<b>タワー</b>へ行く',
     'Home <a href="/pricing"><span>Pricing</span></a> page',
+    'Click <button type="button">submit</button> to continue',
     'Mixed <em>mark</em>up &amp; entities  spaced   out',
     'Prefix<span>suffix</span>5 $<b>+</b>tax',
   ];
@@ -6410,7 +6461,15 @@ export function pageHasKana(root: ParentNode): boolean {
   return containsKana(root.textContent ?? '');
 }
 
-/** 这些标签里的内容一律不翻译：代码、表单控件、多媒体与元数据。 */
+/**
+ * 这些标签里的内容一律不翻译：代码、表单控件**的值**、多媒体与元数据。
+ *
+ * **BUTTON 刻意不在名单里**：当初把 BUTTON 放进来是为了"别翻表单控件"，加错了对象——
+ * `<input>` / `<select>` / `<textarea>` / `<option>` 的值不是页面正文，该跳；
+ * 而 `<button>` 上承载的正是用户最想翻的界面文字（digitalocean 顶部导航
+ * Products / Solutions / Developers / Partners 整排不翻的事故）。图标按钮（`×`、`☰`、`3`）
+ * 仍然由 {@link isTranslatableText} 的噪声闸挡在门外，不会送接口。
+ */
 const SKIP_TAGS = new Set([
   'SCRIPT',
   'STYLE',
@@ -6432,8 +6491,17 @@ const SKIP_TAGS = new Set([
   'TITLE',
   'META',
   'LINK',
-  'BUTTON',
 ]);
+
+/**
+ * `SKIP_TAGS` 的成员判定。**必须按大小写不敏感来对**：`Element.tagName` 只对 HTML
+ * 命名空间的元素大写化——内联 `<svg>`（以及它里面的 `<title>` / `<style>` / `<script>`）
+ * 的 tagName 是**小写**的，`SKIP_TAGS.has('SVG')` 永远对不上，"svg 一律跳过"其实一直没生效。
+ * 两处各写一份大写化的判断迟早漂移，所以只留这一个谓词给三个调用点用。
+ */
+function hasSkipTag(element: Element): boolean {
+  return SKIP_TAGS.has(element.tagName) || SKIP_TAGS.has(element.tagName.toUpperCase());
+}
 
 const BLOCK_DISPLAYS = new Set([
   'block',
@@ -6525,7 +6593,7 @@ export function isHidden(element: Element, styleOf: StyleLookup): boolean {
  * 免得「这里跳过、那里不跳过」两处规则漂移。
  */
 function isSkippedForText(element: Element): boolean {
-  return SKIP_TAGS.has(element.tagName) || isEditable(element) || element.closest('[data-jy-root]') !== null;
+  return hasSkipTag(element) || isEditable(element) || element.closest('[data-jy-root]') !== null;
 }
 
 /**
@@ -6563,7 +6631,8 @@ export function isEditable(element: Element): boolean {
  *
  * 一个元素是"叶子文本块"，当且仅当：
  * 1. 它自己不在被跳过的范围里（`[data-jy-root]` 子树、`SKIP_TAGS`、可编辑区域）——
- *    命中即**直接返回 null**：右键/悬停落在按钮或输入框上不是"段落没找到"，是"这里不该翻译"；
+ *    命中即**直接返回 null**：右键/悬停落在输入框、下拉框或代码块上不是"段落没找到"，是"这里不该翻译"；
+ *    （按钮不在跳过名单里：悬停落在按钮文字上就该翻按钮那段——见 `SKIP_TAGS` 的注释。）
  * 2. 它内部没有块级边界子元素（有就是容器，块级子元素各自成段，见 collectSegments 的注释）；
  * 3. 它的可见文本可翻译（{@link isTranslatableText}，与采集端同一条判据）；
  * 4. 它是"块"——自身是块级边界（{@link isBlockBoundary}），或其父是 body
@@ -6582,7 +6651,7 @@ export function findLeafTextAncestor(element: Element | null): HTMLElement | nul
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     // 1. 命中即停：这些区域不是"还没找到段落"，是"这里永远不翻译"。
     if (node.closest('[data-jy-root]') !== null) return null;
-    if (SKIP_TAGS.has(node.tagName) || isEditable(node)) return null;
+    if (hasSkipTag(node) || isEditable(node)) return null;
     // 隐藏元素本身没有可悬停的字面（display:none 不产生盒），但它的可见祖先照常是段落，
     // 所以不返回、继续向上。（aria-hidden 的可见节点走到下面的正常判定。）
     if (isHidden(node, styleOf)) continue;
@@ -6702,8 +6771,31 @@ export function inlineText(element: Element, styleOf: StyleLookup): string {
   return result;
 }
 
+/**
+ * 「这个子节点为它所在的段落承载可见文字吗」——采集端 `visitContent` 扫子节点用的
+ * 同一组谓词（{@link isSkippedForText} / {@link isHidden} / {@link isBlockBoundary} /
+ * {@link inlineText}）合成一份，**导出给渲染器复用**（仅译文模式据此决定搬谁、留谁，
+ * 见 `content/renderer.ts` 的 `hideOriginals`）。
+ *
+ * 为什么不直接把 `inlineText` 当判据：`inlineText(element)` 算的是 element **子节点**
+ * 贡献的文字，它不检查 element 自己——一个内联 `<svg>` 里带 `<text>` 时，
+ * `inlineText(svg)` 会返回那段文字，而采集端根本不会把它并进任何段落（svg 整体被跳过）。
+ * 「带文字的图标」要是按 `inlineText` 非空就被搬进隐藏容器，正是本文件开头说的
+ * 两处口径漂移。判"自己算不算文字节点"必须连自身的跳过/隐藏/块级判定一起做，
+ * 这一份合成只留在这里一处，谁要用谁 import。
+ */
+export function carriesVisibleText(node: Node, styleOf: StyleLookup): boolean {
+  if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue ?? '').trim() !== '';
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const element = node as Element;
+  if (element.nodeName === 'BR') return false;
+  if (isSkippedForText(element) || isHidden(element, styleOf)) return false;
+  if (isBlockBoundary(element, styleOf, 0)) return false;
+  return inlineText(element, styleOf) !== '';
+}
+
 function isSkippable(element: Element): boolean {
-  if (SKIP_TAGS.has(element.tagName)) return true;
+  if (hasSkipTag(element)) return true;
   // 可编辑区域整棵子树都不采：用户没写完的草稿不上传到外部翻译接口（见 isEditable）。
   if (isEditable(element)) return true;
   if (element.hasAttribute('data-jy-translated')) return true;
@@ -7456,6 +7548,113 @@ describe('DomRenderer 仅译文模式', () => {
   });
 });
 
+/**
+ * 放开 BUTTON 采集之后的另一半修复：`<button><span>Products</span><svg>箭头</svg></button>`
+ * 在仅译文模式下只该藏起**承载文字**的节点。svg / img / 纯空白文本节点不承载任何文字，
+ * 必须留在原位保持可见——否则"产品"两个字后面的箭头会跟着原文一起消失，比不翻更糟。
+ */
+describe('DomRenderer 仅译文模式：纯视觉节点不被藏起来', () => {
+  const ARROW_SVG = '<svg id="arrow" viewBox="0 0 12 12"><polyline points="2,4 6,8 10,4"/></svg>';
+
+  it('按钮带箭头：文字进隐藏容器、宿主紧跟容器、svg 留在原位且仍在译文之后', () => {
+    document.body.innerHTML = `<button><span>Products</span>${ARROW_SVG}</button>`;
+    const button = document.querySelector('button') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.element).toBe(button);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '产品');
+
+    const span = originalsOf(button);
+    expect(span.textContent).toBe('Products');
+
+    const arrow = document.getElementById('arrow') as Element;
+    expect(arrow.parentElement, 'svg 不该被搬进隐藏容器').toBe(button);
+    expect(span.contains(arrow)).toBe(false);
+    // 顺序：[隐藏容器, 宿主(译文), svg] —— 图标仍跟在译文后面。
+    expect(arrow.previousElementSibling?.tagName).toBe('JY-TRANSLATION');
+    expect(bodyTextOf(button.querySelector('jy-translation') as Element)).toBe('产品');
+    expect(visibleText(button)).toBe('产品');
+
+    // 失败态把原文放回来：隐藏容器里的原文重新可见，图标本来就没藏。
+    renderer.fail(segment.id, '网络错误');
+    expect(visibleText(button)).toContain('Products');
+    expect(visibleText(button)).toContain('网络错误');
+  });
+
+  it('锚点 + 文字：<a><img src=logo>Docs</a> 的图片留在原位，不被藏起来', () => {
+    document.body.innerHTML = '<a id="l" href="/docs"><img id="logo" src="logo.png" alt="">Docs</a>';
+    const a = document.getElementById('l') as HTMLElement;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segment.element).toBe(a);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '文档');
+
+    const logo = document.getElementById('logo') as Element;
+    expect(logo.parentElement).toBe(a);
+    expect(originalsOf(a).contains(logo)).toBe(false);
+    const order = Array.from(a.childNodes).map((node) =>
+      node.nodeType === Node.TEXT_NODE ? '#text' : (node as Element).nodeName,
+    );
+    expect(order).toEqual(['IMG', 'SPAN', 'JY-TRANSLATION']);
+    expect(visibleText(a)).toBe('文档');
+  });
+
+  it('svg 里有 <text> 也留在原位：判据走 inlineText 口径，不看 textContent', () => {
+    document.body.innerHTML = '<p id="p">Read the <svg id="chart" viewBox="0 0 9 9"><text>chart label</text></svg> first</p>';
+    const p = document.getElementById('p') as HTMLElement;
+    const before = document.body.outerHTML;
+    const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    // 采集端就把 svg 里的文字排除在段文本外（它压根不会被翻译）——藏它反而制造"消失了段里没有的东西"。
+    expect(segment.text).toBe('Read the first');
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    renderer.mount(segment, 'done', '先读图');
+
+    const chart = document.getElementById('chart') as Element;
+    expect(chart.parentElement).toBe(p);
+    for (const span of Array.from(p.querySelectorAll('[data-jy-originals]'))) {
+      expect(span.contains(chart), '带文字的 svg 不该按 textContent 被误判为文字节点').toBe(false);
+    }
+    expect(visibleText(p)).toContain('先读图');
+    expect(visibleText(p)).not.toContain('Read the');
+
+    renderer.restore();
+    // 文字被 svg 断成两组：逐字节还原钉住"每连续一段各自一个容器"的分组搬运。
+    expect(document.body.outerHTML).toBe(before);
+  });
+
+  it('还原逐字节：图标 + 图片 + 空白 + 带文字 svg 的混合结构，还原后无 data-jy-* 残留', () => {
+    document.body.innerHTML = [
+      '<button><img id="logo" src="logo.png" alt=""><span>Products</span> ' + ARROW_SVG + '</button>',
+      '<p>Read the <svg id="chart" viewBox="0 0 9 9"><text>chart label</text></svg> first</p>',
+    ].join('');
+    const before = document.body.outerHTML;
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments).toHaveLength(2);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.order}`);
+
+    // 视觉节点全部留在隐藏容器之外；被搬走的文字全部带着自己的容器。
+    for (const id of ['logo', 'arrow', 'chart']) {
+      const node = document.getElementById(id) as Element;
+      expect(node.closest('[data-jy-originals]'), `#${id} 不该在隐藏容器里`).toBeNull();
+    }
+    const visible = visibleText(document.body);
+    expect(visible).toContain('【译】0');
+    expect(visible).toContain('【译】1');
+    expect(visible).not.toContain('Products');
+    expect(visible).not.toContain('Read the');
+    expect(visible).not.toContain(' first');
+
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+    expect(document.querySelectorAll(JY_MARKERS)).toHaveLength(0);
+  });
+});
+
 describe('DomRenderer 仅译文模式：单一链接为主的段落保留链接指引', () => {
   /** nature.com 作者署名行的形状：整段几乎就是一个链接。 */
   const BYLINE_HTML =
@@ -8028,7 +8227,7 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/content/renderer.ts
 import type { ExtractedSegment } from './extractor';
-import { createStyleLookup, inlineText, isBlockDisplay, isHidden } from './extractor';
+import { carriesVisibleText, createStyleLookup, inlineText, isBlockDisplay, isHidden } from './extractor';
 import { normalizeText } from '../core/lang';
 import type { DisplayMode } from '../shared/settings';
 import { TRANSLATION_CSS, TRANSLATION_INLINE_CSS } from './styles';
@@ -8105,12 +8304,18 @@ interface InsertionTarget {
   before: Node | null;
 }
 
-/** 仅译文模式下被藏起来的一段原文：节点都还在，只是被移进了这个 span。 */
+/**
+ * 仅译文模式下被藏起来的一段原文：节点都还在，只是被移进了隐藏 span。
+ *
+ * 一段可能有**多个**隐藏容器：不承载文字的节点（svg / img / 纯空白文本）留在原位，
+ * 会把搬走的节点断成若干连续段，每段各自一个容器（见 `hideOriginals`）。
+ * 单容器跨着留底节点搬会把文本节点边界搬乱，`restore()` 就回不到逐字节原样了。
+ */
 interface HiddenOriginals {
   element: HTMLElement;
-  span: HTMLElement;
+  spans: HTMLElement[];
   /**
-   * 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都在 span 里。
+   * 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，承载文字的子节点都在 span 里。
    * 元素被框架整体换掉时可以把原文搬进新元素（松散文本段不行——它的父元素是容器，
    * 里面还有别的段落，整块替换会把兄弟段落删掉）。
    */
@@ -8171,7 +8376,7 @@ function escapeAttributeValue(value: string): string {
 export class DomRenderer {
   private readonly hosts = new Map<string, HTMLElement>();
   /**
-   * 仅译文模式下被藏起来的原文 → 装载它的 span。
+   * 仅译文模式下被藏起来的原文 → 装载它们的隐藏 span（一串连续被搬走的节点一个，见 {@link HiddenOriginals}）。
    *
    * 用 `Map` 而不是 `WeakMap`：`restore()` 必须能**遍历**全部条目（双语模式不需要它——
    * 那边的原文一直可见，压根没有要还原的东西）。
@@ -8233,18 +8438,21 @@ export class DomRenderer {
   private setOriginalsHidden(segmentId: string, hidden: boolean): void {
     const record = this.hiddenOriginals.get(segmentId);
     if (record === undefined) return;
-    record.span.style.display = hidden ? 'none' : '';
+    for (const span of record.spans) span.style.display = hidden ? 'none' : '';
   }
 
   /**
    * 仅译文模式：把原文**包起来藏掉**，而不是删掉它。
    *
-   * 三步（见 `hideOriginals`）：
-   * 1. 新建 `<span data-jy-originals data-jy-root style="display:none">`；
-   * 2. 把这一段的原文节点**按原相对顺序**搬进去（是搬移不是克隆：还原就是把它们搬回去）；
-   * 3. 把 span 与 `<jy-translation>` 译文宿主放进元素内部，宿主在 span 之后。
+   * 步骤（见 `hideOriginals`）：
+   * 1. 把这一段的原文节点按「承载文字 / 不承载文字」分成两类：承载文字的**按原相对顺序**
+   *    搬进隐藏 span（是搬移不是克隆：还原就是把它们搬回去），不承载文字的（svg / img /
+   *    图标 / 纯空白）**留在原位、保持可见**；每一串连续被搬走的节点各用一个 span；
+   * 2. span 站在它那一串节点原来的位置上，`<jy-translation>` 译文宿主**紧跟在第一个
+   *    span 之后**——`[文字, svg]` 于是变成 `[隐藏容器, 宿主(译文), svg]`，图标仍在译文后面。
    *
-   * 于是元素里**可见的只有译文**，而原文节点一个都没销毁。为什么是包起来而不是替换掉：
+   * 于是元素里**可见的只有译文和本来就没有文字的视觉节点**，被翻的原文节点一个都没销毁。
+   * 为什么是包起来而不是替换掉：
    * - 行内标记（链接、图片、加粗）全留在 DOM 里，还原时不需要重建任何东西；
    * - 对任何元素都成立——表格单元格、列表项、弹性/网格布局的子元素都只需要往元素**内部**
    *   追加，不必像双语模式那样分情况判断该插到兄弟位置还是内部；
@@ -8276,15 +8484,22 @@ export class DomRenderer {
   /**
    * 把这一段的原文节点搬进隐藏 span，并把 span 与宿主放进元素里。
    *
-   * 两种段落形态的搬法不同，区别在于**这个元素是不是这一段的专属容器**：
-   * - 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都搬走，
-   *   span 落在原来第一个子节点的位置（子节点全搬空后就是"元素末尾"）；
+   * 两种段落形态的节点集合取法不同，区别在于**这个元素是不是这一段的专属容器**：
+   * - 整元素段落（`anchor.kind === 'auto'`）：元素里装的就是这一段，全部子节点都是候选；
    * - 松散文本段（`anchor.kind === 'before'`）：元素是**容器**，里面还有别的块级子元素各自成段
    *   （`<div>Intro<p>Body</p>Outro</div>`），整块搬走会把兄弟段落连同它们自己的译文一起藏掉。
-   *   只搬本段真正贡献了文字的那一串节点（见 `runNodes`），span 留在本段原来的位置。
+   *   候选只取本段真正贡献了文字的那一串节点（见 `runNodes`）。
    *
-   * 宿主两种形态都放在 span 之后：整元素段落是追加到元素末尾（规格就是这三步），
-   * 松散文本段则仍按 `anchor` 给出的落点插入——那正是"紧跟这段原文"的位置。
+   * 两类节点两种命运（判据复用 extractor 的 {@link carriesVisibleText}，不另写一份）：
+   * - 承载文字的（非空白文本节点、`inlineText` 非空的元素）→ 搬进隐藏容器；
+   * - 不承载任何文字的（`<svg>`、`<img>`、图标 `<i>`、纯空白文本节点、隐藏子树）
+   *   → **留在原位、保持可见**。BUTTON 进采集后按钮是「文字 + 箭头 svg」的形态，
+   *   连图标一起藏掉比不翻更难看。
+   *
+   * 每**一串连续**被搬走的节点用各自的一个 span，站在该串原来的位置上——留底节点把文字
+   * 断成两串时（`An image <img> inside`），单容器跨着搬会打乱文本节点边界，逐字节还原
+   * 就回不去原样了。宿主在整元素段落里紧跟**第一个** span；松散文本段仍按 `anchor`
+   * 给出的落点插入——那正是"紧跟这段原文"的位置。
    */
   private hideOriginals(segment: ExtractedSegment, host: HTMLElement): void {
     const element = segment.element;
@@ -8292,18 +8507,38 @@ export class DomRenderer {
     const wholeElement = anchor.kind === 'auto';
     const nodes: Node[] = wholeElement ? Array.from(element.childNodes) : this.runNodes(element, anchor.node);
 
-    if (nodes.length > 0) {
-      const span = this.createOriginals();
-      const first = nodes[0];
-      // span 站在第一个原文节点原来的位置上，还原时把子节点搬回"span 之前"就回到原位。
-      if (first !== undefined && first.parentNode === element) element.insertBefore(span, first);
-      else element.append(span);
-      span.append(...nodes);
-      this.hiddenOriginals.set(segment.id, { element, span, wholeElement });
+    const styleOf = createStyleLookup();
+    const groups: Node[][] = [];
+    for (const node of nodes) {
+      if (!carriesVisibleText(node, styleOf)) continue;
+      const current = groups[groups.length - 1];
+      const last = current?.[current.length - 1];
+      // 「连续」= 文档序上直接相邻；中间夹着留底节点就另起一个容器。
+      if (current !== undefined && last !== undefined && node.previousSibling === last) current.push(node);
+      else groups.push([node]);
     }
 
-    if (wholeElement) element.append(host);
-    else this.insertHostAtAnchor(segment, host);
+    const spans: HTMLElement[] = [];
+    for (const group of groups) {
+      const span = this.createOriginals();
+      const first = group[0] as Node;
+      // span 站在这一串第一个原文节点原来的位置上，还原时把子节点搬回"span 之前"就回到原位。
+      if (first.parentNode === element) element.insertBefore(span, first);
+      else element.append(span);
+      span.append(...group);
+      spans.push(span);
+    }
+    if (spans.length > 0) this.hiddenOriginals.set(segment.id, { element, spans, wholeElement });
+
+    if (!wholeElement) {
+      this.insertHostAtAnchor(segment, host);
+      return;
+    }
+    // 宿主紧跟第一个隐藏容器：`[文字, svg]` → `[隐藏容器, 宿主(译文), svg]`，
+    // 图标留在译文后面，阅读顺序自然。没有容器可跟（一段都没搬）才退回追加。
+    const firstSpan = spans[0];
+    if (firstSpan !== undefined && firstSpan.parentNode === element) element.insertBefore(host, firstSpan.nextSibling);
+    else element.append(host);
   }
 
   /**
@@ -8543,22 +8778,32 @@ export class DomRenderer {
     this.hosts.clear();
     this.linkPlans.clear();
 
-    for (const { element, span, wholeElement } of this.hiddenOriginals.values()) {
+    for (const { element, spans, wholeElement } of this.hiddenOriginals.values()) {
       // 页面在翻译之后重建过节点时，缓存的引用指向的是脱离文档的孤儿：
       // 往孤儿里写原文等于什么也没还原，活着的节点会一直显示译文。
       const live = this.resolveLive(element) ?? element;
-      // span 还挂在这个元素里（含"元素被整体移出文档"——那时它的父节点仍然是它）
-      // 就直接拆；元素被框架**换掉**时按兜底那一条处理。
-      const target = span.parentNode === live ? span : live.querySelector(`[${ORIGINALS_ATTR}]`);
-      if (target instanceof HTMLElement) {
-        this.unwrapOriginals(target);
-      } else if (wholeElement && live !== element && span.childNodes.length > 0) {
-        // 元素被框架整体换掉了：原文并没有丢——它就在 span 里。整元素段落的 span 装的就是
-        // 这个元素的全部内容，所以可以整块搬进活着的那一个（与双语模式把快照写回活节点等价）。
-        // 松散文本段不能这么干：它的父元素是容器，整块替换会把兄弟段落删掉。那种情况下
-        // 只能清掉标记（原文留在已脱离文档的 span 里，不再可恢复）。
-        live.replaceChildren(...Array.from(span.childNodes));
-        span.remove();
+      // 还挂在 live 里的容器（含"元素被整体移出文档"——那时它们的父节点仍然是它）
+      // 直接逐个拆；元素被框架**换掉**时按下面两条兜底。
+      let unwrapped = false;
+      for (const span of spans) {
+        if (span.parentNode === live) {
+          this.unwrapOriginals(span);
+          unwrapped = true;
+        }
+      }
+      if (!unwrapped) {
+        const stale = live.querySelector(`[${ORIGINALS_ATTR}]`);
+        if (stale instanceof HTMLElement) {
+          this.unwrapOriginals(stale);
+        } else if (wholeElement && live !== element) {
+          // 元素被框架整体换掉了：原文并没有丢——它就在容器里。整元素段落的容器装的就是
+          // 这个元素承载文字的全部内容，所以可以整块搬进活着的那一个（与双语模式把快照写回
+          // 活节点等价）。松散文本段不能这么干：它的父元素是容器，整块替换会把兄弟段落删掉。
+          // 那种情况下只能清掉标记（原文留在已脱离文档的 span 里，不再可恢复）。
+          const contents = spans.flatMap((span) => Array.from(span.childNodes));
+          if (contents.length > 0) live.replaceChildren(...contents);
+          for (const span of spans) span.remove();
+        }
       }
       element.removeAttribute('data-jy-translated');
       if (live !== element) live.removeAttribute('data-jy-translated');
