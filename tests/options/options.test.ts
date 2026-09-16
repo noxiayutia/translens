@@ -237,6 +237,26 @@ describe('设置页：初始化与列表渲染', () => {
     expect(key.value).toBe('sk-typed');
   });
 
+  it('展开已存在的档案不重放服务商模板：表单回填的是存过的地址与模型名', async () => {
+    // 名字里带「DeepSeek」、地址却是指向自建代理的档案。模板只该挂在下拉的 change 上：
+    // 谁要是把 applyProviderTemplate() 挪进展开/渲染路径，用户手改的地址与模型名就会被
+    // 悄悄覆盖回模板值——这里钉住"展开看到的就是存过的"。
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [
+        profileSeed({ label: '我的 DeepSeek', baseUrl: 'https://my-proxy.example/v1', model: 'deepseek-chat-selfhost' }),
+      ],
+    });
+    await loadOptions();
+
+    const editor = expand('p-a');
+    expect(fieldOf(editor, '.profile-base-url').value).toBe('https://my-proxy.example/v1');
+    expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat-selfhost');
+    // 展开不是"选模板"：下拉必须停在 custom，不许被按名字匹配翻成 deepseek。
+    const provider = editor.querySelector('.profile-provider') as HTMLSelectElement;
+    expect(provider.value).toBe('custom');
+  });
+
   it('v2 老数据打开设置页就能用：engineConfig 已折成一行档案（id 是迁移的 legacy）', async () => {
     await chromeStub.storage.local.set({
       [SETTINGS_KEY]: {
@@ -426,6 +446,37 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     await waitFor(() => (engineStatus().textContent ?? '').includes('请填写档案名字'));
   });
 
+  it('本机回环 http 在设置页可保存（Ollama），非回环的 http 仍被当场拒绝——正反成对', async () => {
+    await seedSettings({ engineId: 'google' });
+    await loadOptions();
+    pick<HTMLButtonElement>('add-profile').click();
+    const editor = editorOf('__new__');
+
+    // 反面先行：公网 http:// 必须当场被拒。没有这半边，"一律放行 http"的实现也能让正面通过。
+    fieldOf(editor, '.profile-label').value = '坏地址';
+    fieldOf(editor, '.profile-base-url').value = 'http://example.com/v1';
+    fieldOf(editor, '.profile-model-name').value = 'm';
+    actionButton(editor, 'save-profile').click();
+    await waitFor(() => engineStatus().dataset.kind === 'err');
+    expect(engineStatus().textContent).toContain('必须用 https://');
+    expect(await storedProfiles()).toEqual([]);
+    expect(chromeStub.permissions.requests).toEqual([]);
+
+    // 正面半边：判据允许本机回环走 http（Ollama 就是 http://localhost:11434/v1）。
+    // UI 层哪天误拒它，用户就没法在本机配模型——这里钉住"存得下去、落盘原样、不报错"。
+    fieldOf(editor, '.profile-label').value = 'Ollama 本机';
+    fieldOf(editor, '.profile-base-url').value = 'http://localhost:11434/v1';
+    fieldOf(editor, '.profile-model-name').value = 'qwen2.5';
+    actionButton(editor, 'save-profile').click();
+    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    expect(engineStatus().textContent).not.toContain('必须用 https://');
+    const [stored] = await storedProfiles();
+    expect(stored.baseUrl).toBe('http://localhost:11434/v1');
+    expect(stored.model).toBe('qwen2.5');
+    // 授权也按回环 origin 申请，恰好一次。
+    expect(chromeStub.permissions.requests).toEqual([['http://localhost:11434/*']]);
+  });
+
   it('保存档案按**该档案自己的 origin** 申请宿主权限；已授权过就不再弹框', async () => {
     await seedSettings();
     await loadOptions();
@@ -448,6 +499,50 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     actionButton(editor, 'save-profile').click();
     await waitFor(() => (engineStatus().textContent ?? '').includes('已保存档案'));
     expect(chromeStub.permissions.requests).toEqual([[CUSTOM_ORIGIN_PATTERN]]);
+  });
+
+  it('两个档案在列且 engineId 指向第一个：保存 p-b 只申请 b2 的 origin，一次都不碰 a1', async () => {
+    // profiles[0] 与正在编辑的那一行**故意不是同一个**——否则"永远申请 profiles[0] 的
+    // 地址（带兜底）"这类实现能蒙混过关：用户存档案 B，授权却落在档案 A 头上，
+    // A 莫名多了权限、B 仍没授权，切到 B 翻译被浏览器拦下且错误伪装成网络问题。
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [
+        profileSeed({ id: 'p-a', label: '档案A', baseUrl: 'https://a1.example/v1', model: 'model-a', apiKey: 'sk-a' }),
+        profileSeed({ id: 'p-b', label: '档案B', baseUrl: 'https://b2.example/v1', model: 'model-b', apiKey: 'sk-b' }),
+      ],
+    });
+    await loadOptions();
+
+    const editor = expand('p-b');
+    fieldOf(editor, '.profile-model-name').value = 'model-b-edited';
+    actionButton(editor, 'save-profile').click();
+    await waitFor(async () => ((await storedProfiles())[1]?.model === 'model-b-edited'));
+
+    expect(engineStatus().dataset.kind).toBe('ok');
+    // 恰好一次、参数是 b2——不是 a1 的 origin，也不是两个都申请。
+    expect(chromeStub.permissions.requests).toEqual([['https://b2.example/*']]);
+  });
+
+  it('反向配对：保存在用的 p-a 只申请 a1 的 origin（只写上一条挡不住写反的 bug）', async () => {
+    // 与上一条同形但编辑的是 profiles[0]。两条合起来才把"申请的对象 = 被编辑档案自己的
+    // origin"钉死：任何"固定申请第一个 / 固定申请最后一个 / 两个都申请"的实现都至少红一条。
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [
+        profileSeed({ id: 'p-a', label: '档案A', baseUrl: 'https://a1.example/v1', model: 'model-a', apiKey: 'sk-a' }),
+        profileSeed({ id: 'p-b', label: '档案B', baseUrl: 'https://b2.example/v1', model: 'model-b', apiKey: 'sk-b' }),
+      ],
+    });
+    await loadOptions();
+
+    const editor = expand('p-a');
+    fieldOf(editor, '.profile-model-name').value = 'model-a-edited';
+    actionButton(editor, 'save-profile').click();
+    await waitFor(async () => ((await storedProfiles())[0]?.model === 'model-a-edited'));
+
+    expect(engineStatus().dataset.kind).toBe('ok');
+    expect(chromeStub.permissions.requests).toEqual([['https://a1.example/*']]);
   });
 
   it('用户拒绝授权：档案与 Key 照常落盘，并如实说会被浏览器拦下', async () => {
@@ -618,6 +713,24 @@ describe('设置页：语言与显示（独立于档案的保存）', () => {
     expect(stored.displayMode).toBe('bilingual');
     expect(stored.engineId).toBe('p-a');
     expect((stored.profiles as Array<Record<string, unknown>>)[0].apiKey).toBe('sk-keep');
+  });
+
+  it('免费引擎下保存设置：一个宿主权限申请都不发（google 的地址已在 host_permissions 里）', async () => {
+    // 档案化之后，"不申请权限"这条断言从保存路径上消失了：没有它，
+    // "无条件给当前档案地址申请权限"这类回归不会被任何人发现——免费引擎明明
+    // 不需要授权，却每次都弹一个用户看不懂的框。这里钉住：engineId=google 时
+    // 保存语言与显示，permissions.request 一次都不许被调用。
+    await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
+    await loadOptions();
+
+    pick<HTMLSelectElement>('target-lang').value = 'ja';
+    pick<HTMLButtonElement>('save').click();
+    await waitFor(() => engineStatus().dataset.kind === 'ok');
+
+    expect((await storedSettings()).targetLang).toBe('ja');
+    expect(chromeStub.permissions.requests).toEqual([]);
+    // 也不许有任何"顺手授予"：一次授权都不该发生。
+    expect([...chromeStub.permissions.grantedOrigins]).toEqual([]);
   });
 
   it('期间弹窗改过的其它字段不会被旧快照抹掉', async () => {
