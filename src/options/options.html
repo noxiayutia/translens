@@ -10,38 +10,20 @@
       <h1 class="title">浸译 设置</h1>
 
       <section class="card">
-        <h2>翻译引擎</h2>
-        <label class="field">
-          <span>引擎</span>
-          <select id="engine"></select>
-        </label>
+        <h2>翻译引擎 · 服务商档案</h2>
         <p id="engine-hint" class="hint"></p>
-
-        <label class="field">
-          <span>服务商</span>
-          <select id="provider"></select>
-        </label>
-        <p class="hint">选定服务商会自动填好下面的接口地址与模型名（防手滑填错）；填完仍可手改，改过就按改的算。</p>
-        <label class="field">
-          <span>接口地址</span>
-          <input id="base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1" />
-        </label>
-        <label class="field">
-          <span>API Key</span>
-          <span class="key-row">
-            <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
-            <button id="toggle-key" class="ghost" type="button" aria-pressed="false" title="显示 API Key">显示</button>
-          </span>
-        </label>
-        <label class="field">
-          <span>模型名</span>
-          <input id="model" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-4o-mini" />
-        </label>
-
+        <!-- 档案列表由 options.ts 渲染：每行「名字 + 接口地址 + 模型名」，点行展开编辑。
+             展开编辑框里 API Key **永远从空开始**（留空保存 = 保留原 Key）——
+             密钥不回填、不渲染进 DOM。 -->
+        <div id="profiles"></div>
         <div class="actions">
-          <button id="save" class="primary" type="button">保存</button>
-          <button id="test-connection" class="ghost" type="button">测试连接</button>
+          <button id="add-profile" class="ghost" type="button">新增档案</button>
         </div>
+        <p class="hint">
+          一个档案 = 一份接口地址 + 模型名 + API Key（走 OpenAI 兼容协议，可接 OpenAI、DeepSeek、
+          硅基流动、Ollama 等）。配好几个后，在<strong>弹窗</strong>的「翻译引擎」下拉里按名字直接切换。
+          每个档案的访问授权在点「保存档案」时按它自己的地址申请（Chrome 要求用户手势）。
+        </p>
         <p id="engine-status" class="status" role="status" aria-live="polite"></p>
       </section>
 
@@ -57,8 +39,11 @@
         </label>
         <p id="target-hint" class="hint">
           「仅译文」只显示译文（原文被隐藏，段落里的链接点不了，按 Alt+T 可还原）；「双语对照」在每段原文下方插入译文。
-          改完记得点上面的「保存」；已经翻译过的页面要重新翻译才会换过来。
+          改完点下面的「保存语言与显示」；已经翻译过的页面要重新翻译才会换过来。
         </p>
+        <div class="actions">
+          <button id="save" class="primary" type="button">保存语言与显示</button>
+        </div>
       </section>
 
       <section class="card">
@@ -75,19 +60,20 @@
         <h2>隐私</h2>
         <ul class="privacy">
           <li>
-            <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：不上传、不同步、
-            不写入日志。发给内容脚本的设置是<strong>类型级投影</strong>——投影结果里没有这个字段，
-            下游代码拿不到它；内容脚本又运行在浏览器的 isolated world，页面脚本读不到它的内存。
-            （如实说明：这是"字段隔离 + isolated world"，不是内存级隔离——读取设置的瞬间，
-            密钥仍会随整份设置经过扩展自己的 isolated world 堆；彻底的结构性隔离要把密钥拆成
-            独立存储键，属后续工作。）
+            每个档案的 <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：不上传、不同步、
+            不写入日志。档案编辑框的 Key 输入框<strong>永远从空开始</strong>（留空保存即保留原 Key），
+            密钥不会渲染进本页 DOM。发给内容脚本的设置是<strong>类型级投影</strong>——投影结果里
+            每个档案都没有这个字段，下游代码拿不到它；内容脚本又运行在浏览器的 isolated world，
+            页面脚本读不到它的内存。（如实说明：这是"字段隔离 + isolated world"，不是内存级隔离——
+            读取设置的瞬间，密钥仍会随整份设置经过扩展自己的 isolated world 堆；彻底的结构性隔离
+            要把密钥拆成独立存储键，属后续工作。）
           </li>
           <li>
             <strong>除翻译请求本身外，不发起任何网络请求</strong>：不采集浏览数据，不做任何统计上报。
           </li>
           <li>
-            自定义接口地址的访问权限<strong>只在你点「保存」时</strong>按需申请，授权范围限定为
-            你填的那个域名；免费引擎不需要额外授权。
+            每个档案接口地址的访问权限<strong>只在你点该档案的「保存档案」时</strong>按需申请，
+            授权范围限定为那个地址的域名；免费引擎不需要额外授权。
           </li>
           <li>
             只有网页里<strong>可见</strong>的文本才会被送去翻译；不可见区域与

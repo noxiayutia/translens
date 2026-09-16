@@ -1,17 +1,24 @@
 // src/options/options.ts
 //
-// 设置页：界面是原生 DOM（不引框架），逻辑只有四件事——引擎配置、目标语言、显示模式、清缓存。
+// 设置页：界面是原生 DOM（不引框架），逻辑是四件事——服务商档案管理、目标语言与显示模式、
+// 清缓存、隐私说明。
 //
-// 关于密钥：设置页是**扩展自身的受信页面**（`chrome-extension://` 同源），所以这里用
-// `loadSettings()` 读完整设置是正当的（要显示用户自己填的 API Key）；内容脚本那条路才必须
-// 走 `loadUiSettings()` 投影，由 `tests/content/privacy-guard.test.ts` 守着。
+// 档案管理的形状（v3）：设置里存 `profiles: EngineProfile[]`，`engineId` 是 `google` 或某个
+// 档案的 id；「档案 → 引擎 + 配置」的解析只有一处（`shared/settings.ts` 的 `resolveEngine`），
+// 本页的测试连接也走它——表单里的未保存值合成一份临时档案喂给同一个函数，不再各处各写 if。
+//
+// 关于密钥：设置页是**扩展自身的受信页面**（`chrome-extension://` 同源），用 `loadSettings()`
+// 读完整设置是正当的（要保留用户填的 Key）。但**列表渲染天然比单字段更容易把值带出去**，
+// 所以这里有一条硬规矩：档案编辑框的 API Key 输入框**永远从空开始、不回填**，
+// 留空保存 = 保留原 Key；密钥只进 `<input>.value` 属性的编辑会话，绝不写进行的任何文本。
+// 内容脚本那条路才必须走 `loadUiSettings()` 投影（逐项剥 Key），由
+// `tests/content/privacy-guard.test.ts` 与列表投影断言共同守着。
 import { TranslationCache } from '../core/cache';
 import { LANGUAGES } from '../core/lang';
-import { ENGINES, getEngine } from '../engines/registry';
-import { toEngineError, type EngineConfig } from '../engines/types';
+import { DEFAULT_ENGINE_ID, getEngine } from '../engines/registry';
+import { toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
 import {
-  canQueryHostPermission,
   hasHostPermission,
   originPattern,
   requestHostPermission,
@@ -19,30 +26,30 @@ import {
 import {
   DISPLAY_MODES,
   PROVIDER_PRESETS,
+  createProfileId,
   isAllowedBaseUrl,
   loadSettings,
+  resolveEngine,
   saveSettings,
   type DisplayMode,
-  type ProviderPresetId,
+  type EngineProfile,
   type Settings,
 } from '../shared/settings';
 
-const engineSelect = document.getElementById('engine') as HTMLSelectElement;
+const profilesList = document.getElementById('profiles') as HTMLElement;
+const addProfileButton = document.getElementById('add-profile') as HTMLButtonElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
-const providerSelect = document.getElementById('provider') as HTMLSelectElement;
-const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
-const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
-const toggleKeyButton = document.getElementById('toggle-key') as HTMLButtonElement;
-const modelInput = document.getElementById('model') as HTMLInputElement;
-const saveButton = document.getElementById('save') as HTMLButtonElement;
-const testButton = document.getElementById('test-connection') as HTMLButtonElement;
 const engineStatus = document.getElementById('engine-status') as HTMLParagraphElement;
 
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
+const saveDisplayButton = document.getElementById('save') as HTMLButtonElement;
 
 const clearCacheButton = document.getElementById('clear-cache') as HTMLButtonElement;
 const cacheStatus = document.getElementById('cache-status') as HTMLParagraphElement;
+
+/** 新增档案的草稿在 `expandedId` 里的哨兵值；它不是合法 id（生成函数带 `p-` 前缀），不会撞车。 */
+const NEW_DRAFT_ID = '__new__';
 
 /** 测试连接发出去的文本：够短（一次请求几乎不花额度），又能验证整条链路。 */
 const TEST_TEXT = 'hello';
@@ -55,6 +62,9 @@ const TEST_TIMEOUT_MS = 20_000;
 
 /** 读到存储里的设置之前为 null：这期间任何按钮都不该按一份空设置去写存储。 */
 let settings: Settings | null = null;
+
+/** 当前展开编辑的档案 id（或 NEW_DRAFT_ID）；null = 全部收起。一次只展开一个。 */
+let expandedId: string | null = null;
 
 type StatusKind = 'ok' | 'err' | 'pending';
 
@@ -83,61 +93,58 @@ function fillSelect(
   }
 }
 
-interface EngineFormValues {
-  engineId: string;
-  providerPreset: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  targetLang: string;
-  displayMode: DisplayMode;
+function element<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
-/** 表单当前的原始值。保存与测试连接共用它，保证两条路走的是同一份输入。 */
-function readForm(): EngineFormValues {
+/** 档案编辑表单的原始值。保存与测试连接共用它，保证两条路走的是同一份输入。 */
+interface ProfileFormValues {
+  label: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}
+
+function requireWithin<T extends Element>(root: Element, selector: string): T {
+  const found = root.querySelector(selector);
+  if (found === null) throw new Error(`档案编辑区缺控件：${selector}`);
+  return found as T;
+}
+
+/** 读展开区里的表单值。地址/模型名/名字去掉首尾空白；Key 原样（判"填没填"时才 trim）。 */
+function readEditor(editor: Element): ProfileFormValues {
   return {
-    engineId: engineSelect.value,
-    providerPreset: providerSelect.value,
-    baseUrl: baseUrlInput.value.trim(),
-    apiKey: apiKeyInput.value,
-    model: modelInput.value.trim(),
-    targetLang: targetLangSelect.value,
-    displayMode: displayModeSelect.value as DisplayMode,
+    label: (requireWithin<HTMLInputElement>(editor, '.profile-label')).value.trim(),
+    baseUrl: (requireWithin<HTMLInputElement>(editor, '.profile-base-url')).value.trim(),
+    model: (requireWithin<HTMLInputElement>(editor, '.profile-model-name')).value.trim(),
+    apiKey: requireWithin<HTMLInputElement>(editor, '.profile-api-key').value,
   };
 }
 
-/**
- * 选中服务商预设 → 把接口地址与模型名**填进表单**（用户还没点保存，改回来零成本）。
- *
- * 只做两件事，刻意不多做：
- * - 不碰 API Key（那是用户自己的凭据，跟"哪家接口"无关）；
- * - `custom` 不预填任何东西（保持现状——老用户存了什么就还是什么）。
- */
-function applyProviderPreset(): void {
-  const preset = PROVIDER_PRESETS.find((entry) => entry.id === providerSelect.value);
-  if (preset === undefined || preset.baseUrl === undefined || preset.model === undefined) return;
-  baseUrlInput.value = preset.baseUrl;
-  modelInput.value = preset.model;
+function rowById(id: string): HTMLElement | null {
+  for (const child of Array.from(profilesList.children)) {
+    if (child instanceof HTMLElement && child.dataset.profileId === id) return child;
+  }
+  return null;
 }
 
 /**
- * 用户手改接口地址/模型名 → 这一轮就按"自定义"算：下拉翻回 custom，
- * 而不是留着一个已经说谎的「OpenAI」。预设逻辑只挂在**下拉自己的 change** 上，
- * 永远不会反过来覆盖用户敲进去的值。
- */
-function markProviderCustom(): void {
-  providerSelect.value = 'custom';
-}
-
-/**
- * 校验接口地址。判据与 `shared/settings.ts` 的反序列化边界**完全同一份**
+ * 校验一个档案的表单值。地址判据与 `shared/settings.ts` 的反序列化边界**完全同一份**
  * （`isAllowedBaseUrl`）：两边各写一套时，设置页会一边说"保存成功"、一边被存储层
- * 悄悄退回默认地址，用户永远查不出为什么没生效。
+ * 悄悄改写，用户永远查不出为什么没生效。
  *
- * 免费引擎不看这两个字段，所以它填什么都不拦（用户可能刚切过去，值还是别人的）。
+ * 档案不存在"免费引擎不看这两个字段"的豁免——档案的意义就是自定义接口，
+ * 地址与名字是必填项。
  */
-function validateBaseUrl(values: EngineFormValues): string | null {
-  if (!getEngine(values.engineId).needsKey) return null;
+function validateProfileForm(values: ProfileFormValues): string | null {
+  if (values.label.length === 0) return '请填写档案名字';
   if (values.baseUrl.length === 0) return '请填写接口地址（Base URL）';
   if (originPattern(values.baseUrl) === undefined) {
     return `接口地址不是合法的 URL：${values.baseUrl}（示例：https://api.openai.com/v1）`;
@@ -148,34 +155,27 @@ function validateBaseUrl(values: EngineFormValues): string | null {
   return null;
 }
 
-type PermissionState = 'granted' | 'denied' | 'not-needed';
-
 interface HostPermissionResult {
-  state: PermissionState;
+  state: 'granted' | 'denied';
   /** 权限 API 自己抛错时的原因（不是手势、manifest 没声明该模式……），如实带给用户。 */
   detail?: string;
 }
 
 /**
- * 确认用户填的自定义端点已被授权。
+ * 确认一个档案的端点已被授权。
  *
- * **必须在用户手势的调用栈里调用**：Chrome 只在手势中弹授权框，而「保存」与「测试连接」
+ * **必须在用户手势的调用栈里调用**：Chrome 只在手势中弹授权框，而「保存档案」「测试连接」
  * 都是用户点下来的。已经授权过的不再弹框（先问 `contains`）。
  *
  * 授权失败不是"保存失败"：用户可能只是这次不想授权，那种情况下 Key 与地址照常保存，
- * 由调用方如实告诉他后果（见 `handleSave`）。
+ * 由调用方如实告诉他后果（见 `handleSaveProfile`）。
  */
-async function ensureHostPermission(values: EngineFormValues): Promise<HostPermissionResult> {
-  if (!getEngine(values.engineId).needsKey) return { state: 'not-needed' };
-
-  const pattern = originPattern(values.baseUrl);
-  if (pattern === undefined) return { state: 'denied', detail: `接口地址不是合法的 URL：${values.baseUrl}` };
+async function ensureHostPermission(baseUrl: string): Promise<HostPermissionResult> {
+  const pattern = originPattern(baseUrl);
+  if (pattern === undefined) return { state: 'denied', detail: `接口地址不是合法的 URL：${baseUrl}` };
 
   try {
     if (await hasHostPermission(pattern)) return { state: 'granted' };
-    if (!canQueryHostPermission()) {
-      return { state: 'denied', detail: '当前环境没有权限 API，无法申请访问授权' };
-    }
     const granted = await requestHostPermission(pattern);
     return granted ? { state: 'granted' } : { state: 'denied' };
   } catch (raw) {
@@ -187,31 +187,186 @@ async function ensureHostPermission(values: EngineFormValues): Promise<HostPermi
 /** 未授权时给用户看的后果说明：说清"会怎样"和"怎么办"。 */
 function deniedHint(result: HostPermissionResult): string {
   const reason = result.detail === undefined ? '' : `（${result.detail}）`;
-  return `未授权访问该地址，翻译请求会被浏览器拦下${reason}。需要授权时再点一次「保存」并在弹窗里选「允许」。`;
+  return `未授权访问该地址，翻译请求会被浏览器拦下${reason}。需要授权时再点一次「保存档案」并在弹窗里选「允许」。`;
 }
 
-async function handleSave(): Promise<void> {
-  if (settings === null) {
-    setStatus(engineStatus, 'err', '设置还没读出来，请稍候重试');
+/* ------------------------------------------------------------------ 渲染 */
+
+function buildEditor(id: string, profile: EngineProfile | undefined): HTMLElement {
+  const editor = element('div', 'profile-editor');
+
+  const labelField = element('label', 'field');
+  labelField.append(element('span', '', '名字'), Object.assign(document.createElement('input'), {
+    className: 'profile-label',
+    type: 'text',
+    value: profile?.label ?? '',
+    placeholder: '例如：我的 DeepSeek',
+    autocomplete: 'off',
+  }));
+  editor.append(labelField);
+
+  const providerField = element('label', 'field');
+  const providerSelect = document.createElement('select');
+  providerSelect.className = 'profile-provider';
+  fillSelect(
+    providerSelect,
+    PROVIDER_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
+    'custom',
+  );
+  providerField.append(element('span', '', '服务商模板'), providerSelect);
+  editor.append(providerField);
+
+  const baseUrlField = element('label', 'field');
+  baseUrlField.append(element('span', '', '接口地址'), Object.assign(document.createElement('input'), {
+    className: 'profile-base-url',
+    type: 'text',
+    // 档案存过什么就回填什么（地址不是凭据）；新草稿留空。
+    value: profile?.baseUrl ?? '',
+    placeholder: 'https://api.openai.com/v1',
+    autocomplete: 'off',
+    spellcheck: false,
+  }));
+  editor.append(baseUrlField);
+
+  const modelField = element('label', 'field');
+  modelField.append(element('span', '', '模型名'), Object.assign(document.createElement('input'), {
+    className: 'profile-model-name',
+    type: 'text',
+    value: profile?.model ?? '',
+    placeholder: 'gpt-4o-mini',
+    autocomplete: 'off',
+    spellcheck: false,
+  }));
+  editor.append(modelField);
+
+  const keyField = element('label', 'field');
+  keyField.append(element('span', '', 'API Key'));
+  const keyRow = element('span', 'key-row');
+  keyRow.append(
+    Object.assign(document.createElement('input'), {
+      className: 'profile-api-key',
+      type: 'password',
+      // 隐私硬规矩：value 恒为空。存储里的 Key 不回填、不进 DOM；留空保存 = 保留原 Key。
+      value: '',
+      placeholder: profile === undefined ? 'sk-…' : '不修改则保留当前 Key',
+      autocomplete: 'off',
+      spellcheck: false,
+    }),
+    Object.assign(document.createElement('button'), {
+      className: 'ghost profile-toggle-key',
+      type: 'button',
+      textContent: '显示',
+    }),
+  );
+  keyField.append(keyRow);
+  editor.append(keyField);
+
+  const actions = element('div', 'actions');
+  const saveButton = element('button', 'primary', '保存档案');
+  saveButton.type = 'button';
+  saveButton.dataset.action = 'save-profile';
+  const testButton = element('button', 'ghost', '测试连接');
+  testButton.type = 'button';
+  testButton.dataset.action = 'test-profile';
+  actions.append(saveButton, testButton);
+  if (profile !== undefined) {
+    const deleteButton = element('button', 'ghost profile-delete', '删除档案');
+    deleteButton.type = 'button';
+    deleteButton.dataset.action = 'delete-profile';
+    actions.append(deleteButton);
+  }
+  editor.append(actions);
+  return editor;
+}
+
+function buildProfileRow(id: string): HTMLElement {
+  const snapshot = settings as Settings;
+  const isNew = id === NEW_DRAFT_ID;
+  const profile = snapshot.profiles.find((item) => item.id === id);
+  if (!isNew && profile === undefined) {
+    // 展开目标已被别处删除时 renderProfiles 会先收起草稿之外的 id；这条是防御性兜底：
+    // 没有可渲染对象的行就是空壳，不抛错。
+    return element('div', 'profile-row');
+  }
+
+  const expanded = expandedId === id;
+  const row = element('div', 'profile-row');
+  row.dataset.profileId = id;
+
+  const summary = document.createElement('button');
+  summary.type = 'button';
+  summary.className = 'profile-summary';
+  summary.dataset.action = 'toggle';
+  summary.setAttribute('aria-expanded', String(expanded));
+  const shownBaseUrl = profile !== null && profile !== undefined && profile.baseUrl.length > 0 ? profile.baseUrl : '未填接口地址';
+  const shownModel = profile !== null && profile !== undefined && profile.model.length > 0 ? profile.model : '未填模型名';
+  summary.append(
+    element('span', 'profile-name', isNew ? '新档案（未保存）' : profile?.label ?? ''),
+    element('span', 'profile-base', isNew ? '未填接口地址' : shownBaseUrl),
+    element('span', 'profile-model', isNew ? '未填模型名' : shownModel),
+  );
+  if (!isNew && snapshot.engineId === id) {
+    summary.append(element('span', 'profile-badge', '使用中'));
+  }
+  row.append(summary);
+  if (expanded) {
+    row.append(buildEditor(id, isNew ? undefined : profile));
+  }
+  return row;
+}
+
+function renderProfiles(): void {
+  if (settings === null) return;
+  // 展开目标已不存在（比如刚删掉它）：收起，别让下一次渲染挂在一个幽灵 id 上。
+  if (expandedId !== null && expandedId !== NEW_DRAFT_ID && !settings.profiles.some((p) => p.id === expandedId)) {
+    expandedId = null;
+  }
+  profilesList.textContent = '';
+  for (const profile of settings.profiles) {
+    profilesList.append(buildProfileRow(profile.id));
+  }
+  if (expandedId === NEW_DRAFT_ID) {
+    profilesList.append(buildProfileRow(NEW_DRAFT_ID));
+  }
+}
+
+/** 档案区顶部的说明：当前在用哪一档（选择器的真相在弹窗，这里如实指路）。 */
+function renderEngineHint(): void {
+  if (settings === null) return;
+  const { engine } = resolveEngine(settings);
+  const selected = settings.profiles.find((profile) => profile.id === settings?.engineId);
+  if (engine.needsKey && selected !== undefined) {
+    engineHint.textContent = `当前在用档案「${selected.label}」。点下面的档案行展开编辑；在弹窗的「翻译引擎」里按名字切换。`;
     return;
   }
-  const values = readForm();
-  const invalid = validateBaseUrl(values);
+  engineHint.textContent = '当前在用免费接口（零配置）。档案配好后，在弹窗的「翻译引擎」下拉里按名字选中才会生效。';
+}
+
+/* ------------------------------------------------------------------ 行为 */
+
+/**
+ * 保存（或新建）一个档案。
+ *
+ * 写之前**重新读一次**存储，只覆盖档案列表这一个关注点：`saveSettings` 是整份覆盖，
+ * 弹窗也可能在别的窗口改目标语言/引擎，拿页面快照整份回写会把那些改动静默抹掉
+ * （`shared/settings.ts` 的 `saveSettings` 注释点名的坑，档案列表下更容易踩中）。
+ */
+async function handleSaveProfile(id: string): Promise<void> {
+  const editor = rowById(id)?.querySelector('.profile-editor');
+  if (editor === null || editor === undefined) {
+    setStatus(engineStatus, 'err', '档案编辑区不在页面上，请重新展开该档案');
+    return;
+  }
+  const values = readEditor(editor);
+  const invalid = validateProfileForm(values);
   if (invalid !== null) {
     setStatus(engineStatus, 'err', invalid);
     return;
   }
 
-  // 用户手势里申请自定义端点的访问权限（见 ensureHostPermission）。
-  const permission = await ensureHostPermission(values);
+  // 用户手势里申请这个档案自己的 origin（Chrome 要求手势，见 host-permission）。
+  const permission = await ensureHostPermission(values.baseUrl);
 
-  /**
-   * 写之前**重新读一次**存储，只覆盖本页管的字段。
-   *
-   * `saveSettings` 是整份覆盖，而弹窗也能改目标语言与引擎：设置页开着的时候用户在弹窗里
-   * 改了语言，这里再拿页面打开时的旧快照整份回写，就会把那次改动静默抹掉
-   * （`shared/settings.ts` 的 `saveSettings` 注释里点名的就是这个坑）。
-   */
   let latest: Settings;
   try {
     latest = await loadSettings();
@@ -220,64 +375,90 @@ async function handleSave(): Promise<void> {
     return;
   }
 
-  const next: Settings = {
-    ...latest,
-    engineId: values.engineId,
-    engineConfig: { apiKey: values.apiKey, baseUrl: values.baseUrl, model: values.model },
-    // 认不出的值（含被绕过 UI 塞进来的脏字符串）由 `mergeSettings` 在落盘前回落成 custom。
-    providerPreset: values.providerPreset as ProviderPresetId,
-    targetLang: values.targetLang,
-    displayMode: values.displayMode,
-  };
+  const isNew = id === NEW_DRAFT_ID;
+  let savedId: string;
+  let profiles: EngineProfile[];
+  if (isNew) {
+    savedId = createProfileId();
+    profiles = [...latest.profiles, { id: savedId, ...values }];
+  } else {
+    savedId = id;
+    const existing = latest.profiles.find((profile) => profile.id === id);
+    // Key 留空 = 保留**存储里当前**的那份（不是页面打开时的快照——整份覆盖的老坑同一个）。
+    const apiKey = values.apiKey.trim().length > 0 ? values.apiKey : existing?.apiKey ?? '';
+    const nextProfile: EngineProfile = { id: savedId, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey };
+    profiles = existing === undefined ? [...latest.profiles, nextProfile] : latest.profiles.map((p) => (p.id === id ? nextProfile : p));
+  }
+  // engineId 原样保留（来自 latest）：**选择档案是弹窗的职责**，本页保存档案从不偷改它——
+  // 只有删除当前档案时才被迫回落（见 handleDeleteProfile），并如实说。
+  const next: Settings = { ...latest, profiles };
 
   try {
     await saveSettings(next);
-    settings = next;
   } catch (raw) {
     setStatus(engineStatus, 'err', `设置未能保存：${describe(raw)}`);
     return;
   }
 
+  settings = next;
+  expandedId = savedId;
+  renderProfiles();
   renderEngineHint();
+
   if (permission.state === 'denied') {
     // Key 与地址都已经存下来了：用户可能只是暂时不想授权。
-    setStatus(engineStatus, 'err', `已保存。${deniedHint(permission)}`);
+    setStatus(engineStatus, 'err', `已保存档案「${values.label}」。${deniedHint(permission)}`);
     return;
   }
-  const engine = getEngine(values.engineId);
-  const where = engine.needsKey ? `，并已授权访问 ${originPattern(values.baseUrl) ?? values.baseUrl}` : '';
-  setStatus(engineStatus, 'ok', `已保存${where}。`);
+  const where = `，并已授权访问 ${originPattern(values.baseUrl) ?? values.baseUrl}`;
+  setStatus(engineStatus, 'ok', `已保存档案「${values.label}」${where}。在弹窗的「翻译引擎」里选它即可使用。`);
 }
 
 /**
- * 测试连接：**真的发一次翻译请求**，走的是生产引擎代码本身
- * （`getEngine(...).translate`），不另写一套请求逻辑——那样测的就不是用户实际会走的那条路了。
+ * 测试连接：**真的发一次翻译请求**，走的是生产引擎代码本身。测的是**这一行正在编辑的
+ * 档案**（表单当前值，未保存也算），不是全局某份配置——多个档案时代"测一下"必须
+ * 说得清测的是谁。
+ *
+ * 「表单值 → 引擎 + 配置」仍然只经 `resolveEngine` 一处：把编辑值合成一份临时档案喂给
+ * 它，本页不再维护第二套"档案用哪个引擎"的判断。
  */
-async function handleTest(): Promise<void> {
-  const values = readForm();
-  const invalid = validateBaseUrl(values);
+async function handleTestProfile(id: string): Promise<void> {
+  const editor = rowById(id)?.querySelector('.profile-editor');
+  if (editor === null || editor === undefined) {
+    setStatus(engineStatus, 'err', '档案编辑区不在页面上，请重新展开该档案');
+    return;
+  }
+  const values = readEditor(editor);
+  const invalid = validateProfileForm(values);
   if (invalid !== null) {
     setStatus(engineStatus, 'err', invalid);
     return;
   }
 
-  const engine = getEngine(values.engineId);
   // 先要授权：没授权时引擎会直接抛「未授权」（那是它的正确行为），但用户此刻正在填地址，
   // 顺手把授权框弹出来才是他期待的。
-  const permission = await ensureHostPermission(values);
+  const permission = await ensureHostPermission(values.baseUrl);
   if (permission.state === 'denied') {
     setStatus(engineStatus, 'err', deniedHint(permission));
     return;
   }
 
-  setStatus(engineStatus, 'pending', `正在用「${engine.name}」翻译一次「${TEST_TEXT}」…`);
+  // Key 输入框留空时测的是**存储里已存的**那份（和"保存"同一语义）；新草稿没存过就是空，
+  // 引擎会给出可行动的 AUTH 提示。
+  const storedKey = settings?.profiles.find((profile) => profile.id === id)?.apiKey ?? '';
+  const apiKey = values.apiKey.trim().length > 0 ? values.apiKey : storedKey;
+  const { engine, config } = resolveEngine({
+    engineId: id,
+    profiles: [{ id, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey }],
+  });
+
+  setStatus(engineStatus, 'pending', `正在用档案「${values.label}」翻译一次「${TEST_TEXT}」…`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
-  const config: EngineConfig = { apiKey: values.apiKey, baseUrl: values.baseUrl, model: values.model };
   try {
     const [translation] = await engine.translate(
-      { texts: [TEST_TEXT], from: 'auto', to: values.targetLang, signal: controller.signal },
+      { texts: [TEST_TEXT], from: 'auto', to: targetLangSelect.value, signal: controller.signal },
       config,
     );
     setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${translation ?? ''}`);
@@ -289,6 +470,83 @@ async function handleTest(): Promise<void> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 删除一个档案。若删的正是**当前在用**的那个，`engineId` 明确回落到免费接口并说明——
+ * 绝不能留下一个指向不存在档案的 id。（为什么回落 google 而不是"下一个档案"：下一个
+ * 档案可能没填 Key、地址可能没授权，删一个档案不该让用户突然翻译失败。）
+ */
+async function handleDeleteProfile(id: string): Promise<void> {
+  let latest: Settings;
+  try {
+    latest = await loadSettings();
+  } catch (raw) {
+    setStatus(engineStatus, 'err', `删除前读取设置失败：${describe(raw)}`);
+    return;
+  }
+  const target = latest.profiles.find((profile) => profile.id === id);
+  if (target === undefined) {
+    // 别处已经删过（并发窗口）：如实说，并刷新到存储的真实列表，不静默"删除成功"。
+    settings = latest;
+    expandedId = null;
+    renderProfiles();
+    renderEngineHint();
+    setStatus(engineStatus, 'err', '该档案已经不在了（可能在别处被删除），列表已刷新。');
+    return;
+  }
+  const wasCurrent = latest.engineId === id;
+  const remaining = latest.profiles.filter((profile) => profile.id !== id);
+  const next: Settings = {
+    ...latest,
+    profiles: remaining,
+    engineId: wasCurrent ? DEFAULT_ENGINE_ID : latest.engineId,
+  };
+  try {
+    await saveSettings(next);
+  } catch (raw) {
+    setStatus(engineStatus, 'err', `设置未能保存：${describe(raw)}`);
+    return;
+  }
+  settings = next;
+  if (expandedId === id) expandedId = null;
+  renderProfiles();
+  renderEngineHint();
+  setStatus(
+    engineStatus,
+    'ok',
+    wasCurrent
+      ? `已删除当前在用的档案「${target.label}」，引擎已回落到「${getEngine(DEFAULT_ENGINE_ID).name}」，请在弹窗里重新选择。`
+      : `已删除档案「${target.label}」。`,
+  );
+}
+
+/** 语言与显示模式的保存（本页的另一个关注点；不碰档案、也不碰 engineId）。 */
+async function handleSaveDisplay(): Promise<void> {
+  if (settings === null) {
+    setStatus(engineStatus, 'err', '设置还没读出来，请稍候重试');
+    return;
+  }
+  let latest: Settings;
+  try {
+    latest = await loadSettings();
+  } catch (raw) {
+    setStatus(engineStatus, 'err', `保存前读取设置失败：${describe(raw)}`);
+    return;
+  }
+  const next: Settings = {
+    ...latest,
+    targetLang: targetLangSelect.value,
+    displayMode: displayModeSelect.value as DisplayMode,
+  };
+  try {
+    await saveSettings(next);
+  } catch (raw) {
+    setStatus(engineStatus, 'err', `设置未能保存：${describe(raw)}`);
+    return;
+  }
+  settings = next;
+  setStatus(engineStatus, 'ok', '已保存。');
 }
 
 /**
@@ -315,22 +573,30 @@ async function handleClearCache(): Promise<void> {
   setStatus(cacheStatus, 'ok', cleared === 0 ? '缓存本来就是空的' : `已清除 ${cleared} 条翻译缓存`);
 }
 
-/** 显示 / 隐藏 API Key。只改 `type` 与按钮文案，值不动（更不会复制到别处）。 */
-function toggleKeyVisibility(): void {
-  const hidden = apiKeyInput.type === 'password';
-  apiKeyInput.type = hidden ? 'text' : 'password';
-  toggleKeyButton.textContent = hidden ? '隐藏' : '显示';
-  toggleKeyButton.setAttribute('aria-pressed', String(hidden));
-  toggleKeyButton.title = hidden ? '隐藏 API Key' : '显示 API Key';
+/** 显示 / 隐藏某个档案编辑区的 API Key。只改该行的 `type` 与按钮文案，值不动（更不会复制到别处）。 */
+function toggleKeyVisibility(button: HTMLElement): void {
+  const editor = button.closest('.profile-editor');
+  if (editor === null) return;
+  const input = requireWithin<HTMLInputElement>(editor, '.profile-api-key');
+  const hidden = input.type === 'password';
+  input.type = hidden ? 'text' : 'password';
+  button.textContent = hidden ? '隐藏' : '显示';
+  button.setAttribute('aria-pressed', String(hidden));
+  button.title = hidden ? '隐藏 API Key' : '显示 API Key';
 }
 
-function renderEngineHint(): void {
-  const engine = getEngine(engineSelect.value);
-  if (engine.needsKey) {
-    engineHint.textContent = '需要自己填接口地址、API Key 与模型名；点「保存」时会向浏览器申请访问该地址的权限。';
-    return;
-  }
-  engineHint.textContent = '免费接口零配置可用，下面的接口地址与 API Key 不会用到（切回自定义引擎时仍然保留）。';
+/**
+ * 服务商模板 = 编辑表单的**填写捷径**：选中即把接口地址与模型名填进**这一行**，
+ * 用户还没点保存，改回来零成本。不碰 API Key（那是用户自己的凭据）。
+ * 只挂在下拉自己的 change 上——展开既有档案时**永远不重放**预设（否则会把用户存过
+ * 的地址/模型悄悄改回模板值）。
+ */
+function applyProviderTemplate(editor: Element): void {
+  const select = requireWithin<HTMLSelectElement>(editor, '.profile-provider');
+  const preset = PROVIDER_PRESETS.find((entry) => entry.id === select.value);
+  if (preset === undefined || preset.baseUrl === undefined || preset.model === undefined) return;
+  requireWithin<HTMLInputElement>(editor, '.profile-base-url').value = preset.baseUrl;
+  requireWithin<HTMLInputElement>(editor, '.profile-model-name').value = preset.model;
 }
 
 /**
@@ -348,27 +614,12 @@ async function start(): Promise<void> {
   const loaded = await loadSettings();
   settings = loaded;
   fillSelect(
-    engineSelect,
-    ENGINES.map((engine) => ({ value: engine.id, label: engine.name })),
-    loaded.engineId,
-  );
-  fillSelect(
     targetLangSelect,
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
     loaded.targetLang,
   );
   fillSelect(displayModeSelect, DISPLAY_MODES, loaded.displayMode);
-  // 服务商下拉：选项与预填值同源（shared/settings 的那一份），不在这儿手抄。
-  // 只把**上次存过的选择**显示出来——不触发 applyProviderPreset，
-  // 用户存过的接口地址/模型名一个字符都不动（预设只在"选它"那一刻填表）。
-  fillSelect(
-    providerSelect,
-    PROVIDER_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
-    loaded.providerPreset,
-  );
-  baseUrlInput.value = loaded.engineConfig.baseUrl;
-  apiKeyInput.value = loaded.engineConfig.apiKey;
-  modelInput.value = loaded.engineConfig.model;
+  renderProfiles();
   renderEngineHint();
 }
 
@@ -376,15 +627,66 @@ function init(): void {
   // 监听器在第一个 await 之前挂好：`loadSettings` 有明确的拒绝路径（存储里是更高版本、
   // 存储读写失败）。等读完再挂的话，那些拒绝会让界面停在一个"看着能点、其实没有任何
   // 监听器"的死页面上，用户连重试都点不了。
-  saveButton.addEventListener('click', () => runSafely(engineStatus, '保存失败', handleSave));
-  testButton.addEventListener('click', () => runSafely(engineStatus, '测试连接失败', handleTest));
+  //
+  // 档案列表是动态渲染的，行内按钮一律走**容器上的事件委托**（data-action 派发），
+  // 每次重渲染不用重新挂监听器。
+  profilesList.addEventListener('click', (event: MouseEvent) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.classList.contains('profile-toggle-key')) {
+      toggleKeyVisibility(target);
+      return;
+    }
+    const row = target.closest('[data-profile-id]');
+    if (!(row instanceof HTMLElement)) return;
+    const id = row.dataset.profileId as string;
+    switch (target.dataset.action) {
+      case 'toggle':
+        if (settings === null) return;
+        expandedId = expandedId === id ? null : id;
+        renderProfiles();
+        break;
+      case 'save-profile':
+        runSafely(engineStatus, '保存失败', () => handleSaveProfile(id));
+        break;
+      case 'test-profile':
+        runSafely(engineStatus, '测试连接失败', () => handleTestProfile(id));
+        break;
+      case 'delete-profile':
+        runSafely(engineStatus, '删除失败', () => handleDeleteProfile(id));
+        break;
+    }
+  });
+  profilesList.addEventListener('change', (event: Event) => {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.classList.contains('profile-provider')) {
+      const editor = target.closest('.profile-editor');
+      if (editor !== null) applyProviderTemplate(editor);
+    }
+  });
+  profilesList.addEventListener('input', (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    // 地址/模型名被手打 → 这一行按"自定义"算：模板下拉翻回 custom，而不是留着个
+    // 已经说谎的「DeepSeek」。预设永远不许反过来覆盖用户敲进去的值。
+    if (target.classList.contains('profile-base-url') || target.classList.contains('profile-model-name')) {
+      const editor = target.closest('.profile-editor');
+      if (editor !== null) requireWithin<HTMLSelectElement>(editor, '.profile-provider').value = 'custom';
+    }
+  });
+
+  addProfileButton.addEventListener('click', () => {
+    if (settings === null) {
+      setStatus(engineStatus, 'err', '设置还没读出来，请稍候重试');
+      return;
+    }
+    if (expandedId !== NEW_DRAFT_ID) {
+      expandedId = NEW_DRAFT_ID;
+      renderProfiles();
+    }
+  });
+  saveDisplayButton.addEventListener('click', () => runSafely(engineStatus, '保存失败', handleSaveDisplay));
   clearCacheButton.addEventListener('click', () => runSafely(cacheStatus, '清除缓存失败', handleClearCache));
-  toggleKeyButton.addEventListener('click', toggleKeyVisibility);
-  engineSelect.addEventListener('change', renderEngineHint);
-  // 服务商：下拉 change 才预填；接口地址/模型名一被手打就翻回 custom（见上面两个函数）。
-  providerSelect.addEventListener('change', applyProviderPreset);
-  baseUrlInput.addEventListener('input', markProviderCustom);
-  modelInput.addEventListener('input', markProviderCustom);
 
   runSafely(engineStatus, '设置读取失败', start);
 }

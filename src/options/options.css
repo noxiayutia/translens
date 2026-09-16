@@ -77,6 +77,63 @@ body {
   flex: 1 1 auto;
 }
 
+/* 服务商档案列表：一行一个档案，点行展开编辑。 */
+#profiles {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.profile-row {
+  border: 1px solid rgba(127, 127, 127, 0.28);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.profile-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: none;
+}
+
+.profile-summary:hover {
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.profile-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.profile-base,
+.profile-model {
+  font-size: 12px;
+  opacity: 0.72;
+  overflow-wrap: anywhere;
+}
+
+.profile-badge {
+  margin-left: auto;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: #15803d;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.profile-editor {
+  padding: 6px 12px 12px;
+  border-top: 1px dashed rgba(127, 127, 127, 0.35);
+}
+
 .actions {
   display: flex;
   gap: 10px;
