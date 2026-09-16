@@ -1,6 +1,56 @@
 /* src/popup/popup.css */
+/*
+ * 弹窗样式。设计取向：干净、贴近浏览器原生——中性灰阶 + 单一强调色，层级靠字重/间距/留白，
+ * 不靠颜色堆砌，这样它跟浏览器自带界面混在一起不突兀。
+ *
+ * 所有颜色都走下面的令牌，亮/暗两套只在 `:root` 与 `prefers-color-scheme: dark` 里各定义一次；
+ * 正文里**不允许再出现硬编码颜色**，也不许用 `opacity` 当次级文字（暗色下对比度不可控）——
+ * 次级文字一律用 `color: var(--text-2)` / `var(--text-3)`。
+ *
+ * 下拉框只美化**关闭状态**：展开面板由操作系统绘制，CSS 改不了。
+ */
+
 :root {
   color-scheme: light dark;
+
+  /* 下面这一组与 src/options/options.css 的 `:root` 必须逐字一致（两份 CSS 各写一份，
+     不引第三个文件：扩展页面只加载自己那一份，共用文件会凭空多一个构建期依赖）。 */
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --surface-3: #eceef2;
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --text: #1a1d21;
+  --text-2: #5b6470;
+  --text-3: #8b93a0;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-weak: rgba(37, 99, 235, 0.1);
+  --ok: #16794a;
+  --danger: #c0342b;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.06);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1c1f23;
+    --surface-2: #262a2f;
+    --surface-3: #30353b;
+    --border: rgba(255, 255, 255, 0.12);
+    --border-strong: rgba(255, 255, 255, 0.2);
+    --text: #e8eaed;
+    --text-2: #a8b0bb;
+    --text-3: #7d858f;
+    --accent: #4d8df6;
+    --accent-hover: #6ba1ff;
+    --accent-weak: rgba(77, 141, 246, 0.16);
+    --ok: #4ade80;
+    --danger: #f87171;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.36);
+  }
 }
 
 body {
@@ -8,61 +58,169 @@ body {
   margin: 0;
   padding: 12px 14px 16px;
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--surface);
 }
+
+/* 键盘导航的统一焦点环。 */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ------------------------------------------------------------------ 页头 */
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  /* 极细分隔线，不用重边框。 */
+  border-bottom: 1px solid var(--border);
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.brand-mark {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.brand-name {
+  font-weight: 600;
 }
 
 .icon-button {
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  color: var(--text-2);
   background: transparent;
-  font-size: 16px;
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
 }
 
 .icon-button:hover {
-  background: rgba(127, 127, 127, 0.16);
+  color: var(--text);
+  background: var(--surface-3);
 }
 
+.icon-button:active {
+  background: var(--border);
+}
+
+.icon-button-mark {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+/* ------------------------------------------------------------------ 主操作区 */
+
 .primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
-  padding: 9px 12px;
+  height: 38px;
+  padding: 0 12px;
   font: inherit;
+  font-size: 14px;
   font-weight: 500;
   color: #fff;
-  background: #2b6cb0;
+  background: var(--accent);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .primary:hover {
-  background: #24598f;
+  background: var(--accent-hover);
 }
 
+.primary:active {
+  background: var(--accent-hover);
+  filter: brightness(0.94);
+}
+
+/* 已翻译（“显示原文”）态：中性底，跟“翻译此页”分得开。 */
 .primary[data-active="true"] {
-  background: #4a5568;
+  background: var(--text-2);
+}
+
+.primary[data-active="true"]:hover,
+.primary[data-active="true"]:active {
+  background: var(--text-2);
+  filter: brightness(0.92);
+}
+
+/*
+ * 禁用态必须与可用态一眼可分：原来没有这条规则，禁用时仍是满亮蓝、看着完全可点
+ * （“此页面不可用” / “翻译进行中” / 设置还没读出来时都是这个状态）。
+ */
+.primary:disabled {
+  color: var(--text-3);
+  background: var(--surface-3);
+  cursor: not-allowed;
+  filter: none;
+}
+
+.primary:disabled:hover {
+  color: var(--text-3);
+  background: var(--surface-3);
 }
 
 .status {
   min-height: 1.4em;
-  margin: 8px 2px 12px;
+  margin: 7px 0 14px;
+  /* 左内边距对齐主按钮的内边距（12px），不居中。 */
+  padding-left: 12px;
   font-size: 12px;
-  opacity: 0.72;
+  line-height: 1.45;
+  color: var(--text-3);
 }
 
+/* ------------------------------------------------------------------ 设置分组 */
+
+.group {
+  display: flex;
+  flex-direction: column;
+}
+
+.group + .group {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.group-title {
+  margin: 0 0 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------ 行样式 */
+
 .field {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -73,47 +231,177 @@ body {
 .field > span {
   flex: 0 0 auto;
   font-size: 13px;
-  opacity: 0.86;
+  color: var(--text-2);
+}
+
+/*
+ * 下拉框：只美化**关闭状态**（展开面板是操作系统画的，CSS 改不了），所以自绘一个 chevron。
+ *
+ * chevron 画在 `.field` 的 `::after` 上、绝对定位到右侧，而不是做进 `select` 的
+ * `background-image`——data URI 里的 `stroke` 是写死的颜色，亮/暗两套主题就得各来一张图。
+ * `::after` 能用 `background: currentColor` 走令牌，暗色下自动跟着变。
+ */
+.field::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  width: 10px;
+  height: 10px;
+  transform: translateY(-50%);
+  background: var(--text-3);
+  pointer-events: none;
+  -webkit-mask: var(--chevron) no-repeat center / contain;
+  mask: var(--chevron) no-repeat center / contain;
 }
 
 .field > select {
+  /* chevron 的形状（只有轮廓，颜色由上面那条 background 给）。 */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='3 4.4 6 3.6' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 5.3 6 7.8 8.5 5.3'/%3E%3C/svg%3E");
+  appearance: none;
+  -webkit-appearance: none;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 6px;
+  height: 30px;
+  padding: 0 26px 0 8px;
   font: inherit;
   font-size: 13px;
-  border-radius: 6px;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  background: transparent;
-}
-
-/* 悬停/划词快捷开关（规格 §7.1 第 5 项）：一行一个 checkbox + 说明文字。 */
-.field-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: -2px 0 10px;
-  font-size: 13px;
+  color: var(--text);
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
-.field-toggle input[type="checkbox"] {
-  margin: 0;
-  accent-color: #2b6cb0;
+.field > select:hover {
+  border-color: var(--border-strong);
 }
 
-.field-toggle span {
-  opacity: 0.86;
+.field > select:focus-visible {
+  border-color: var(--accent);
+  /* 3px 的柔和焦点环，与全局 outline 一起给出清晰的焦点信号。 */
+  box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none;
 }
+
+/* ------------------------------------------------------------------ 开关 */
+
+/*
+ * .field-toggle：checkbox 视觉隐藏（appearance:none 而不是 display:none——它必须保持
+ * 可聚焦、可点击、可被读屏识别），紧跟一个 34×20 的装饰轨道 span 做 switch 观感。
+ * 文案分两行：主文案 13px --text，括注 12px --text-3。
+ *
+ * 用 `>` 直接子选择器定位轨道：原来那条 `.field-toggle span` 会把文案里的 span 一起算进去。
+ */
+.field-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.field-toggle > input[type="checkbox"] {
+  /* 视觉隐藏但保持在无障碍树与 Tab 序列里。 */
+  appearance: none;
+  -webkit-appearance: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.field-toggle > input[type="checkbox"]:focus-visible + .toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.field-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.field-toggle-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.field-toggle-note {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-3);
+}
+
+.toggle-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--surface);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px var(--border-strong);
+  transition: transform 0.14s ease;
+}
+
+.field-toggle > input[type="checkbox"]:checked + .toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.field-toggle > input[type="checkbox"]:checked + .toggle-track::after {
+  transform: translateX(14px);
+}
+
+/* ------------------------------------------------------------------ 提示 */
 
 .hint {
-  margin: 4px 2px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 4px 0 0;
   font-size: 12px;
   line-height: 1.5;
-  opacity: 0.7;
+  color: var(--text-3);
+}
+
+/* 小圆点做视觉锚点。 */
+.hint::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  margin-top: 6px;
+  background: currentColor;
+  border-radius: 50%;
 }
 
 .hint.warn {
-  color: #b3261e;
-  opacity: 1;
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle-track,
+  .toggle-track::after {
+    transition: none;
+  }
 }

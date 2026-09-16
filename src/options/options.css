@@ -1,37 +1,118 @@
 /* src/options/options.css */
+/*
+ * 设置页样式。设计取向与弹窗一致：干净、贴近浏览器原生——中性灰阶 + 单一强调色，
+ * 层级靠字重/间距/留白而不是靠颜色，跟浏览器自带界面混在一起不突兀。
+ *
+ * 所有颜色都走下面的令牌，亮/暗两套只在 `:root` 与 `prefers-color-scheme: dark` 里各定义一次；
+ * 正文里**不允许再出现硬编码颜色**，也不许用 `opacity` 当次级文字（暗色下对比度不可控）——
+ * 次级文字一律用 `color: var(--text-2)` / `var(--text-3)`。
+ */
+
 :root {
   color-scheme: light dark;
+
+  /* 下面这一组与 src/popup/popup.css 的 `:root` 必须逐字一致（两份 CSS 各写一份，
+     不引第三个文件：扩展页面只加载自己那一份，共用文件会凭空多一个构建期依赖）。 */
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --surface-3: #eceef2;
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --text: #1a1d21;
+  --text-2: #5b6470;
+  --text-3: #8b93a0;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-weak: rgba(37, 99, 235, 0.1);
+  --ok: #16794a;
+  --danger: #c0342b;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.06);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1c1f23;
+    --surface-2: #262a2f;
+    --surface-3: #30353b;
+    --border: rgba(255, 255, 255, 0.12);
+    --border-strong: rgba(255, 255, 255, 0.2);
+    --text: #e8eaed;
+    --text-2: #a8b0bb;
+    --text-3: #7d858f;
+    --accent: #4d8df6;
+    --accent-hover: #6ba1ff;
+    --accent-weak: rgba(77, 141, 246, 0.16);
+    --ok: #4ade80;
+    --danger: #f87171;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.36);
+  }
 }
 
 body {
   margin: 0;
-  padding: 24px 16px 48px;
+  padding: 32px 24px 64px;
   font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--surface-2);
 }
 
+/* 键盘导航的统一焦点环。 */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ------------------------------------------------------------------ 版心与页头 */
+
 .page {
-  max-width: 640px;
+  max-width: 720px;
   margin: 0 auto;
 }
 
 .title {
-  margin: 0 0 16px;
-  font-size: 20px;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
 }
 
+.subtitle {
+  margin: 6px 0 20px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------ 卡片 */
+
+/*
+ * 卡片要有**自己的底色**：原来只有一圈描边、没有 background，暗色下几张卡直接融进黑底，
+ * 看不出层级。`--surface` + `--border` + `--shadow-card` 在亮/暗两套里都能分层。
+ */
 .card {
-  margin-bottom: 16px;
-  padding: 14px 16px 16px;
-  border: 1px solid rgba(127, 127, 127, 0.28);
-  border-radius: 10px;
+  margin-bottom: 20px;
+  padding: 16px 18px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
 }
 
 .card > h2 {
-  margin: 0 0 10px;
-  font-size: 14px;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
   letter-spacing: 0.02em;
-  opacity: 0.9;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
 }
+
+/* ------------------------------------------------------------------ 表单行 */
 
 .field {
   display: flex;
@@ -44,7 +125,7 @@ body {
 .field > span:first-child {
   flex: 0 0 72px;
   font-size: 13px;
-  opacity: 0.86;
+  color: var(--text-2);
 }
 
 .field > input,
@@ -58,13 +139,53 @@ body {
 .field select {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 8px;
+  height: 32px;
+  padding: 0 9px;
   font: inherit;
   font-size: 13px;
-  color: inherit;
-  border: 1px solid rgba(127, 127, 127, 0.4);
-  border-radius: 6px;
-  background: transparent;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.field input:hover,
+.field select:hover {
+  border-color: var(--border-strong);
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none;
+}
+
+.field select {
+  /* 只美化关闭状态：展开面板是操作系统画的，CSS 改不了。 */
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+}
+
+/* 自绘 chevron：形状走 mask、颜色走令牌，暗色不必再来一张图。 */
+.field:has(> select)::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  width: 10px;
+  height: 10px;
+  transform: translateY(-50%);
+  background: var(--text-3);
+  pointer-events: none;
+  -webkit-mask: var(--chevron) no-repeat center / contain;
+  mask: var(--chevron) no-repeat center / contain;
+}
+
+.field:has(> select) {
+  position: relative;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='3 4.4 6 3.6' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 5.3 6 7.8 8.5 5.3'/%3E%3C/svg%3E");
 }
 
 .key-row {
@@ -77,7 +198,9 @@ body {
   flex: 1 1 auto;
 }
 
-/* 服务商档案列表：一行一个档案，点行展开编辑。 */
+/* ------------------------------------------------------------------ 服务商档案列表 */
+
+/* 一行一个档案，点行展开编辑。 */
 #profiles {
   display: grid;
   gap: 8px;
@@ -85,53 +208,155 @@ body {
 }
 
 .profile-row {
-  border: 1px solid rgba(127, 127, 127, 0.28);
-  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
+/* 摘要从"挤在一起的一行"改成两行网格：第一行名字 + 使用中徽章，第二行地址 + 模型名。 */
 .profile-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
   width: 100%;
   padding: 10px 12px;
   text-align: left;
   color: inherit;
   background: transparent;
   border: none;
+  cursor: pointer;
 }
 
 .profile-summary:hover {
-  background: rgba(127, 127, 127, 0.1);
+  background: var(--surface-3);
 }
 
 .profile-name {
+  font-size: 14px;
   font-weight: 600;
-  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* 「使用中」徽章：实心底 + 强调色字，比空心描边更醒目。 */
+.profile-badge {
+  justify-self: end;
+  align-self: center;
+  flex: 0 0 auto;
+  padding: 1px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-weak);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
 }
 
 .profile-base,
 .profile-model {
+  min-width: 0;
   font-size: 12px;
-  opacity: 0.72;
+  line-height: 1.5;
+  color: var(--text-3);
   overflow-wrap: anywhere;
 }
 
-.profile-badge {
-  margin-left: auto;
-  padding: 1px 8px;
-  font-size: 11px;
-  color: #15803d;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  flex: 0 0 auto;
+/* 第二行只有地址（没有模型名）时不该占满整行。 */
+.profile-base:last-child {
+  grid-column: 1 / -1;
 }
 
 .profile-editor {
-  padding: 6px 12px 12px;
-  border-top: 1px dashed rgba(127, 127, 127, 0.35);
+  padding: 12px;
+  /* 展开时给出清晰的分隔与背景变化。 */
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------------------ 按钮体系 */
+
+button {
+  font: inherit;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.primary,
+.ghost,
+.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 16px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.primary {
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid transparent;
+}
+
+.primary:hover {
+  background: var(--accent-hover);
+}
+
+.primary:active {
+  background: var(--accent-hover);
+  filter: brightness(0.94);
+}
+
+.primary:disabled {
+  color: var(--text-3);
+  background: var(--surface-3);
+  cursor: not-allowed;
+  filter: none;
+}
+
+.ghost {
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
+
+.ghost:hover {
+  background: var(--surface-3);
+}
+
+.ghost:active {
+  background: var(--border);
+}
+
+.ghost:disabled {
+  color: var(--text-3);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+/* 删除类操作：描边 + 红字，不用实心红（危险动作不该是页面上最抢眼的东西）。 */
+.danger {
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
+
+.danger:hover {
+  background: var(--surface-3);
+  border-color: var(--danger);
+}
+
+.danger:active {
+  filter: brightness(0.95);
+}
+
+.danger:disabled {
+  color: var(--text-3);
+  border-color: var(--border);
+  cursor: not-allowed;
 }
 
 .actions {
@@ -140,85 +365,77 @@ body {
   margin-top: 14px;
 }
 
-button {
-  font: inherit;
-  font-size: 13px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.primary {
-  padding: 8px 20px;
-  font-weight: 500;
-  color: #fff;
-  background: #2b6cb0;
-  border: none;
-}
-
-.primary:hover {
-  background: #24598f;
-}
-
-.ghost {
-  padding: 7px 14px;
-  color: inherit;
-  background: transparent;
-  border: 1px solid rgba(127, 127, 127, 0.45);
-}
-
-.ghost:hover {
-  background: rgba(127, 127, 127, 0.14);
-}
+/* ------------------------------------------------------------------ 提示与状态 */
 
 .hint {
   margin: 0 0 12px;
   font-size: 12px;
   line-height: 1.6;
-  opacity: 0.7;
+  color: var(--text-3);
 }
 
 .hint:last-child {
   margin-bottom: 0;
 }
 
+/* 状态行：三态语义不变（data-kind 决定颜色），前面加一个小圆点。 */
 .status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   min-height: 1.4em;
   margin: 10px 0 0;
   font-size: 12.5px;
-  opacity: 0.75;
+  color: var(--text-3);
   white-space: pre-wrap;
+}
+
+.status::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  margin-top: 7px;
+  background: currentColor;
+  border-radius: 50%;
 }
 
 /* 成功=绿、失败=红：这两条是用户唯一能一眼分辨「连接通了没有」的信号。 */
 .status[data-kind="ok"] {
-  color: #15803d;
-  opacity: 1;
+  color: var(--ok);
 }
 
 .status[data-kind="err"] {
-  color: #b3261e;
-  opacity: 1;
+  color: var(--danger);
 }
 
 .status[data-kind="pending"] {
-  opacity: 0.75;
+  color: var(--text-2);
 }
+
+/* ------------------------------------------------------------------ 隐私清单 */
 
 .privacy {
   margin: 0;
-  padding-left: 1.2em;
+  padding-left: 1.25em;
   font-size: 12.5px;
-  line-height: 1.7;
-  opacity: 0.86;
+  line-height: 1.75;
+  color: var(--text-2);
+  list-style: disc;
 }
 
 .privacy li + li {
-  margin-top: 6px;
+  margin-top: 10px;
+}
+
+.privacy li::marker {
+  color: var(--text-3);
 }
 
 .privacy code {
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: rgba(127, 127, 127, 0.16);
+  padding: 1px 5px;
   font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border-radius: 4px;
 }
