@@ -8,11 +8,10 @@
 ```ts
 // src/background/service-worker.ts
 import { TieredCache, TranslationCache, type StorageArea } from '../core/cache';
-import { getEngine } from '../engines/registry';
 import { EngineError, toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
 import { isTranslateTextsMessage, MSG, type TranslateTextsResponse } from '../shared/messages';
-import { DEFAULT_SETTINGS, loadSettings } from '../shared/settings';
+import { DEFAULT_SETTINGS, loadSettings, resolveEngine } from '../shared/settings';
 import { translateBatch } from './scheduler';
 
 const MENU_TRANSLATE_PAGE = 'jinyi-translate-page';
@@ -97,7 +96,9 @@ async function handleTranslateTexts(
 ): Promise<TranslateTextsResponse> {
   try {
     const settings = await loadSettings(persistentArea);
-    const engine = getEngine(settings.engineId);
+    // 「用哪个引擎 + 用哪份配置」只有一处解析（shared/settings 的 resolveEngine）：
+    // engineId 现在是 `google` 或某个档案的 id，别处各写一份 if 迟早和这里漂移。
+    const { engine, config } = resolveEngine(settings);
     const targetLang = payload.targetLang ?? settings.targetLang;
 
     // 上限随设置变化；上限是实例属性而条目挂在存储区上，所以每个存储区只能有这一个实例
@@ -108,7 +109,7 @@ async function handleTranslateTexts(
 
     const results = await translateBatch(payload.items, {
       engine,
-      engineConfig: settings.engineConfig,
+      engineConfig: config,
       sourceLang: settings.sourceLang,
       targetLang,
       // 不支持 system prompt 的引擎传了也没用，反而会污染缓存 key。

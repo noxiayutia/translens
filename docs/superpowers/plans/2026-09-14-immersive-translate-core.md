@@ -426,10 +426,12 @@ export interface CacheKeyParts {
   engineId: string;
   /**
    * 引擎配置指纹（接口地址 + 模型名）。
-   * openai-compat 下用户可以随时改模型（gpt-4o-mini → gpt-4o）或接口地址，
+   * 用户可以随时改模型（gpt-4o-mini → gpt-4o）或接口地址，
    * 这两项不参与 key 就会命中上一个模型的旧译文。
    * **apiKey 不进这里**：换 key 不该让全部缓存失效；且哈希输入会落进 storage，
    * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
+   * **档案 id 也不进这里**（v3 的多服务商档案时代）：决定译文的是"哪个地址上的哪个模型"，
+   * 同地址同模型的两个档案理应是同一份缓存；把档案 id 混进来会让它们无谓地各存一份。
    */
   configHash: string;
   /**
@@ -2370,6 +2372,13 @@ export const ENGINES: readonly Translator[] = [googleEngine, openAiCompatEngine]
 
 export const DEFAULT_ENGINE_ID = googleEngine.id;
 
+/**
+ * 自定义接口引擎的 id。它**不再出现在任何选择器里**：v3 起用户选的是「某个服务商档案」
+ * （`shared/settings.ts` 的 `resolveEngine` 负责把档案映射到本引擎），这个常量只是那
+ * 一处解析与迁移折叠的引用点，避免 `'openai-compat'` 字面量在多处各写一份。
+ */
+export const OPENAI_COMPAT_ENGINE_ID = openAiCompatEngine.id;
+
 /** 未知 id 一律回退到默认引擎，避免设置里存了废弃 id 时整个插件不可用。 */
 export function getEngine(id: string): Translator {
   return ENGINES.find((engine) => engine.id === id) ?? googleEngine;
@@ -3414,19 +3423,37 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
+  LEGACY_PROFILE_ID,
   PROVIDER_PRESETS,
   SETTINGS_KEY,
+  createProfileId,
   isAllowedBaseUrl,
   loadSettings,
   loadUiSettings,
   mergeSettings,
+  resolveEngine,
   saveSettings,
+  type EngineProfile,
 } from '../../src/shared/settings';
 import { MemoryStorage } from '../helpers/memory-storage';
+
+/** 构造一份形状完整合法的档案；`over` 覆盖单个字段，用例只写自己在意的那部分。 */
+function profile(over: Partial<EngineProfile> = {}): EngineProfile {
+  return {
+    id: 'p1',
+    label: '我的 DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+    apiKey: 'sk-keep',
+    ...over,
+  };
+}
 
 describe('mergeSettings', () => {
   it('空对象得到完整默认值', () => {
     expect(mergeSettings({})).toEqual(DEFAULT_SETTINGS);
+    expect(DEFAULT_SETTINGS.engineId).toBe('google');
+    expect(DEFAULT_SETTINGS.profiles).toEqual([]);
   });
 
   it('保留用户已设置的值', () => {
@@ -3438,7 +3465,7 @@ describe('mergeSettings', () => {
   it('补齐缺失字段', () => {
     const merged = mergeSettings({ targetLang: 'ja' });
     expect(merged.displayMode).toBe(DEFAULT_SETTINGS.displayMode);
-    expect(merged.engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
+    expect(merged.profiles).toEqual([]);
   });
 
   it('忽略类型不符的值', () => {
@@ -3468,10 +3495,55 @@ describe('mergeSettings', () => {
     }
   });
 
-  it('损坏的 engineConfig 退回默认值', () => {
-    expect(mergeSettings({ engineConfig: null }).engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
-    expect(mergeSettings({ engineConfig: [] }).engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
-    expect(mergeSettings({ engineConfig: 'x' }).engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
+  describe('profiles 的反序列化边界（逐条归一化，脏条目丢掉而不是崩）', () => {
+    it('非数组一律当没有档案', () => {
+      for (const raw of [null, undefined, 'x', 42, {}]) {
+        expect(mergeSettings({ profiles: raw as unknown as EngineProfile[] }).profiles).toEqual([]);
+      }
+    });
+
+    it('缺 id / id 非字符串的条目被跳过：engineId 靠 id 引用，没有 id 的档案无法被指向', () => {
+      const merged = mergeSettings({
+        profiles: [
+          { label: '没有 id', baseUrl: 'https://a.example/v1' },
+          { id: 42, label: 'id 不是字符串' },
+          { id: '   ' },
+          profile({ id: 'good' }),
+        ] as unknown as EngineProfile[],
+      });
+      expect(merged.profiles.map((item) => item.id)).toEqual(['good']);
+    });
+
+    it('重复 id 只留第一个：engineId 只能有一个指代对象', () => {
+      const merged = mergeSettings({
+        profiles: [profile({ id: 'dup', label: '第一个' }), profile({ id: 'dup', label: '第二个' })],
+      });
+      expect(merged.profiles).toHaveLength(1);
+      expect(merged.profiles[0].label).toBe('第一个');
+    });
+
+    it('合法条目字段一字不差地保留；label 空白按「我的接口」处理', () => {
+      const merged = mergeSettings({ profiles: [profile()] });
+      expect(merged.profiles).toEqual([profile()]);
+      expect(mergeSettings({ profiles: [profile({ label: '   ' })] }).profiles[0].label).toBe('我的接口');
+      expect(mergeSettings({ profiles: [profile({ label: 42 as unknown as string })] }).profiles[0].label).toBe('我的接口');
+    });
+
+    it('apiKey / model 缺失或脏值补空串，不会凭空长出一个 Key', () => {
+      const merged = mergeSettings({
+        profiles: [{ id: 'p', apiKey: null, model: 7 }] as unknown as EngineProfile[],
+      });
+      expect(merged.profiles[0]).toEqual({ id: 'p', label: '我的接口', baseUrl: '', model: '', apiKey: '' });
+    });
+  });
+
+  it('只有一份真相：engineConfig / providerPreset 不再是设置字段，脏输入里出现也不会带出来', () => {
+    const merged = mergeSettings({
+      engineConfig: { apiKey: 'sk-x', baseUrl: 'https://a.example/v1', model: 'm' },
+      providerPreset: 'deepseek',
+    } as unknown as Record<string, unknown>);
+    expect('engineConfig' in merged).toBe(false);
+    expect('providerPreset' in merged).toBe(false);
   });
 
   it('版本号必须能原样读回（迁移要靠它判断来源版本）', () => {
@@ -3486,7 +3558,7 @@ describe('mergeSettings', () => {
   it('不共享默认值里的可变对象', () => {
     expect(mergeSettings({}).siteRules).not.toBe(DEFAULT_SETTINGS.siteRules);
     expect(mergeSettings({}).glossary).not.toBe(DEFAULT_SETTINGS.glossary);
-    expect(mergeSettings({}).engineConfig).not.toBe(DEFAULT_SETTINGS.engineConfig);
+    expect(mergeSettings({}).profiles).not.toBe(DEFAULT_SETTINGS.profiles);
   });
 });
 
@@ -3559,20 +3631,22 @@ describe('显示模式（默认值、迁移）', () => {
   });
 });
 
-describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
+describe('BaseURL 校验（它决定 API Key 发往哪里，逐档案生效）', () => {
   const baseUrlOf = (value: unknown): string =>
-    mergeSettings({ engineConfig: { baseUrl: value } }).engineConfig.baseUrl;
+    mergeSettings({ profiles: [{ id: 'p', baseUrl: value } as unknown as EngineProfile] }).profiles[0].baseUrl;
 
   it('接受 https 地址并去掉首尾空白', () => {
     expect(baseUrlOf('https://api.deepseek.com/v1')).toBe('https://api.deepseek.com/v1');
     expect(baseUrlOf('  https://api.deepseek.com/v1  ')).toBe('https://api.deepseek.com/v1');
   });
 
-  it('拒绝非 https 的远端地址', () => {
-    expect(baseUrlOf('http://evil.example')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('//evil.example')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('file:///etc/passwd')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('javascript:alert(1)')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
+  it('拒绝非 https 的远端地址：归一化成空串，绝不悄悄换成另一个真实端点', () => {
+    // 档案的 apiKey 就存进同一条目里——非法地址若"退回默认值"，等于把用户的 Key
+    // 发给另一个服务商。空串让引擎在翻译时明确报「尚未填写接口地址」，不发任何请求。
+    for (const raw of ['http://evil.example', '//evil.example', 'file:///etc/passwd', 'javascript:alert(1)']) {
+      expect(baseUrlOf(raw)).toBe('');
+    }
+    expect(baseUrlOf('http://evil.example')).not.toContain('openai');
   });
 
   it('放行本机回环地址的 http（本地推理服务）', () => {
@@ -3581,10 +3655,202 @@ describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
   });
 
   it('拒绝连不上主机的地址与非字符串', () => {
-    expect(baseUrlOf('not a url')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('https://')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf(42)).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
+    for (const raw of ['not a url', '', 'https://', 42, null]) {
+      expect(baseUrlOf(raw)).toBe('');
+    }
+  });
+});
+
+describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + 配置」', () => {
+  it('engineId 命中某个档案 → OpenAI 兼容引擎 + 那份档案的配置（逐字段）', () => {
+    const { engine, config } = resolveEngine({ engineId: 'p1', profiles: [profile()] });
+    expect(engine.id).toBe('openai-compat');
+    expect(config).toEqual({
+      apiKey: 'sk-keep',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-chat',
+    });
+  });
+
+  it('多档案时各解析各的：命中的那份胜出，不混字段', () => {
+    const { engine, config } = resolveEngine({
+      engineId: 'p2',
+      profiles: [profile(), profile({ id: 'p2', apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' })],
+    });
+    expect(engine.id).toBe('openai-compat');
+    expect(config).toEqual({ apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' });
+  });
+
+  it('engineId 是 google → 免费引擎 + 空配置，档案完全不参与', () => {
+    const { engine, config } = resolveEngine({ engineId: 'google', profiles: [profile()] });
+    expect(engine.id).toBe('google');
+    expect(config).toEqual({});
+  });
+
+  it('engineId 指向不存在的档案（并发删除留下的残值）→ 回落免费引擎，不抛错', () => {
+    const { engine, config } = resolveEngine({ engineId: '已删掉的', profiles: [profile()] });
+    expect(engine.id).toBe('google');
+    expect(config).toEqual({});
+  });
+
+  it('裸 openai-compat（没配任何档案）→ 引擎自己给出可行动的 AUTH 提示，不是网络错误', async () => {
+    const { engine, config } = resolveEngine({ engineId: 'openai-compat', profiles: [] });
+    expect(engine.id).toBe('openai-compat');
+    await expect(
+      engine.translate({ texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal }, config),
+    ).rejects.toThrow(/API Key/);
+  });
+});
+
+describe('createProfileId：新建档案的稳定唯一 id', () => {
+  it('非空、互不相同，且不拿 label 当 id', () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 50; i += 1) ids.add(createProfileId());
+    for (const id of ids) expect(id.trim().length).toBeGreaterThan(0);
+    expect(ids.size).toBe(50);
+    expect(ids.has('我的 DeepSeek')).toBe(false);
+  });
+});
+
+describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
+  const v2Config = {
+    engineId: 'openai-compat',
+    engineConfig: { apiKey: 'sk-ds', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  };
+
+  it('openai-compat + DeepSeek 预设 → 一个档案，字段一字不差，engineId 变成档案 id', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, ...v2Config, providerPreset: 'deepseek' } });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([
+      {
+        id: LEGACY_PROFILE_ID,
+        label: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat',
+        apiKey: 'sk-ds',
+      },
+    ]);
+    expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
+    expect(settings.version).toBe(CURRENT_VERSION);
+  });
+
+  it('label 取迁移当时 providerPreset 对应的服务商名；custom / 缺失 / 脏值用「我的接口」', async () => {
+    const cases: Array<[unknown, string]> = [
+      ['openai', 'OpenAI'],
+      ['deepseek', 'DeepSeek'],
+      ['ollama', 'Ollama（本机）'],
+      ['custom', '我的接口'],
+      [undefined, '我的接口'],
+      ['claude', '我的接口'],
+    ];
+    for (const [preset, label] of cases) {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: { version: 2, ...v2Config, providerPreset: preset } });
+      const settings = await loadSettings(area);
+      expect(settings.profiles.map((item) => item.label)).toEqual([label]);
+    }
+  });
+
+  it('engineId 是 google 时不产生档案，也不改 engineId（那份 engineConfig 多半是没选过的残留）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 2,
+        engineId: 'google',
+        providerPreset: 'deepseek',
+        engineConfig: { apiKey: 'sk-ds', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([]);
+    expect(settings.engineId).toBe('google');
+  });
+
+  it('engineConfig 坏掉也得到一个空档案而不是崩：字段全按默认补齐', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, engineId: 'openai-compat', engineConfig: null } });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([
+      { id: LEGACY_PROFILE_ID, label: '我的接口', baseUrl: '', model: '', apiKey: '' },
+    ]);
+    expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
+  });
+
+  it('v1 数据按序走两步：displayMode 冻结值迁移 + 档案折叠', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 1,
+        displayMode: 'bilingual',
+        engineId: 'openai-compat',
+        providerPreset: 'openai',
+        engineConfig: { apiKey: 'sk-oai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.displayMode).toBe('translated-only');
+    expect(settings.profiles).toEqual([
+      {
+        id: LEGACY_PROFILE_ID,
+        label: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o-mini',
+        apiKey: 'sk-oai',
+      },
+    ]);
+    expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
+  });
+
+  it('迁移过一次再存回存储（v3）：重复加载不会折出第二个档案，也不动 engineId', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, ...v2Config, providerPreset: 'deepseek' } });
+    const first = await loadSettings(area);
+    await saveSettings(first, area);
+    // 存储里落定的是 v3 形状：engineConfig / providerPreset 不再存在。
+    const raw = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY] as Record<string, unknown>;
+    expect(raw.version).toBe(CURRENT_VERSION);
+    expect('engineConfig' in raw).toBe(false);
+    expect('providerPreset' in raw).toBe(false);
+    const second = await loadSettings(area);
+    expect(second).toEqual(first);
+    expect(second.profiles).toHaveLength(1);
+  });
+
+  it('已有 profiles 的 v3 数据即使残留 engineConfig 也不再迁移（幂等）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 3,
+        engineId: 'p-a',
+        profiles: [profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })],
+        engineConfig: { apiKey: 'sk-ghost', baseUrl: 'https://ghost.example/v1', model: 'ghost' },
+        providerPreset: 'ollama',
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })]);
+    expect(settings.engineId).toBe('p-a');
+  });
+
+  it('v2 的其它字段原样保留（迁移只动 engineConfig / providerPreset / engineId 三处）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 2,
+        ...v2Config,
+        targetLang: 'ja',
+        displayMode: 'bilingual',
+        concurrency: 5,
+        glossary: [{ from: 'DSH', to: 'DeepSeek Harness' }],
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.targetLang).toBe('ja');
+    // v2 存储里的 bilingual 是用户选过的，v3 迁移不许顺手改掉。
+    expect(settings.displayMode).toBe('bilingual');
+    expect(settings.concurrency).toBe(5);
+    expect(settings.glossary).toEqual([{ from: 'DSH', to: 'DeepSeek Harness' }]);
   });
 });
 
@@ -3593,10 +3859,12 @@ describe('loadSettings / saveSettings', () => {
     expect(await loadSettings(new MemoryStorage())).toEqual(DEFAULT_SETTINGS);
   });
 
-  it('保存后能读回', async () => {
+  it('档案列表保存后能原样读回（含 apiKey：完整读取是给受信页面用的）', async () => {
     const area = new MemoryStorage();
-    await saveSettings({ ...DEFAULT_SETTINGS, targetLang: 'ko' }, area);
-    expect((await loadSettings(area)).targetLang).toBe('ko');
+    await saveSettings({ ...DEFAULT_SETTINGS, profiles: [profile()], engineId: 'p1' }, area);
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([profile()]);
+    expect(settings.engineId).toBe('p1');
   });
 
   it('缺失版本号的老数据按当前版本读出', async () => {
@@ -3622,31 +3890,58 @@ describe('loadSettings / saveSettings', () => {
 
   it('写入时归一化，脏数据进不了存储', async () => {
     const area = new MemoryStorage();
-    await saveSettings({ ...DEFAULT_SETTINGS, concurrency: 999, version: 0 }, area);
+    await saveSettings(
+      { ...DEFAULT_SETTINGS, concurrency: 999, version: 0, profiles: '脏' as unknown as EngineProfile[] },
+      area,
+    );
     const stored = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY];
     expect(stored).toEqual({ ...DEFAULT_SETTINGS, concurrency: 8 });
   });
 });
 
-describe('loadUiSettings', () => {
-  it('不带出 API Key，其余设置与完整读取一致', async () => {
+describe('loadUiSettings（内容脚本的投影）', () => {
+  it('剥掉**每个**档案的 apiKey；列表渲染比单字段更容易带出值，逐项钉死', async () => {
     const area = new MemoryStorage();
     await saveSettings(
-      { ...DEFAULT_SETTINGS, engineConfig: { apiKey: 'sk-secret', baseUrl: 'https://a.example/v1', model: 'm' } },
+      {
+        ...DEFAULT_SETTINGS,
+        engineId: 'p2',
+        profiles: [
+          profile({ id: 'p1', apiKey: 'sk-alpha' }),
+          profile({ id: 'p2', apiKey: 'sk-beta' }),
+          profile({ id: 'p3', apiKey: 'sk-gamma' }),
+        ],
+      },
       area,
     );
 
     const ui = await loadUiSettings(area);
-    expect(ui.engineConfig).not.toHaveProperty('apiKey');
-    expect(ui.engineConfig).toEqual({ baseUrl: 'https://a.example/v1', model: 'm' });
+    expect(ui.profiles).toHaveLength(3);
+    for (const item of ui.profiles) {
+      expect(item).not.toHaveProperty('apiKey');
+    }
+    // 其余字段照常带出（弹窗/内容脚本要看 label、id、地址、模型）。
+    expect(ui.profiles[1]).toEqual({ id: 'p2', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(ui.engineId).toBe('p2');
     expect(ui.targetLang).toBe(DEFAULT_SETTINGS.targetLang);
-    expect(JSON.stringify(ui)).not.toContain('sk-secret');
+    const json = JSON.stringify(ui);
+    for (const secret of ['sk-alpha', 'sk-beta', 'sk-gamma']) expect(json).not.toContain(secret);
   });
 
-  it('完整读取仍然拿得到 API Key（service worker 与设置页需要）', async () => {
+  it('完整读取仍然拿得到每个 Key（service worker 与设置页需要）', async () => {
     const area = new MemoryStorage();
-    await saveSettings({ ...DEFAULT_SETTINGS, engineConfig: { apiKey: 'sk-secret', baseUrl: 'https://a.example/v1', model: 'm' } }, area);
-    expect((await loadSettings(area)).engineConfig.apiKey).toBe('sk-secret');
+    await saveSettings(
+      {
+        ...DEFAULT_SETTINGS,
+        profiles: [
+          profile({ id: 'p1', apiKey: 'sk-alpha' }),
+          profile({ id: 'p2', apiKey: 'sk-beta' }),
+        ],
+      },
+      area,
+    );
+    const settings = await loadSettings(area);
+    expect(settings.profiles.map((item) => item.apiKey)).toEqual(['sk-alpha', 'sk-beta']);
   });
 });
 
@@ -3660,49 +3955,22 @@ describe('无扩展环境下的默认存储', () => {
 /**
  * 服务商预设（用户实测把模型名填成 `deepseek`（正确值 `deepseek-chat`）拿到
  * 一个界面上看不出原因的 HTTP 400 —— 这类错误用一个下拉就能防住）。
- * 存储字段 `providerPreset` 默认 `custom`：**老数据没有这个字段，加载不报错、
- * 已有用户的存储值一个都不动**（mergeSettings 逐字段补齐的老规矩）。
+ * v3 起它**只是档案编辑表单的填写捷径**，不再是一个持久化字段；
+ * 唯一还读它的地方是 v2 → v3 迁移（用它推导老档案的中文 label）。
  */
-describe('服务商预设（providerPreset）', () => {
-  it('默认与老数据（缺字段）都是 custom，不报错也不改别人的值', () => {
-    expect(DEFAULT_SETTINGS.providerPreset).toBe('custom');
-    const legacy = mergeSettings({ targetLang: 'ja', engineConfig: { baseUrl: 'https://a.example/v1', model: '我的模型' } });
-    expect(legacy.providerPreset).toBe('custom');
-    // 补齐预设字段不能顺手改写已有字段。
-    expect(legacy.targetLang).toBe('ja');
-    expect(legacy.engineConfig).toEqual({ apiKey: '', baseUrl: 'https://a.example/v1', model: '我的模型' });
-  });
-
-  it('合法值原样保留；未知/脏值回落 custom（而不是崩或写进脏值）', () => {
-    for (const id of ['custom', 'openai', 'deepseek', 'ollama']) {
-      expect(mergeSettings({ providerPreset: id }).providerPreset).toBe(id);
-    }
-    expect(mergeSettings({ providerPreset: 'claude' }).providerPreset).toBe('custom');
-    expect(mergeSettings({ providerPreset: 42 }).providerPreset).toBe('custom');
-    expect(mergeSettings({ providerPreset: null }).providerPreset).toBe('custom');
-  });
-
-  it('loadSettings 读老存储（没有该字段）后能原样往返保存', async () => {
-    const area = new MemoryStorage();
-    await area.set({ [SETTINGS_KEY]: { version: 2, targetLang: 'ja' } });
-    const loaded = await loadSettings(area);
-    expect(loaded.providerPreset).toBe('custom');
-    await saveSettings(loaded, area);
-    expect((await loadSettings(area)).providerPreset).toBe('custom');
-  });
-
+describe('服务商预设（PROVIDER_PRESETS，只作为档案模板）', () => {
   it('预填值逐字钉住：OpenAI / DeepSeek / Ollama 的地址与模型名（不确定的服务商不放）', () => {
     const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
     expect([...byId.keys()]).toEqual(['custom', 'openai', 'deepseek', 'ollama']);
-    expect(byId.get('openai')).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
-    expect(byId.get('deepseek')).toMatchObject({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
-    expect(byId.get('ollama')).toMatchObject({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
+    expect(byId.get('openai')).toMatchObject({ label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
+    expect(byId.get('deepseek')).toMatchObject({ label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(byId.get('ollama')).toMatchObject({ label: 'Ollama（本机）', baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
     // 自定义：不预填，保持现状。
     expect(byId.get('custom')?.baseUrl).toBeUndefined();
     expect(byId.get('custom')?.model).toBeUndefined();
   });
 
-  it('每个预填地址都能通过存储层的 BaseURL 校验（填进去不会反被归一化吞掉）', () => {
+  it('每个预填地址都能通过存储层的 BaseURL 校验（填进档案不会反被归一化吞掉）', () => {
     for (const preset of PROVIDER_PRESETS) {
       if (preset.baseUrl !== undefined) expect(isAllowedBaseUrl(preset.baseUrl)).toBe(true);
     }
@@ -3721,7 +3989,8 @@ Expected: FAIL — 模块不存在。
 ```ts
 // src/shared/settings.ts
 import type { StorageArea } from '../core/cache';
-import type { Term } from '../engines/types';
+import { DEFAULT_ENGINE_ID, getEngine, OPENAI_COMPAT_ENGINE_ID } from '../engines/registry';
+import type { EngineConfig, Term, Translator } from '../engines/types';
 import { chromeArea } from './chrome-area';
 
 export interface SiteRule {
@@ -3729,27 +3998,50 @@ export interface SiteRule {
   action: 'translate' | 'never';
 }
 
-export interface EngineConfigSettings {
-  apiKey: string;
+/**
+ * 一份服务商档案 = 一个「OpenAI 兼容」接口的完整凭据（地址 + 模型 + Key）加一个用户自己起的名字。
+ *
+ * 动机：设置里今天只有一份 `{apiKey, baseUrl, model}`，想同时用 DeepSeek、OpenAI、硅基流动、
+ * Ollama 的人只能在三个框里来回改。改成档案列表后，弹窗的「翻译引擎」下拉直接按名字切换。
+ *
+ * `id` 是档案的**唯一引用键**（`engineId` 存的就是它）：新建时生成（{@link createProfileId}），
+ * 之后不变。**不要拿 label 当 id**——名字是随便改的，改了名字不该把正在用的选择弄丢。
+ */
+export interface EngineProfile {
+  id: string;
+  label: string;
   baseUrl: string;
   model: string;
+  apiKey: string;
+}
+
+/**
+ * 新建档案的 id：稳定、唯一、与 label 无关。
+ * 优先用平台的 UUID；拿不到（非安全上下文等）时退到「时间戳 + 随机串」——仍然不需要 label 参与。
+ */
+export function createProfileId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (typeof randomUuid === 'string') return `p-${randomUuid}`;
+  return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** 服务商预设的 id。`custom` = 不预填，用户自己填什么是什么。 */
 export type ProviderPresetId = 'custom' | 'openai' | 'deepseek' | 'ollama';
 
 /**
- * 服务商预设：选中后**自动填入**接口地址与模型名。
+ * 服务商预设：档案编辑表单里「从服务商模板创建」的选项——选中即**预填**接口地址与模型名。
  *
  * 动机是真实踩过的坑：用户在模型名里填 `deepseek`（正确值是 `deepseek-chat`），
- * 拿到一个界面上看不出原因的 `HTTP 400`。这类错误完全可以用一次下拉选择消除。
+ * 拿到一个界面上看不出原因的 HTTP 400。这类错误完全可以用一次下拉选择消除。
  * 只放**确定无疑**的三家（OpenAI / DeepSeek / Ollama 本机默认端口）——
  * 拿不准的服务商宁可不放，也不预填一个错的模型名。
  *
  * 预设只是**填写捷径**，不是锁定：选完之后接口地址与模型名照常手改，
- * 改完即视为自定义（设置页负责把下拉翻回 `custom`，并把用户的修改当用户的修改看待——
- * 预设永远不许把它覆盖回去）。默认值是 `custom`，老用户的存储里根本没有这个字段，
- * 加载按 `custom` 补齐，任何已存值都不会被改动。
+ * 改完即视为自定义（编辑表单负责把下拉翻回 `custom`，预设永远不许覆盖用户敲进去的值）。
+ *
+ * **v3 起它不再是一个设置字段**：曾经每份设置只有一个 `providerPreset`，而现在每个档案
+ * 各自编辑，记一个全局的"上次选了哪家"既没有消费者、又必然与档案内容漂移。
+ * 今天唯一还读它的地方是 v2 → v3 迁移（用它推导老档案的中文名）。
  */
 export interface ProviderPreset {
   id: ProviderPresetId;
@@ -3796,14 +4088,15 @@ export const DISPLAY_MODES: ReadonlyArray<{ value: DisplayMode; label: string }>
 
 export interface Settings {
   version: number;
-  engineId: string;
-  engineConfig: EngineConfigSettings;
   /**
-   * 设置页「服务商」下拉的当前选择（见 {@link PROVIDER_PRESETS}）。
-   * 它只是**填表捷径的记录**：翻译链路完全不看它，引擎与请求参数照旧由
-   * `engineId` + `engineConfig` 决定；改它不会改变任何已存的地址/模型/Key。
+   * 当前用的引擎：**`google`（免费接口）或某个档案的 `id`**。
+   * 「档案 → 用哪个引擎 + 哪份配置」的解析只有一处：{@link resolveEngine}。
+   * 调用方（service worker、弹窗、设置页）一律走它，不许各自写一份 if。
+   * 指向不存在的档案时解析回落免费引擎；设置页删除档案时会把这里落到一个**存在**的目标。
    */
-  providerPreset: ProviderPresetId;
+  engineId: string;
+  /** 服务商档案列表。曾经这里是一份匿名的 `engineConfig`，v2 → v3 迁移见 `migrate`。 */
+  profiles: EngineProfile[];
   targetLang: string;
   sourceLang: string;
   displayMode: DisplayMode;
@@ -3828,13 +4121,21 @@ export interface Settings {
 export const SETTINGS_KEY = 'jinyi:settings';
 
 /** 当前设置 schema 版本；改动字段语义时递增。 */
-export const CURRENT_VERSION = 2;
+export const CURRENT_VERSION = 3;
+
+/**
+ * v2 → v3 迁移产物固定用这个 id（老 `engineId === 'openai-compat'` 也迁到它）。
+ * 常量导出：测试与「删除档案后 engineId 回落」之类的判断都引用它，不各写字面量。
+ */
+export const LEGACY_PROFILE_ID = 'legacy';
+
+/** 没有名字的档案在界面上叫什么。迁移与反序列化共用，避免两处各写一份漂移。 */
+const FALLBACK_PROFILE_LABEL = '我的接口';
 
 export const DEFAULT_SETTINGS: Settings = {
   version: CURRENT_VERSION,
-  engineId: 'google',
-  engineConfig: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  providerPreset: 'custom',
+  engineId: DEFAULT_ENGINE_ID,
+  profiles: [],
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
   displayMode: 'translated-only',
@@ -3901,6 +4202,7 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
  *
  * 导出是给**设置页**用的：它必须在保存按钮里给出与这里**同一套判据**的提示，否则会出现
  * 「设置页说保存成功、存储层把地址悄悄退回默认值」这种用户永远查不出来的分歧。
+ * 档案列表的每个 `baseUrl` 也逐条走这同一个判据，不再写第二份。
  */
 export function isAllowedBaseUrl(value: string): boolean {
   let url: URL;
@@ -3939,33 +4241,49 @@ function pickGlossary(value: unknown): Term[] {
   return out;
 }
 
-/** 服务商预设的读取：认不出来的一切值（含老数据缺字段）都回落 `custom`。 */
-function pickProviderPreset(value: unknown): ProviderPresetId {
-  if (typeof value === 'string' && PROVIDER_PRESETS.some((preset) => preset.id === value)) {
-    return value as ProviderPresetId;
+/**
+ * 单个档案的读取：逐字段校验，坏条目丢掉而不是让整页崩掉（`pickSiteRules` 的老规矩）。
+ *
+ * - 没有合法 `id` 的条目**必须**丢：`engineId` 按 id 引用档案，没有 id 的档案无法被指向，
+ *   留在列表里只会成为一个永远选不中的幽灵条目。
+ * - `baseUrl` 非法（脏存储、被绕过的 UI）归一化成**空串**而不是某个默认端点：
+ *   档案的 apiKey 就存在同一条目里，"退回默认地址"等于把用户的 Key 发给另一家服务商。
+ *   空地址让引擎在翻译时明确报「尚未填写接口地址」，不发任何请求。
+ *   （v2 时代单份配置的"非法退回默认值"策略在档案列表下不再成立：那时地址与 Key 的
+ *   对应关系只有一份，现在每份 Key 都属于它自己那条地址。）
+ * - label 空白按缺失处理，界面上才不会出现一排选不出名字的条目。
+ */
+function pickProfile(value: unknown): EngineProfile | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Partial<EngineProfile>;
+  if (typeof raw.id !== 'string' || raw.id.trim().length === 0) return null;
+  const label = pickString(raw.label, '');
+  let baseUrl = '';
+  if (typeof raw.baseUrl === 'string') {
+    const trimmed = raw.baseUrl.trim();
+    if (isAllowedBaseUrl(trimmed)) baseUrl = trimmed;
   }
-  return DEFAULT_SETTINGS.providerPreset;
-}
-
-function pickEngineConfig(value: unknown): EngineConfigSettings {  const raw = (value ?? {}) as Partial<EngineConfigSettings>;
   return {
-    apiKey: pickString(raw.apiKey, DEFAULT_SETTINGS.engineConfig.apiKey),
-    baseUrl: pickBaseUrl(raw.baseUrl),
-    model: pickString(raw.model, DEFAULT_SETTINGS.engineConfig.model),
+    id: raw.id,
+    label: label.trim().length > 0 ? label : FALLBACK_PROFILE_LABEL,
+    baseUrl,
+    model: pickString(raw.model, ''),
+    apiKey: pickString(raw.apiKey, ''),
   };
 }
 
-/**
- * BaseURL 决定 `Authorization: Bearer <apiKey>` 发往哪里，是这个凭据的唯一下游，
- * 所以它是反序列化边界上必须校验的字段而不是一个可自由填写的字符串：
- * 只接受 https（本机回环地址放行 http，Ollama 等本地服务默认就是 http）。
- * 非法值不抛错，退回默认值——这样错误输入永远不会变成"把 Key 发到别处"。
- */
-function pickBaseUrl(value: unknown): string {
-  if (typeof value !== 'string') return DEFAULT_SETTINGS.engineConfig.baseUrl;
-  const trimmed = value.trim();
-  if (!isAllowedBaseUrl(trimmed)) return DEFAULT_SETTINGS.engineConfig.baseUrl;
-  return trimmed;
+/** 档案列表的读取：非数组当没有；重复 id 只留第一个（engineId 只能有一个指代对象）。 */
+function pickProfiles(value: unknown): EngineProfile[] {
+  if (!Array.isArray(value)) return [];
+  const out: EngineProfile[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const profile = pickProfile(raw);
+    if (profile === null || seen.has(profile.id)) continue;
+    seen.add(profile.id);
+    out.push(profile);
+  }
+  return out;
 }
 
 /**
@@ -3981,8 +4299,7 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
   return {
     version: pickVersion(version ?? input.version),
     engineId: pickString(input.engineId, DEFAULT_SETTINGS.engineId),
-    engineConfig: pickEngineConfig(input.engineConfig),
-    providerPreset: pickProviderPreset(input.providerPreset),
+    profiles: pickProfiles(input.profiles),
     targetLang: pickString(input.targetLang, DEFAULT_SETTINGS.targetLang),
     sourceLang: pickString(input.sourceLang, DEFAULT_SETTINGS.sourceLang),
     displayMode: pickDisplayMode(input.displayMode),
@@ -3996,6 +4313,31 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
     siteRules: pickSiteRules(input.siteRules),
     glossary: pickGlossary(input.glossary),
     systemPrompt: pickString(input.systemPrompt, DEFAULT_SETTINGS.systemPrompt),
+  };
+}
+
+/**
+ * 「engineId → 用哪个引擎 + 用哪份配置」的**唯一一处**解析。
+ *
+ * service worker、弹窗、设置页全走它。写第二份 if 的代价是现成的：某天加一种引擎，
+ * 漏掉的那个调用点就会拿档案 id 去 `getEngine` 里查不到、静默回落到免费引擎——
+ * 用户以为在用 DeepSeek，实际在烧 Google 额度。
+ *
+ * 解析规则（`engineId` 只有两种取值形态）：
+ * - 命中某个档案 → OpenAI 兼容引擎 + **那份**档案的 `{apiKey, baseUrl, model}`；
+ * - 没命中 → `getEngine` 的既有语义（'google' 即免费引擎；未知 id 回落免费引擎）。
+ *   档案被别处删掉后留下的失效 engineId 因此照常可用，只是安静地用免费接口——
+ *   设置页删除当前档案时承诺过把 engineId 落到存在的目标，这里是最后一道防线。
+ */
+export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>): {
+  engine: Translator;
+  config: EngineConfig;
+} {
+  const profile = settings.profiles.find((item) => item.id === settings.engineId);
+  if (profile === undefined) return { engine: getEngine(settings.engineId), config: {} };
+  return {
+    engine: getEngine(OPENAI_COMPAT_ENGINE_ID),
+    config: { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.model },
   };
 }
 
@@ -4023,14 +4365,14 @@ function resolveArea(area?: StorageArea): StorageArea {
 }
 
 /**
- * 读取完整设置（**含 API Key**）。
+ * 读出完整设置（**含每个档案的 API Key**）。
  *
  * 调用方是**扩展自身的受信页面与后台**：service worker、设置页、弹窗——三者同源
  * （`chrome-extension://`），谁也拿不到对方拿不到的东西，所以弹窗读完整设置不是越权。
  * 真正需要把密钥隔离开的是**内容脚本**：它跑在网页的进程里，一律用 `loadUiSettings()`，
- * 那个类型里根本没有 `apiKey` 字段——注意这是**类型级**投影（下游拿不到字段），不是
- * 内存级隔离（实现上仍经由本函数读出整份设置，见 `loadUiSettings` 的注释）。密钥不得进入
- * 日志、消息与导出的 JSON（规格 §7.3）。
+ * 那个类型里档案列表**每一项**都没有 `apiKey` 字段——注意这是**类型级**投影（下游拿不到
+ * 字段），不是内存级隔离（实现上仍经由本函数读出整份设置，见 `loadUiSettings` 的注释）。
+ * 密钥不得进入日志、消息与导出的 JSON（规格 §7.3）。
  *
  * 这里也是**迁移入口**（规格 §7.3），具体步骤见 `migrate`。
  */
@@ -4043,16 +4385,79 @@ function resolveArea(area?: StorageArea): StorageArea {
  * 配过一次引擎或改过目标语言，就会把它一起写进去——不可能是用户的选择。
  * 不迁的话，所有配过引擎的老用户升级后仍然看到双语，而他们从来没选过双语
  * （实测就是这么发生的：用户配完 DeepSeek 后升级，页面还是双语）。
- *
  * 只动 `'bilingual'`：`'replace'` 交给 `pickDisplayMode` 映射，其余脏值交给它兜底。
  * v2 及以后存储里的 `'bilingual'` 是用户真的在界面上选过的，**不能动**。
+ *
+ * **v2 → v3：单份 `engineConfig` 折成一个档案。**见 `foldLegacyEngineConfig`。
+ *
+ * 迁移按 `storedVersion` 分支、**只在 `loadSettings` 里发生**：v3 数据从版本闸门
+ * （`storedVersion >= CURRENT_VERSION`）直接原样返回，不会被重复折叠——幂等性靠的就是
+ * 这一道闸门加上"折叠只在 v2 形状上发生"。
  */
 function migrate(raw: unknown, storedVersion: number): unknown {
-  if (storedVersion >= 2) return raw;
+  if (storedVersion >= CURRENT_VERSION) return raw;
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
-  const record = raw as Record<string, unknown>;
-  if (record.displayMode !== 'bilingual') return raw;
-  return { ...record, displayMode: 'translated-only' };
+  let record = raw as Record<string, unknown>;
+  if (storedVersion < 2 && record.displayMode === 'bilingual') {
+    record = { ...record, displayMode: 'translated-only' };
+  }
+  if (storedVersion < 3) {
+    record = foldLegacyEngineConfig(record);
+  }
+  return record;
+}
+
+/**
+ * v2 → v3 的折叠：把老的那份 `{apiKey, baseUrl, model}` 变成一个档案（id 固定
+ * `LEGACY_PROFILE_ID`），并把 `engineId === 'openai-compat'` 改指向它。
+ *
+ * 三个刻意的决定：
+ *
+ * 1. **只有当时真的在用自定义接口（`engineId === 'openai-compat'`）才折叠。**
+ *    用 google 的老用户存储里那份 engineConfig 是设置页默认值或被放弃的填写——凭空造一个
+ *    档案会让弹窗下拉冒出一个用户没要过的条目。（代价如实说：那种用户填过的 Key/地址会随
+ *    v3 丢弃，需要重新建一次档案；他当时既然选择不用它，这比一个来路不明的档案更可预期。）
+ * 2. **label 优先取当时存的 `providerPreset` 对应的服务商名**——那个字段记录的就是
+ *    "这份配置是从哪家填出来的"，迁移后它就是档案名，老用户不用猜"我的接口"是哪个。
+ *    `custom`/缺失/脏值用「我的接口」。
+ * 3. 字段值**原样搬运**，归一化（地址判据、空白 label 等）交给 `mergeSettings` 的
+ *    反序列化边界，两处不各写一份校验。
+ */
+function foldLegacyEngineConfig(record: Record<string, unknown>): Record<string, unknown> {
+  if (record.engineId !== OPENAI_COMPAT_ENGINE_ID) return record;
+  const storedConfig: unknown = record.engineConfig;
+  const config = (
+    storedConfig !== null && typeof storedConfig === 'object' && !Array.isArray(storedConfig)
+      ? storedConfig
+      : {}
+  ) as Partial<{ apiKey: string; baseUrl: string; model: string }>;
+  const next: Record<string, unknown> = {
+    ...record,
+    profiles: [
+      {
+        id: LEGACY_PROFILE_ID,
+        label: legacyLabelForPreset(record.providerPreset),
+        baseUrl: typeof config.baseUrl === 'string' ? config.baseUrl : '',
+        model: typeof config.model === 'string' ? config.model : '',
+        apiKey: typeof config.apiKey === 'string' ? config.apiKey : '',
+      },
+    ],
+    engineId: LEGACY_PROFILE_ID,
+  };
+  // 真相只留一份：老字段在迁移产物里不残留（mergeSettings 本来也不读它们，但存储里
+  // 留着会让"下次迁移"的判据变得含糊）。
+  delete next.engineConfig;
+  delete next.providerPreset;
+  return next;
+}
+
+/** 老 `providerPreset` → 新档案的名字。认不出来的一切值（含 custom 与缺失）都叫「我的接口」。 */
+function legacyLabelForPreset(value: unknown): string {
+  if (typeof value === 'string' && value !== 'custom') {
+    const preset = PROVIDER_PRESETS.find((item) => item.id === value);
+    if (preset !== undefined) return preset.label;
+  }
+  return FALLBACK_PROFILE_LABEL;
 }
 
 /**
@@ -4073,23 +4478,31 @@ export async function loadSettings(area?: StorageArea): Promise<Settings> {
   return mergeSettings(migrate(stored, storedVersion), CURRENT_VERSION);
 }
 
-/** 不带 API Key 的接口配置投影，见 {@link loadUiSettings} 的如实定性。 */
-export type UiEngineConfig = Omit<EngineConfigSettings, 'apiKey'>;
+/** 不带 API Key 的档案投影，见 {@link loadUiSettings} 的如实定性。 */
+export type UiEngineProfile = Omit<EngineProfile, 'apiKey'>;
 
-export type UiSettings = Omit<Settings, 'engineConfig'> & { engineConfig: UiEngineConfig };
+export type UiSettings = Omit<Settings, 'profiles'> & { profiles: UiEngineProfile[] };
 
 /**
  * 读出**投影版**设置，供内容脚本一类不该碰凭据的调用方使用。
  *
- * 如实定性——这是**类型级**隔离，不是内存级隔离：`UiSettings` 里没有 `apiKey` 字段，
+ * 如实定性——这是**类型级**隔离，不是内存级隔离：`UiEngineProfile` 里没有 `apiKey` 字段，
  * 下游代码拿不到它；而实现上本函数仍调用 `loadSettings` 读出整份设置再丢掉字段，密钥会
  * **瞬态**出现在调用方所在 world 的堆里。内容脚本处于 isolated world，页面脚本本来就
  * 访问不到那个堆，实际风险接近 0——但别把投影读成"密钥从不经过网页进程内存"。
  * 要做到结构性隔离，得把 apiKey 拆成独立存储键、投影版根本不读它（后续工作，尚未做）。
+ *
+ * 档案列表时代新增的义务：**每一项都要剥**，不是剥一个顶层字段。列表渲染天然比单字段
+ * 更容易把值带出去，所以这里用逐项解构、并由测试用三个不同密钥逐条断言（settings.test、
+ * popup.test、options.test 三处），漏剥任何一项都会红。
  */
 export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
-  const { engineConfig, ...rest } = await loadSettings(area);
-  return { ...rest, engineConfig: { baseUrl: engineConfig.baseUrl, model: engineConfig.model } };
+  const { profiles, ...rest } = await loadSettings(area);
+  return { ...rest, profiles: profiles.map(stripProfileApiKey) };
+}
+
+function stripProfileApiKey({ apiKey: _apiKey, ...visible }: EngineProfile): UiEngineProfile {
+  return visible;
 }
 
 /**
@@ -4098,11 +4511,10 @@ export async function loadUiSettings(area?: StorageArea): Promise<UiSettings> {
  * （弹窗每次改动开关都会保存一次），会把新版字段悄悄丢掉。
  *
  * 注意这是**整份覆盖**：调用方必须持有完整设置（弹窗就是 `loadSettings` 读来的那一份，
- * 它只改 targetLang / engineId，其余字段原样写回）。因此设置页实装后**不能**和弹窗
- * 各持一份快照同时写——两边各自读一次、各改一个字段，后写的那次会把对方刚改的字段
- * 抹回自己的旧值。到那时这里要加一个存储侧的局部写入 API（只写指定字段），
- * 而不是让两个页面继续整份回写。今天设置页还是占位实现（src/options/options.ts），
- * 弹窗是唯一的写入方，所以这条约束尚未被触发。
+ * 它只改 targetLang / engineId，其余字段——**包括每个档案里的 Key**——原样写回）。
+ * 设置页因此坚持"写之前重新读一次存储、只覆盖本页管的字段"（见 `options.ts`），
+ * 两边各持一份快照同时整份回写时，后写的会把对方的改动抹掉——这个约束在档案列表下
+ * 更容易踩中（档案的 Key 也在那份快照里）。
  */
 export async function saveSettings(settings: Settings, area?: StorageArea): Promise<void> {
   const target = resolveArea(area);
@@ -5181,11 +5593,10 @@ git commit -m "feat(background): 单批次缓存、引擎调用与重试降级"
 ```ts
 // src/background/service-worker.ts
 import { TieredCache, TranslationCache, type StorageArea } from '../core/cache';
-import { getEngine } from '../engines/registry';
 import { EngineError, toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
 import { isTranslateTextsMessage, MSG, type TranslateTextsResponse } from '../shared/messages';
-import { DEFAULT_SETTINGS, loadSettings } from '../shared/settings';
+import { DEFAULT_SETTINGS, loadSettings, resolveEngine } from '../shared/settings';
 import { translateBatch } from './scheduler';
 
 const MENU_TRANSLATE_PAGE = 'jinyi-translate-page';
@@ -5270,7 +5681,9 @@ async function handleTranslateTexts(
 ): Promise<TranslateTextsResponse> {
   try {
     const settings = await loadSettings(persistentArea);
-    const engine = getEngine(settings.engineId);
+    // 「用哪个引擎 + 用哪份配置」只有一处解析（shared/settings 的 resolveEngine）：
+    // engineId 现在是 `google` 或某个档案的 id，别处各写一份 if 迟早和这里漂移。
+    const { engine, config } = resolveEngine(settings);
     const targetLang = payload.targetLang ?? settings.targetLang;
 
     // 上限随设置变化；上限是实例属性而条目挂在存储区上，所以每个存储区只能有这一个实例
@@ -5281,7 +5694,7 @@ async function handleTranslateTexts(
 
     const results = await translateBatch(payload.items, {
       engine,
-      engineConfig: settings.engineConfig,
+      engineConfig: config,
       sourceLang: settings.sourceLang,
       targetLang,
       // 不支持 system prompt 的引擎传了也没用，反而会污染缓存 key。
@@ -9312,11 +9725,13 @@ body {
 ```ts
 // src/popup/popup.ts
 import { LANGUAGES } from '../core/lang';
-import { ENGINES, getEngine } from '../engines/registry';
+import { DEFAULT_ENGINE_ID, getEngine } from '../engines/registry';
+import { hasHostPermission, originPattern } from '../shared/host-permission';
 import { MSG, type PageState } from '../shared/messages';
 import {
   DISPLAY_MODES,
   loadSettings,
+  resolveEngine,
   saveSettings,
   type DisplayMode,
   type Settings,
@@ -9365,6 +9780,21 @@ function fillSelect(
   }
 }
 
+/**
+ * 「翻译引擎」下拉的选项：免费接口 + **每个档案按自己的名字**。
+ *
+ * 不是每个档案都显示"OpenAI 兼容 API"——那样配了 DeepSeek / 硅基流动 / Ollama 之后
+ * 下拉里是三条一模一样的字，根本分不出来。选择器的 value 是档案 id（`engineId` 存的
+ * 就是它），由 `resolveEngine` 在用到时解析成引擎 + 配置。
+ */
+function engineOptions(next: Settings): Array<{ value: string; label: string }> {
+  const free = getEngine(DEFAULT_ENGINE_ID);
+  return [
+    { value: free.id, label: free.name },
+    ...next.profiles.map((profile) => ({ value: profile.id, label: profile.label })),
+  ];
+}
+
 /** 用存储里的设置填三个下拉与两个快捷开关，并把 hint 算对；保存失败回滚时也走这里。 */
 function applySettings(next: Settings): void {
   settings = next;
@@ -9376,11 +9806,7 @@ function applySettings(next: Settings): void {
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
     settings.targetLang,
   );
-  fillSelect(
-    engineSelect,
-    ENGINES.map((engine) => ({ value: engine.id, label: engine.name })),
-    settings.engineId,
-  );
+  fillSelect(engineSelect, engineOptions(settings), settings.engineId);
   renderEngineHint();
 }
 
@@ -9460,10 +9886,22 @@ function setInFlight(value: boolean): void {
   if (value) renderToggle(pageState);
 }
 
+/**
+ * 提示区。判据全部走 `resolveEngine` 解析出来的那一份配置——档案列表时代 "Key 填没填"
+ * 不再是单字段问题，看的是**当前选中的那个档案**的 Key。
+ *
+ * 未授权检查是异步的（`chrome.permissions.contains`），用一个自增的 revision 防止过期
+ * 回调盖掉新一次渲染：先按"已配置"渲染，回来若发现该档案的地址还没授权，再升级为警告。
+ * 这是弹窗，只影响一句提示文案，不值得为它加同步阻塞——但也绝不能静默：切到一个
+ * 还没授权过的档案，用户必须看到"去设置页保存一次授权"这句可行动的话。
+ */
+let hintRevision = 0;
+
 function renderEngineHint(): void {
-  const engine = getEngine(settings.engineId);
+  const revision = (hintRevision += 1);
+  const { engine, config } = resolveEngine(settings);
   // 判空口径与引擎实现一致：只有空白字符也算**没填**（见 openai-compat 的构造）。
-  const missingKey = engine.needsKey && settings.engineConfig.apiKey.trim().length === 0;
+  const missingKey = engine.needsKey && (config.apiKey ?? '').trim().length === 0;
   if (missingKey) {
     engineHint.classList.add('warn');
     engineHint.textContent = '该引擎需要 API Key，请先在设置中填写。';
@@ -9476,8 +9914,22 @@ function renderEngineHint(): void {
     engineHint.textContent = '当前引擎不支持术语表，术语表对其不生效。';
     return;
   }
+  const okText = engine.needsKey ? '已配置你自己的 API Key。' : '零配置可用，无需 API Key。';
   engineHint.classList.remove('warn');
-  engineHint.textContent = engine.needsKey ? '已配置你自己的 API Key。' : '零配置可用，无需 API Key。';
+  engineHint.textContent = okText;
+
+  const baseUrl = (config.baseUrl ?? '').trim();
+  const pattern = baseUrl.length > 0 ? originPattern(baseUrl) : undefined;
+  if (!engine.needsKey || pattern === undefined) return;
+  void hasHostPermission(pattern)
+    .then((granted) => {
+      if (granted || revision !== hintRevision) return;
+      engineHint.classList.add('warn');
+      engineHint.textContent = `该档案的接口地址（${pattern}）尚未授权，请到设置页保存一次该档案以授权。`;
+    })
+    // 权限查询本身失败（真机上偶发）：保持"已配置"的乐观文案。翻译时引擎会带着
+    // 可行动的 AUTH 错误兜底，这里不借一次查询故障去吓用户。
+    .catch(() => undefined);
 }
 
 /**

@@ -100,10 +100,12 @@ export interface CacheKeyParts {
   engineId: string;
   /**
    * 引擎配置指纹（接口地址 + 模型名）。
-   * openai-compat 下用户可以随时改模型（gpt-4o-mini → gpt-4o）或接口地址，
+   * 用户可以随时改模型（gpt-4o-mini → gpt-4o）或接口地址，
    * 这两项不参与 key 就会命中上一个模型的旧译文。
    * **apiKey 不进这里**：换 key 不该让全部缓存失效；且哈希输入会落进 storage，
    * 密钥不该出现在缓存键的输入里。它只影响鉴权，不影响译文本身。
+   * **档案 id 也不进这里**（v3 的多服务商档案时代）：决定译文的是"哪个地址上的哪个模型"，
+   * 同地址同模型的两个档案理应是同一份缓存；把档案 id 混进来会让它们无谓地各存一份。
    */
   configHash: string;
   /**

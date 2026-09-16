@@ -154,11 +154,13 @@ body {
 ```ts
 // src/popup/popup.ts
 import { LANGUAGES } from '../core/lang';
-import { ENGINES, getEngine } from '../engines/registry';
+import { DEFAULT_ENGINE_ID, getEngine } from '../engines/registry';
+import { hasHostPermission, originPattern } from '../shared/host-permission';
 import { MSG, type PageState } from '../shared/messages';
 import {
   DISPLAY_MODES,
   loadSettings,
+  resolveEngine,
   saveSettings,
   type DisplayMode,
   type Settings,
@@ -207,6 +209,21 @@ function fillSelect(
   }
 }
 
+/**
+ * 「翻译引擎」下拉的选项：免费接口 + **每个档案按自己的名字**。
+ *
+ * 不是每个档案都显示"OpenAI 兼容 API"——那样配了 DeepSeek / 硅基流动 / Ollama 之后
+ * 下拉里是三条一模一样的字，根本分不出来。选择器的 value 是档案 id（`engineId` 存的
+ * 就是它），由 `resolveEngine` 在用到时解析成引擎 + 配置。
+ */
+function engineOptions(next: Settings): Array<{ value: string; label: string }> {
+  const free = getEngine(DEFAULT_ENGINE_ID);
+  return [
+    { value: free.id, label: free.name },
+    ...next.profiles.map((profile) => ({ value: profile.id, label: profile.label })),
+  ];
+}
+
 /** 用存储里的设置填三个下拉与两个快捷开关，并把 hint 算对；保存失败回滚时也走这里。 */
 function applySettings(next: Settings): void {
   settings = next;
@@ -218,11 +235,7 @@ function applySettings(next: Settings): void {
     LANGUAGES.map((lang) => ({ value: lang.code, label: lang.label })),
     settings.targetLang,
   );
-  fillSelect(
-    engineSelect,
-    ENGINES.map((engine) => ({ value: engine.id, label: engine.name })),
-    settings.engineId,
-  );
+  fillSelect(engineSelect, engineOptions(settings), settings.engineId);
   renderEngineHint();
 }
 
@@ -302,10 +315,22 @@ function setInFlight(value: boolean): void {
   if (value) renderToggle(pageState);
 }
 
+/**
+ * 提示区。判据全部走 `resolveEngine` 解析出来的那一份配置——档案列表时代 "Key 填没填"
+ * 不再是单字段问题，看的是**当前选中的那个档案**的 Key。
+ *
+ * 未授权检查是异步的（`chrome.permissions.contains`），用一个自增的 revision 防止过期
+ * 回调盖掉新一次渲染：先按"已配置"渲染，回来若发现该档案的地址还没授权，再升级为警告。
+ * 这是弹窗，只影响一句提示文案，不值得为它加同步阻塞——但也绝不能静默：切到一个
+ * 还没授权过的档案，用户必须看到"去设置页保存一次授权"这句可行动的话。
+ */
+let hintRevision = 0;
+
 function renderEngineHint(): void {
-  const engine = getEngine(settings.engineId);
+  const revision = (hintRevision += 1);
+  const { engine, config } = resolveEngine(settings);
   // 判空口径与引擎实现一致：只有空白字符也算**没填**（见 openai-compat 的构造）。
-  const missingKey = engine.needsKey && settings.engineConfig.apiKey.trim().length === 0;
+  const missingKey = engine.needsKey && (config.apiKey ?? '').trim().length === 0;
   if (missingKey) {
     engineHint.classList.add('warn');
     engineHint.textContent = '该引擎需要 API Key，请先在设置中填写。';
@@ -318,8 +343,22 @@ function renderEngineHint(): void {
     engineHint.textContent = '当前引擎不支持术语表，术语表对其不生效。';
     return;
   }
+  const okText = engine.needsKey ? '已配置你自己的 API Key。' : '零配置可用，无需 API Key。';
   engineHint.classList.remove('warn');
-  engineHint.textContent = engine.needsKey ? '已配置你自己的 API Key。' : '零配置可用，无需 API Key。';
+  engineHint.textContent = okText;
+
+  const baseUrl = (config.baseUrl ?? '').trim();
+  const pattern = baseUrl.length > 0 ? originPattern(baseUrl) : undefined;
+  if (!engine.needsKey || pattern === undefined) return;
+  void hasHostPermission(pattern)
+    .then((granted) => {
+      if (granted || revision !== hintRevision) return;
+      engineHint.classList.add('warn');
+      engineHint.textContent = `该档案的接口地址（${pattern}）尚未授权，请到设置页保存一次该档案以授权。`;
+    })
+    // 权限查询本身失败（真机上偶发）：保持"已配置"的乐观文案。翻译时引擎会带着
+    // 可行动的 AUTH 错误兜底，这里不借一次查询故障去吓用户。
+    .catch(() => undefined);
 }
 
 /**
