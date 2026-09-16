@@ -2,19 +2,37 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
+  LEGACY_PROFILE_ID,
   PROVIDER_PRESETS,
   SETTINGS_KEY,
+  createProfileId,
   isAllowedBaseUrl,
   loadSettings,
   loadUiSettings,
   mergeSettings,
+  resolveEngine,
   saveSettings,
+  type EngineProfile,
 } from '../../src/shared/settings';
 import { MemoryStorage } from '../helpers/memory-storage';
+
+/** 构造一份形状完整合法的档案；`over` 覆盖单个字段，用例只写自己在意的那部分。 */
+function profile(over: Partial<EngineProfile> = {}): EngineProfile {
+  return {
+    id: 'p1',
+    label: '我的 DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+    apiKey: 'sk-keep',
+    ...over,
+  };
+}
 
 describe('mergeSettings', () => {
   it('空对象得到完整默认值', () => {
     expect(mergeSettings({})).toEqual(DEFAULT_SETTINGS);
+    expect(DEFAULT_SETTINGS.engineId).toBe('google');
+    expect(DEFAULT_SETTINGS.profiles).toEqual([]);
   });
 
   it('保留用户已设置的值', () => {
@@ -26,7 +44,7 @@ describe('mergeSettings', () => {
   it('补齐缺失字段', () => {
     const merged = mergeSettings({ targetLang: 'ja' });
     expect(merged.displayMode).toBe(DEFAULT_SETTINGS.displayMode);
-    expect(merged.engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
+    expect(merged.profiles).toEqual([]);
   });
 
   it('忽略类型不符的值', () => {
@@ -56,10 +74,55 @@ describe('mergeSettings', () => {
     }
   });
 
-  it('损坏的 engineConfig 退回默认值', () => {
-    expect(mergeSettings({ engineConfig: null }).engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
-    expect(mergeSettings({ engineConfig: [] }).engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
-    expect(mergeSettings({ engineConfig: 'x' }).engineConfig).toEqual(DEFAULT_SETTINGS.engineConfig);
+  describe('profiles 的反序列化边界（逐条归一化，脏条目丢掉而不是崩）', () => {
+    it('非数组一律当没有档案', () => {
+      for (const raw of [null, undefined, 'x', 42, {}]) {
+        expect(mergeSettings({ profiles: raw as unknown as EngineProfile[] }).profiles).toEqual([]);
+      }
+    });
+
+    it('缺 id / id 非字符串的条目被跳过：engineId 靠 id 引用，没有 id 的档案无法被指向', () => {
+      const merged = mergeSettings({
+        profiles: [
+          { label: '没有 id', baseUrl: 'https://a.example/v1' },
+          { id: 42, label: 'id 不是字符串' },
+          { id: '   ' },
+          profile({ id: 'good' }),
+        ] as unknown as EngineProfile[],
+      });
+      expect(merged.profiles.map((item) => item.id)).toEqual(['good']);
+    });
+
+    it('重复 id 只留第一个：engineId 只能有一个指代对象', () => {
+      const merged = mergeSettings({
+        profiles: [profile({ id: 'dup', label: '第一个' }), profile({ id: 'dup', label: '第二个' })],
+      });
+      expect(merged.profiles).toHaveLength(1);
+      expect(merged.profiles[0].label).toBe('第一个');
+    });
+
+    it('合法条目字段一字不差地保留；label 空白按「我的接口」处理', () => {
+      const merged = mergeSettings({ profiles: [profile()] });
+      expect(merged.profiles).toEqual([profile()]);
+      expect(mergeSettings({ profiles: [profile({ label: '   ' })] }).profiles[0].label).toBe('我的接口');
+      expect(mergeSettings({ profiles: [profile({ label: 42 as unknown as string })] }).profiles[0].label).toBe('我的接口');
+    });
+
+    it('apiKey / model 缺失或脏值补空串，不会凭空长出一个 Key', () => {
+      const merged = mergeSettings({
+        profiles: [{ id: 'p', apiKey: null, model: 7 }] as unknown as EngineProfile[],
+      });
+      expect(merged.profiles[0]).toEqual({ id: 'p', label: '我的接口', baseUrl: '', model: '', apiKey: '' });
+    });
+  });
+
+  it('只有一份真相：engineConfig / providerPreset 不再是设置字段，脏输入里出现也不会带出来', () => {
+    const merged = mergeSettings({
+      engineConfig: { apiKey: 'sk-x', baseUrl: 'https://a.example/v1', model: 'm' },
+      providerPreset: 'deepseek',
+    } as unknown as Record<string, unknown>);
+    expect('engineConfig' in merged).toBe(false);
+    expect('providerPreset' in merged).toBe(false);
   });
 
   it('版本号必须能原样读回（迁移要靠它判断来源版本）', () => {
@@ -74,7 +137,7 @@ describe('mergeSettings', () => {
   it('不共享默认值里的可变对象', () => {
     expect(mergeSettings({}).siteRules).not.toBe(DEFAULT_SETTINGS.siteRules);
     expect(mergeSettings({}).glossary).not.toBe(DEFAULT_SETTINGS.glossary);
-    expect(mergeSettings({}).engineConfig).not.toBe(DEFAULT_SETTINGS.engineConfig);
+    expect(mergeSettings({}).profiles).not.toBe(DEFAULT_SETTINGS.profiles);
   });
 });
 
@@ -147,20 +210,22 @@ describe('显示模式（默认值、迁移）', () => {
   });
 });
 
-describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
+describe('BaseURL 校验（它决定 API Key 发往哪里，逐档案生效）', () => {
   const baseUrlOf = (value: unknown): string =>
-    mergeSettings({ engineConfig: { baseUrl: value } }).engineConfig.baseUrl;
+    mergeSettings({ profiles: [{ id: 'p', baseUrl: value } as unknown as EngineProfile] }).profiles[0].baseUrl;
 
   it('接受 https 地址并去掉首尾空白', () => {
     expect(baseUrlOf('https://api.deepseek.com/v1')).toBe('https://api.deepseek.com/v1');
     expect(baseUrlOf('  https://api.deepseek.com/v1  ')).toBe('https://api.deepseek.com/v1');
   });
 
-  it('拒绝非 https 的远端地址', () => {
-    expect(baseUrlOf('http://evil.example')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('//evil.example')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('file:///etc/passwd')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('javascript:alert(1)')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
+  it('拒绝非 https 的远端地址：归一化成空串，绝不悄悄换成另一个真实端点', () => {
+    // 档案的 apiKey 就存进同一条目里——非法地址若"退回默认值"，等于把用户的 Key
+    // 发给另一个服务商。空串让引擎在翻译时明确报「尚未填写接口地址」，不发任何请求。
+    for (const raw of ['http://evil.example', '//evil.example', 'file:///etc/passwd', 'javascript:alert(1)']) {
+      expect(baseUrlOf(raw)).toBe('');
+    }
+    expect(baseUrlOf('http://evil.example')).not.toContain('openai');
   });
 
   it('放行本机回环地址的 http（本地推理服务）', () => {
@@ -169,10 +234,202 @@ describe('BaseURL 校验（它决定 API Key 发往哪里）', () => {
   });
 
   it('拒绝连不上主机的地址与非字符串', () => {
-    expect(baseUrlOf('not a url')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf('https://')).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
-    expect(baseUrlOf(42)).toBe(DEFAULT_SETTINGS.engineConfig.baseUrl);
+    for (const raw of ['not a url', '', 'https://', 42, null]) {
+      expect(baseUrlOf(raw)).toBe('');
+    }
+  });
+});
+
+describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + 配置」', () => {
+  it('engineId 命中某个档案 → OpenAI 兼容引擎 + 那份档案的配置（逐字段）', () => {
+    const { engine, config } = resolveEngine({ engineId: 'p1', profiles: [profile()] });
+    expect(engine.id).toBe('openai-compat');
+    expect(config).toEqual({
+      apiKey: 'sk-keep',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-chat',
+    });
+  });
+
+  it('多档案时各解析各的：命中的那份胜出，不混字段', () => {
+    const { engine, config } = resolveEngine({
+      engineId: 'p2',
+      profiles: [profile(), profile({ id: 'p2', apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' })],
+    });
+    expect(engine.id).toBe('openai-compat');
+    expect(config).toEqual({ apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' });
+  });
+
+  it('engineId 是 google → 免费引擎 + 空配置，档案完全不参与', () => {
+    const { engine, config } = resolveEngine({ engineId: 'google', profiles: [profile()] });
+    expect(engine.id).toBe('google');
+    expect(config).toEqual({});
+  });
+
+  it('engineId 指向不存在的档案（并发删除留下的残值）→ 回落免费引擎，不抛错', () => {
+    const { engine, config } = resolveEngine({ engineId: '已删掉的', profiles: [profile()] });
+    expect(engine.id).toBe('google');
+    expect(config).toEqual({});
+  });
+
+  it('裸 openai-compat（没配任何档案）→ 引擎自己给出可行动的 AUTH 提示，不是网络错误', async () => {
+    const { engine, config } = resolveEngine({ engineId: 'openai-compat', profiles: [] });
+    expect(engine.id).toBe('openai-compat');
+    await expect(
+      engine.translate({ texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal }, config),
+    ).rejects.toThrow(/API Key/);
+  });
+});
+
+describe('createProfileId：新建档案的稳定唯一 id', () => {
+  it('非空、互不相同，且不拿 label 当 id', () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 50; i += 1) ids.add(createProfileId());
+    for (const id of ids) expect(id.trim().length).toBeGreaterThan(0);
+    expect(ids.size).toBe(50);
+    expect(ids.has('我的 DeepSeek')).toBe(false);
+  });
+});
+
+describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
+  const v2Config = {
+    engineId: 'openai-compat',
+    engineConfig: { apiKey: 'sk-ds', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  };
+
+  it('openai-compat + DeepSeek 预设 → 一个档案，字段一字不差，engineId 变成档案 id', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, ...v2Config, providerPreset: 'deepseek' } });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([
+      {
+        id: LEGACY_PROFILE_ID,
+        label: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat',
+        apiKey: 'sk-ds',
+      },
+    ]);
+    expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
+    expect(settings.version).toBe(CURRENT_VERSION);
+  });
+
+  it('label 取迁移当时 providerPreset 对应的服务商名；custom / 缺失 / 脏值用「我的接口」', async () => {
+    const cases: Array<[unknown, string]> = [
+      ['openai', 'OpenAI'],
+      ['deepseek', 'DeepSeek'],
+      ['ollama', 'Ollama（本机）'],
+      ['custom', '我的接口'],
+      [undefined, '我的接口'],
+      ['claude', '我的接口'],
+    ];
+    for (const [preset, label] of cases) {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: { version: 2, ...v2Config, providerPreset: preset } });
+      const settings = await loadSettings(area);
+      expect(settings.profiles.map((item) => item.label)).toEqual([label]);
+    }
+  });
+
+  it('engineId 是 google 时不产生档案，也不改 engineId（那份 engineConfig 多半是没选过的残留）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 2,
+        engineId: 'google',
+        providerPreset: 'deepseek',
+        engineConfig: { apiKey: 'sk-ds', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([]);
+    expect(settings.engineId).toBe('google');
+  });
+
+  it('engineConfig 坏掉也得到一个空档案而不是崩：字段全按默认补齐', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, engineId: 'openai-compat', engineConfig: null } });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([
+      { id: LEGACY_PROFILE_ID, label: '我的接口', baseUrl: '', model: '', apiKey: '' },
+    ]);
+    expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
+  });
+
+  it('v1 数据按序走两步：displayMode 冻结值迁移 + 档案折叠', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 1,
+        displayMode: 'bilingual',
+        engineId: 'openai-compat',
+        providerPreset: 'openai',
+        engineConfig: { apiKey: 'sk-oai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.displayMode).toBe('translated-only');
+    expect(settings.profiles).toEqual([
+      {
+        id: LEGACY_PROFILE_ID,
+        label: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o-mini',
+        apiKey: 'sk-oai',
+      },
+    ]);
+    expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
+  });
+
+  it('迁移过一次再存回存储（v3）：重复加载不会折出第二个档案，也不动 engineId', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 2, ...v2Config, providerPreset: 'deepseek' } });
+    const first = await loadSettings(area);
+    await saveSettings(first, area);
+    // 存储里落定的是 v3 形状：engineConfig / providerPreset 不再存在。
+    const raw = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY] as Record<string, unknown>;
+    expect(raw.version).toBe(CURRENT_VERSION);
+    expect('engineConfig' in raw).toBe(false);
+    expect('providerPreset' in raw).toBe(false);
+    const second = await loadSettings(area);
+    expect(second).toEqual(first);
+    expect(second.profiles).toHaveLength(1);
+  });
+
+  it('已有 profiles 的 v3 数据即使残留 engineConfig 也不再迁移（幂等）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 3,
+        engineId: 'p-a',
+        profiles: [profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })],
+        engineConfig: { apiKey: 'sk-ghost', baseUrl: 'https://ghost.example/v1', model: 'ghost' },
+        providerPreset: 'ollama',
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })]);
+    expect(settings.engineId).toBe('p-a');
+  });
+
+  it('v2 的其它字段原样保留（迁移只动 engineConfig / providerPreset / engineId 三处）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 2,
+        ...v2Config,
+        targetLang: 'ja',
+        displayMode: 'bilingual',
+        concurrency: 5,
+        glossary: [{ from: 'DSH', to: 'DeepSeek Harness' }],
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.targetLang).toBe('ja');
+    // v2 存储里的 bilingual 是用户选过的，v3 迁移不许顺手改掉。
+    expect(settings.displayMode).toBe('bilingual');
+    expect(settings.concurrency).toBe(5);
+    expect(settings.glossary).toEqual([{ from: 'DSH', to: 'DeepSeek Harness' }]);
   });
 });
 
@@ -181,10 +438,12 @@ describe('loadSettings / saveSettings', () => {
     expect(await loadSettings(new MemoryStorage())).toEqual(DEFAULT_SETTINGS);
   });
 
-  it('保存后能读回', async () => {
+  it('档案列表保存后能原样读回（含 apiKey：完整读取是给受信页面用的）', async () => {
     const area = new MemoryStorage();
-    await saveSettings({ ...DEFAULT_SETTINGS, targetLang: 'ko' }, area);
-    expect((await loadSettings(area)).targetLang).toBe('ko');
+    await saveSettings({ ...DEFAULT_SETTINGS, profiles: [profile()], engineId: 'p1' }, area);
+    const settings = await loadSettings(area);
+    expect(settings.profiles).toEqual([profile()]);
+    expect(settings.engineId).toBe('p1');
   });
 
   it('缺失版本号的老数据按当前版本读出', async () => {
@@ -210,31 +469,58 @@ describe('loadSettings / saveSettings', () => {
 
   it('写入时归一化，脏数据进不了存储', async () => {
     const area = new MemoryStorage();
-    await saveSettings({ ...DEFAULT_SETTINGS, concurrency: 999, version: 0 }, area);
+    await saveSettings(
+      { ...DEFAULT_SETTINGS, concurrency: 999, version: 0, profiles: '脏' as unknown as EngineProfile[] },
+      area,
+    );
     const stored = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY];
     expect(stored).toEqual({ ...DEFAULT_SETTINGS, concurrency: 8 });
   });
 });
 
-describe('loadUiSettings', () => {
-  it('不带出 API Key，其余设置与完整读取一致', async () => {
+describe('loadUiSettings（内容脚本的投影）', () => {
+  it('剥掉**每个**档案的 apiKey；列表渲染比单字段更容易带出值，逐项钉死', async () => {
     const area = new MemoryStorage();
     await saveSettings(
-      { ...DEFAULT_SETTINGS, engineConfig: { apiKey: 'sk-secret', baseUrl: 'https://a.example/v1', model: 'm' } },
+      {
+        ...DEFAULT_SETTINGS,
+        engineId: 'p2',
+        profiles: [
+          profile({ id: 'p1', apiKey: 'sk-alpha' }),
+          profile({ id: 'p2', apiKey: 'sk-beta' }),
+          profile({ id: 'p3', apiKey: 'sk-gamma' }),
+        ],
+      },
       area,
     );
 
     const ui = await loadUiSettings(area);
-    expect(ui.engineConfig).not.toHaveProperty('apiKey');
-    expect(ui.engineConfig).toEqual({ baseUrl: 'https://a.example/v1', model: 'm' });
+    expect(ui.profiles).toHaveLength(3);
+    for (const item of ui.profiles) {
+      expect(item).not.toHaveProperty('apiKey');
+    }
+    // 其余字段照常带出（弹窗/内容脚本要看 label、id、地址、模型）。
+    expect(ui.profiles[1]).toEqual({ id: 'p2', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(ui.engineId).toBe('p2');
     expect(ui.targetLang).toBe(DEFAULT_SETTINGS.targetLang);
-    expect(JSON.stringify(ui)).not.toContain('sk-secret');
+    const json = JSON.stringify(ui);
+    for (const secret of ['sk-alpha', 'sk-beta', 'sk-gamma']) expect(json).not.toContain(secret);
   });
 
-  it('完整读取仍然拿得到 API Key（service worker 与设置页需要）', async () => {
+  it('完整读取仍然拿得到每个 Key（service worker 与设置页需要）', async () => {
     const area = new MemoryStorage();
-    await saveSettings({ ...DEFAULT_SETTINGS, engineConfig: { apiKey: 'sk-secret', baseUrl: 'https://a.example/v1', model: 'm' } }, area);
-    expect((await loadSettings(area)).engineConfig.apiKey).toBe('sk-secret');
+    await saveSettings(
+      {
+        ...DEFAULT_SETTINGS,
+        profiles: [
+          profile({ id: 'p1', apiKey: 'sk-alpha' }),
+          profile({ id: 'p2', apiKey: 'sk-beta' }),
+        ],
+      },
+      area,
+    );
+    const settings = await loadSettings(area);
+    expect(settings.profiles.map((item) => item.apiKey)).toEqual(['sk-alpha', 'sk-beta']);
   });
 });
 
@@ -248,49 +534,22 @@ describe('无扩展环境下的默认存储', () => {
 /**
  * 服务商预设（用户实测把模型名填成 `deepseek`（正确值 `deepseek-chat`）拿到
  * 一个界面上看不出原因的 HTTP 400 —— 这类错误用一个下拉就能防住）。
- * 存储字段 `providerPreset` 默认 `custom`：**老数据没有这个字段，加载不报错、
- * 已有用户的存储值一个都不动**（mergeSettings 逐字段补齐的老规矩）。
+ * v3 起它**只是档案编辑表单的填写捷径**，不再是一个持久化字段；
+ * 唯一还读它的地方是 v2 → v3 迁移（用它推导老档案的中文 label）。
  */
-describe('服务商预设（providerPreset）', () => {
-  it('默认与老数据（缺字段）都是 custom，不报错也不改别人的值', () => {
-    expect(DEFAULT_SETTINGS.providerPreset).toBe('custom');
-    const legacy = mergeSettings({ targetLang: 'ja', engineConfig: { baseUrl: 'https://a.example/v1', model: '我的模型' } });
-    expect(legacy.providerPreset).toBe('custom');
-    // 补齐预设字段不能顺手改写已有字段。
-    expect(legacy.targetLang).toBe('ja');
-    expect(legacy.engineConfig).toEqual({ apiKey: '', baseUrl: 'https://a.example/v1', model: '我的模型' });
-  });
-
-  it('合法值原样保留；未知/脏值回落 custom（而不是崩或写进脏值）', () => {
-    for (const id of ['custom', 'openai', 'deepseek', 'ollama']) {
-      expect(mergeSettings({ providerPreset: id }).providerPreset).toBe(id);
-    }
-    expect(mergeSettings({ providerPreset: 'claude' }).providerPreset).toBe('custom');
-    expect(mergeSettings({ providerPreset: 42 }).providerPreset).toBe('custom');
-    expect(mergeSettings({ providerPreset: null }).providerPreset).toBe('custom');
-  });
-
-  it('loadSettings 读老存储（没有该字段）后能原样往返保存', async () => {
-    const area = new MemoryStorage();
-    await area.set({ [SETTINGS_KEY]: { version: 2, targetLang: 'ja' } });
-    const loaded = await loadSettings(area);
-    expect(loaded.providerPreset).toBe('custom');
-    await saveSettings(loaded, area);
-    expect((await loadSettings(area)).providerPreset).toBe('custom');
-  });
-
+describe('服务商预设（PROVIDER_PRESETS，只作为档案模板）', () => {
   it('预填值逐字钉住：OpenAI / DeepSeek / Ollama 的地址与模型名（不确定的服务商不放）', () => {
     const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
     expect([...byId.keys()]).toEqual(['custom', 'openai', 'deepseek', 'ollama']);
-    expect(byId.get('openai')).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
-    expect(byId.get('deepseek')).toMatchObject({ baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
-    expect(byId.get('ollama')).toMatchObject({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
+    expect(byId.get('openai')).toMatchObject({ label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' });
+    expect(byId.get('deepseek')).toMatchObject({ label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(byId.get('ollama')).toMatchObject({ label: 'Ollama（本机）', baseUrl: 'http://localhost:11434/v1', model: 'llama3' });
     // 自定义：不预填，保持现状。
     expect(byId.get('custom')?.baseUrl).toBeUndefined();
     expect(byId.get('custom')?.model).toBeUndefined();
   });
 
-  it('每个预填地址都能通过存储层的 BaseURL 校验（填进去不会反被归一化吞掉）', () => {
+  it('每个预填地址都能通过存储层的 BaseURL 校验（填进档案不会反被归一化吞掉）', () => {
     for (const preset of PROVIDER_PRESETS) {
       if (preset.baseUrl !== undefined) expect(isAllowedBaseUrl(preset.baseUrl)).toBe(true);
     }
