@@ -30,6 +30,51 @@ export const INCREMENTAL_DEBOUNCE_MS = 500;
  */
 export const INCREMENTAL_MAX_SEGMENTS_PER_ROUND = 60;
 
+/**
+ * 「用户交互后的整页重扫」的防抖窗口（毫秒）。
+ *
+ * 比 `INCREMENTAL_DEBOUNCE_MS` 短，因为两者的语义不同：500ms 那一条是在等**变动潮**
+ * 安静下来（滚动、框架批量插入会连着来几十条记录）；这一条是在等**点击带出的那一次渲染**
+ * 落地。React/Vue 的 portal 面板走的是 `flushSync` 或一次微任务，一帧（16ms）之内就在 DOM 里了，
+ * 400ms 余量足够，又能让「点开菜单」的译文几乎立刻出现，而不是等半秒。
+ */
+export const INTERACTION_RESCAN_DEBOUNCE_MS = 400;
+
+/**
+ * 两次整页重扫之间的最小间隔（毫秒）。
+ *
+ * 防抖只在**静默**时收敛：用户噼里啪啦点一串（下拉菜单、标签页、翻页器）时每次点击都会
+ * 重置防抖窗口，没有节流的话这串点击结束时会连着跑好几轮整页采集。1 秒是"人连续点击的
+ * 最小间隔"量级，既不打断正常的单次交互（点一下 → 400ms 后重扫一次），又能把连点收敛成
+ * 至多每秒一次整页采集。
+ */
+export const INTERACTION_RESCAN_THROTTLE_MS = 1000;
+
+/**
+ * 整页重扫的元素数上限：超过它就**跳过**这次整页重扫，只保留原有的
+ * childList / 属性可见性两条窄路径。
+ *
+ * 取值理由：一次整页采集的成本 ≈ 每个元素一次 `getComputedStyle` + 隐藏/块级判定。
+ * 15000 元素在主流机器上仍是一次可接受的重排代价（几十毫秒），且覆盖了绝大多数
+ * 内容型页面；再往上——电商列表、地图、超长文档——单次采集会到几百毫秒量级，
+ * 挂在**用户每一次点击**后面就是把主线程按在地上摩擦。取 15000 是"覆盖大多数页面"
+ * 与"点击绝不可能卡顿"之间的分界：超过这条线的页面退回到既有的窄路径，
+ * 代价是 portal 型内容可能要还原重译才能翻（如实写进 README，不做成静默行为）。
+ *
+ * 判据是**点击那一刻**的实时元素数，不是页面翻译时的数量——页面可能在翻译后长出几万个节点。
+ */
+export const FULL_RESCAN_MAX_ELEMENTS = 15000;
+
+/** 触发整页重扫的事件。捕获阶段挂，`passive`（我们从不 `preventDefault`）。 */
+const INTERACTION_EVENTS = ['pointerdown', 'click', 'keydown'] as const;
+
+/**
+ * 一轮是被谁排起来的：`mutation` = DOM 变动（500ms 防抖），
+ * `interaction` = 用户交互要求的整页重扫（400ms 防抖 + 节流，见 `schedule`）。
+ * 两者的**处理链完全相同**，只有窗口与「本轮到点时扫什么根」不同。
+ */
+type InteractionRescanMode = 'mutation' | 'interaction';
+
 export interface IncrementalDeps {
   /**
    * 本轮扫描的采集选项（页面翻译时的设置快照）。
@@ -40,7 +85,7 @@ export interface IncrementalDeps {
   isTranslated(): boolean;
   /**
    * 本实例已被更新的内容脚本实例接管（扩展热更新、测试里的 resetModules + 重新 import）。
-   * 陈旧实例的一切回调与定时器就地自裁——旧模块的 observer 挂的是**同一个** document.body，
+   * 陈旧实例的一切回调与定时器就地自裁——旧模块的 observer 挂的是**同一个** documentElement，
    * 不清理就会在下一条用例/下一次注入里往现在的页面乱写。
    */
   isStale(): boolean;
@@ -84,6 +129,9 @@ export interface IncrementalObserver {
  * （class / style / hidden / aria-hidden / inert）。而且插件自己高频写的
  * `data-jy-id`、`data-jy-translated` **恰好都不在名单里**——整页标记根本不会入队，
  * 自触发面只剩「给隐藏 span 设 display」这一条，由回调里的 `[data-jy-root]` 排除挡下。
+ *
+ * **观察根是 `document.documentElement`，不是 `document.body`**（见 {@link resolveObserveRoot}）：
+ * portal 把面板挂到 `<html>` 下、成为 body 的**兄弟**时，挂在 body 上的观察者一个字节都看不见。
  */
 const OBSERVE_OPTIONS: MutationObserverInit = {
   childList: true,
@@ -91,6 +139,30 @@ const OBSERVE_OPTIONS: MutationObserverInit = {
   attributes: true,
   attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'inert'],
 };
+
+/**
+ * 观察根。取 `documentElement` 而不是 `body`，覆盖两类真实形态：
+ *
+ * - **portal 挂到 `<html>` 下**：React 的 `createPortal(…, document.body)` 是常见写法，
+ *   但 Radix / Headless UI 这类库允许任意容器，`document.documentElement` 也在其中；
+ *   面板此时是 body 的**兄弟**，挂在 body 上的观察者完全看不见它（digitalocean 顶部
+ *   导航下拉菜单的候选原因之一）。
+ * - **`<body>` 之外、`<html>` 之内的任何改动**：CSS 变量写在 `<html>` 的 style 上、
+ *   站点脚本给 `<html>` 加 class（主题/滚动锁/菜单打开态）都属于这一类。
+ *
+ * 提根会带进更多噪音（我们自己的浮层就挂在 `documentElement` 上），噪音由既有的两道
+ * 防护挡下，缺一不可（各自的测试见 observer.test.ts 的「自变更防护」一组）：
+ * 1. 属性路径在回调里对 `[data-jy-root]` 子树一票否决（`closest()` 不看挂在哪，只看祖先链）；
+ * 2. childList 路径上新增的插件宿主由 extractor 的 `isSkippedForText` 整体短路
+ *    ——包括那一轮的唯一代价：一次函数调用。
+ *
+ * 写成函数而不是模块级常量：与模块里其他 DOM 读取同一个纪律，**用的时候**才读
+ * `document`（内容脚本注入时机上 documentElement 一定已经有了，但没必要把这条
+ * 隐含前提焊进模块求值顺序里）。
+ */
+function resolveObserveRoot(): Element {
+  return document.documentElement;
+}
 
 /**
  * 同页共存的增量观察者注册表（挂在 globalThis：内容脚本被二次注入时是**两份模块实例**，
@@ -110,7 +182,7 @@ function globalRegistry(): InternalHandle[] {
 /**
  * 增量翻译观察者：页面翻译好之后**新出现**的内容也走同一条翻译链路。
  *
- * 四条骨架规则，各自钉着一类真实事故（细节与测试对应见各方法注释）：
+ * 五条骨架规则，各自钉着一类真实事故（细节与测试对应见各方法注释）：
  * 1. **自变更防护**：我们每译一段都会写 DOM（宿主、仅译文模式的隐藏 span——包括给它
  *    设 `display` 这类属性写入），这些变动本身会触发 MutationObserver。轮次全程在
  *    `disconnect()` 的窗口里写、写完 `takeRecords()` 丢弃攒下的记录、最后一步才重新
@@ -129,10 +201,23 @@ function globalRegistry(): InternalHandle[] {
  *    这张 WeakMap 是防重复插宿主的唯一屏障。键带元素——纯文本集合会把页面另一处
  *    恰好同文的段落误判成已处理。反复开合的菜单每轮都会重新扫到同一批文本，
  *    靠这一层加上整元素段的 `data-jy-translated` 短路保证请求数不涨。
+ * 5. **用户交互兜底整页重扫**：前三条都建立在「内容出现时留下了我们能观察到的痕迹」之上，
+ *    而这个前提有真实的破口——digitalocean 顶部导航的下拉菜单就是实证：面板由 React 在
+ *    点击时现渲染，六张卡片一个都不在初始 HTML 里，正常的 childList 路径却什么都没收到
+ *    （portal 挂到 `<html>` 下、或站点只切自定义属性、或面板早已在 DOM 里只是被祖先的
+ *    某个我们看不见的样式控制）。**不猜是哪一种**：页面只要被用户碰一下
+ *    （pointerdown / click / keydown），就调一次与整页翻译完全相同的采集，
+ *    靠规则 4 的账本跳过已经翻过的内容。于是"新内容是怎么出现的"不再是触发条件的一部分。
+ *    这条兜底**只由用户交互触发，绝不由 MutationObserver 触发**（有测试按调用计数锁死）：
+ *    否则规则 2 的复杂度承诺当场作废，每次 DOM 变动都变成一次 O(整页)。
  */
 export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObserver {
   /** 「已处理」记录：容器元素 → 该容器内已采集过的段文本。enable 时整体换新（新一轮翻译重新记账）。 */
   let processed = new WeakMap<HTMLElement, Set<string>>();
+  /**
+   * 本轮的待办集合：只有**真实的**新增节点。交互重扫是另一个独立的布尔标志
+   * （`pendingInteractionRescan`），两者在 `process()` 里汇合成同一轮。
+   */
   let pendingNodes: Set<Node> = new Set();
   /**
    * 属性变化的候选：通过「回调时的廉价排除」（非元素节点 / 插件自己的 `[data-jy-root]` 子树）
@@ -149,13 +234,76 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
   let processing = false;
   let dirty = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** 用户交互要求过整页重扫，但还没被本轮取走（节流窗口内也保持为 true，等窗口过去）。 */
+  let pendingInteractionRescan = false;
+  /** 上一次整页重扫**执行**的时刻（节流基准）。`undefined` = 还没跑过。 */
+  let lastFullRescanAt: number | undefined;
 
-  function schedule(): void {
+  /**
+   * 整页重扫距"被节流放行"还有多久（毫秒，0 = 现在就能跑）。
+   *
+   * 节流纯靠时钟：`lastFullRescanAt` 只在**执行**时更新，所以窗口内连点不会把基准往后推
+   * （连点 10 次 = 至多一次重扫），而窗口过去后的第一次点击自然拿到 0。
+   */
+  function fullRescanDelay(): number {
+    const last = lastFullRescanAt ?? Number.NEGATIVE_INFINITY;
+    return Math.max(0, last + INTERACTION_RESCAN_THROTTLE_MS - Date.now());
+  }
+
+  /**
+   * 用户交互 → 排一次整页重扫。**只置标志、只借用同一个定时器**，绝不开第二条处理链：
+   * 重扫的候选根进的是同一个 `pendingNodes`，扫描在同一个 `process()` 轮里，
+   * 去重靠同一本账本，也受同一个单轮上限约束。
+   */
+  function onInteraction(): void {
+    // 未翻译（含 restorePage 之后）一律不响应：与观察者本身的启用条件同一条（见 enable）。
+    if (!enabled) return;
+    pendingInteractionRescan = true;
+    schedule('interaction');
+  }
+
+  /**
+   * 交互监听：**捕获阶段 + passive**。捕获是为了在页面自己的处理器（可能 `stopPropagation`
+   * 掉冒泡）之前拿到事件；passive 是因为我们从不 `preventDefault`，别让浏览器为一次
+   * 无谓的等待而放弃滚动/点击优化。
+   *
+   * 挂在 `document` 上：交互的目标一定是文档里的节点（`keydown` 的事件流同样经过 document）。
+   *
+   * 幂等：`enable()` 可能被调用多次，重复挂监听会让一次点击排 N 次（同一轮里是无害的
+   * 重复置位，但监听器泄漏是真泄漏）。
+   */
+  let listenersAttached = false;
+
+  function attachInteractionListeners(): void {
+    if (listenersAttached) return;
+    listenersAttached = true;
+    for (const type of INTERACTION_EVENTS) {
+      document.addEventListener(type, onInteraction, { capture: true, passive: true });
+    }
+  }
+
+  /**
+   * 排一轮。两类任务**共用同一个定时器、同一条处理链**——重扫只是让这一轮的候选根里
+   * 多出一个 `documentElement`（见 `process()` 里的重扫分支），不新开第二条链。
+   *
+   * 窗口取两者中更晚的那个，两类任务各自的窗口都不会被对方缩短：
+   * - 排着变动轮时用户点了：改用交互窗口 400ms（比 500ms 短，交互的响应感优先）；
+   * - 排着交互重扫时又来了一条变动：仍按交互窗口算。**不能**退回 500ms 变动窗口——
+   *   那会让定时器在节流还没放行时到点，重扫被推到下一轮，用户看到的是"点了没反应"。
+   *
+   * 节流余量只在这里读时钟，不做任何记账；记账（`lastFullRescanAt`）唯一发生的地方是
+   * `process()`，由它决定这次重扫到底跑不跑。
+   */
+  function schedule(mode: InteractionRescanMode = 'mutation'): void {
     if (timer !== undefined) clearTimeout(timer);
+    const wantsRescan = mode === 'interaction' || pendingInteractionRescan;
+    const delay = wantsRescan
+      ? Math.max(INTERACTION_RESCAN_DEBOUNCE_MS, fullRescanDelay())
+      : INCREMENTAL_DEBOUNCE_MS;
     timer = setTimeout(() => {
       timer = undefined;
       void process();
-    }, INCREMENTAL_DEBOUNCE_MS);
+    }, delay);
   }
 
   function teardown(): void {
@@ -170,6 +318,8 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
     pendingAttrTargets = new Set();
     queued = [];
     dirty = false;
+    // 未取走的交互请求一并作废：还原之后不许再有整页重扫冒出来（enable 会重新开始）。
+    pendingInteractionRescan = false;
   }
 
   function claimProcessed(segment: ExtractedSegment): boolean {
@@ -220,6 +370,9 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
   /**
    * 原始新增节点 → 本轮要扫描的候选根（去重：同一个父容器被多次触发只扫一次）。
    * 被移除的节点不管（removedNodes 一律忽略）。
+   *
+   * 交互重扫的「整页根」不从这里来（`pendingInteractionRescan` 是独立标志，在
+   * `process()` 里单独解析）——本函数只回答"新增的节点该扫哪棵子树"。
    */
   function candidateRoots(nodes: ReadonlySet<Node>, styleOf: StyleLookup): Set<Element> {
     const roots = new Set<Element>();
@@ -257,8 +410,9 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
    * 照常是 block——实测钉在探针里），所以「隐藏子树里的元素狂改 class」这种风暴
    * 必须沿祖先链查才能当场丢弃、一次都不扫。与整页采集 `visitBlock` 的 `ancestorHidden`
    * 传递同为"祖先隐藏即短路"的口径（不认子树上 `visibility:visible` 的重新点亮，
-   * 两边一致比各自更聪明重要）。走到 body 即可停：body 是观察根，链外的 <html>
-   * 没有属性路径能把它变成候选根。
+   * 两边一致比各自更聪明重要）。走到 body 即可停：属性路径的候选根只会是被改动的元素
+   * 自身，它不可能落在 `<html>` 上——我们自己的浮层虽然挂在 documentElement 下，
+   * 但都在 `[data-jy-root]` 子树里，属性路径在回调里就把它们排除了。
    */
   function isEffectivelyHidden(element: Element, styleOf: StyleLookup): boolean {
     for (let node: Element | null = element; node !== null; node = node.parentElement) {
@@ -266,6 +420,20 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
       if (node === document.body) return false;
     }
     return false;
+  }
+
+  /**
+   * 整页重扫的元素数护栏：超过 {@link FULL_RESCAN_MAX_ELEMENTS} 就不做这一轮。
+   *
+   * 只数元素：一次整页采集的成本 ≈ 每个元素一次 `getComputedStyle` + 隐藏/块级判定，
+   * 元素数就是那个成本最好的代理量。用 `getElementsByTagName('*').length` 而不是
+   * `querySelectorAll`：前者返回**活集合**、`length` 由引擎维护，不构造静态 NodeList
+   * （在几万节点的页面上，为了一次计数分配一个数组本身就是可观的开销）。
+   *
+   * 读的是**调用这一刻**的实时数量：防抖窗口里页面还在长，点击那一刻读的是旧数字。
+   */
+  function fullRescanAllowed(): boolean {
+    return document.documentElement.getElementsByTagName('*').length <= FULL_RESCAN_MAX_ELEMENTS;
   }
 
   const observer = new MutationObserver((records) => {
@@ -351,6 +519,27 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         }
         pendingAttrTargets = new Set();
 
+        // —— 交互重扫：三条决策都在这里做（防抖窗口之后、真正扫描之前）——
+        // 节流放行了吗、页面大到不该扫吗、这一次到底扫哪个根。
+        //
+        // 节流窗口还没过去就推迟到下一轮（`finally` 会按剩余等待重新排队）：交互请求
+        // **不能**被静默吞掉，否则点得密一点就永远等不到那一次重扫。按元素数的护栏则相反，
+        // 是**直接放弃**：页面大到采集不划算，推迟到什么时候都还是这么大，重试只是白等。
+        // 推迟与否只看 `pendingInteractionRescan` 还留不留着，不另设标志。
+        if (pendingInteractionRescan) {
+          if (fullRescanDelay() > 0) {
+            // 保留标志，下一轮再试。
+          } else {
+            pendingInteractionRescan = false;
+            if (fullRescanAllowed()) {
+              lastFullRescanAt = Date.now();
+              // 重扫的根是 `documentElement`：与观察根同一个节点。portal 把面板挂到
+              // `<html>` 下时它是 body 的**兄弟**，只扫 body 会漏掉它——那正是这次要修的事。
+              roots.add(document.documentElement);
+            }
+          }
+        }
+
         const fresh: ExtractedSegment[] = [];
         for (const root of roots) {
           for (const segment of collectSegmentsWithin(root, options)) {
@@ -373,7 +562,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
           }
         }
         observer.takeRecords(); // 丢弃防护窗口期间攒下的（我们自己的写入）记录。
-        observer.observe(document.body, OBSERVE_OPTIONS); // 恢复监听：异步阶段新来的页面变动进下一轮。
+        observer.observe(resolveObserveRoot(), OBSERVE_OPTIONS); // 恢复监听：异步阶段新来的页面变动进下一轮。
 
         try {
           await round;
@@ -387,11 +576,13 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         }
         // 处理期间又攒了变动：不睡防抖、立刻开下一轮（无限滚动下这会自然接上节奏）。
         if (dirty) continue;
-        return; // 溢出段（queued 非空）由 finally 里补排的防抖轮接走，保持轮间节奏。
+        return; // 溢出段（queued 非空）、被推迟的重扫由 finally 里补排的轮次接走，保持轮间节奏。
       }
     } finally {
       processing = false;
-      if (enabled && queued.length > 0 && !deps.isStale()) schedule();
+      if (!enabled || deps.isStale()) return;
+      /** 溢出段 / 处理期间新攒的变动 / 被节流推迟的交互重扫——都补排一轮，保持轮间节奏。 */
+      if (dirty || queued.length > 0 || pendingInteractionRescan) schedule();
     }
   }
 
@@ -412,9 +603,14 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
       pendingAttrTargets = new Set();
       queued = [];
       dirty = false;
+      // 交互重扫的节流基准**不**跨轮重置：还原→再翻译（Alt+T 连按）之后立刻点击，
+      // 上一轮刚跑过的那次重扫仍然算数——重扫的成本挂在页面上，不挂在某一轮翻译上。
+      pendingInteractionRescan = false;
       for (const segment of alreadyTranslated) claimProcessed(segment);
 
       enabled = true;
+      // 用户交互的整页重扫监听：与观察者同生，由 `enabled` 决定响不响应（见 onInteraction）。
+      attachInteractionListeners();
       // 首轮挂载发生在 enable **之前**，我们的写入不会生成变动记录；
       // 从这里起页面新长出来的内容才进防抖队列（整页翻译还在飞时到达的也一样——
       // 异步阶段我们的 light DOM 写入只有两类：`[data-jy-root]` 子树内的 span 搬运与
@@ -422,7 +618,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
       // （attributeFilter 连记录都不生成）；Shadow DOM 更是根本看不见，互不污染）。
       observer.disconnect();
       observer.takeRecords();
-      observer.observe(document.body, OBSERVE_OPTIONS);
+      observer.observe(resolveObserveRoot(), OBSERVE_OPTIONS);
     },
     disable(): void {
       const registry = globalRegistry();

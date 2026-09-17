@@ -17,7 +17,14 @@ import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 import { MSG, type TranslateItemResult } from '../../src/shared/messages';
-import { INCREMENTAL_DEBOUNCE_MS, INCREMENTAL_MAX_SEGMENTS_PER_ROUND } from '../../src/content/observer';
+import {
+  FULL_RESCAN_MAX_ELEMENTS,
+  INCREMENTAL_DEBOUNCE_MS,
+  INCREMENTAL_MAX_SEGMENTS_PER_ROUND,
+  INTERACTION_RESCAN_DEBOUNCE_MS,
+  INTERACTION_RESCAN_THROTTLE_MS,
+} from '../../src/content/observer';
+import { toast } from '../../src/content/toast';
 
 vi.mock('../../src/content/extractor', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../src/content/extractor')>();
@@ -134,6 +141,20 @@ function clearToast(): void {
   for (const host of Array.from(document.querySelectorAll('[data-jy-root]'))) host.remove();
 }
 
+/**
+ * 清掉挂在 `documentElement` 下、`body` 之外的节点（portal 形状的用例会留下它们）。
+ *
+ * `document.body.innerHTML = ''` 清不到这些节点——下一页用例的"整页重扫"会把上一条用例
+ * 留下的 portal 文本重新扫到，计数就跟着漂。这几条用例本来就该像 `clearToast` 一样
+ * 在 beforeEach 里收干净。
+ */
+function clearRootChildren(): void {
+  for (const child of Array.from(document.documentElement.children)) {
+    if (child === document.body || child.tagName === 'HEAD') continue;
+    child.remove();
+  }
+}
+
 function translate(text: string): string {
   return `译:${text}`;
 }
@@ -195,6 +216,7 @@ function resetCounts(worker: MockInstance<MessageListener>): void {
 beforeEach(async () => {
   document.body.innerHTML = '';
   clearToast();
+  clearRootChildren();
   vi.resetModules();
   chromeStub = installChromeStub();
   // toFake 里不放 queueMicrotask / requestIdleCallback：MutationObserver 的投递是原生微任务。
@@ -1005,13 +1027,23 @@ describe('增量翻译：可见性变化（下拉菜单展开也要翻）', () =
     setMenuOpen(true);
     await runDebounceWindow();
     expect(sentTexts(worker).sort()).toEqual(['Loose menu intro text', 'Menu nested body text'].sort());
-    // **恰好一次采集、就在那棵 li 上**：这一轮的全部页面写入（隐藏 span 插入、
-    // 失败态 display 放回可见）都不许变成属性候选往队列里多塞一棵子树。
+    // **这一轮页面内容的写入恰好只换来一次采集，而且就在那棵 li 上**：隐藏 span 的插入、
+    // 失败态把它的 display 放回可见，一个都不许变成属性候选往队列里多塞一棵子树。
     // 拆掉回调里的 `[data-jy-root]` 排除，失败写回的可见 span 会多出一轮扫描——这里当场见红。
-    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.getElementById('mi')]);
+    //
+    // 名单里那第二个根是**我们自己刚弹出来的 toast**，与本次事故无关、也与自变更防护无关：
+    // 观察根提到 `documentElement` 之后，挂在它下面的 `#jy-toast` 成为一次 childList 新增，
+    // 于是被本轮当成一个候选根扫一次（扫它得到 0 段，不产生请求——整批同码错误本来就该弹
+    // 这一条提示）。保留这个"多一跳"是有意的：既不在这里提前过滤 `[data-jy-root]`
+    // （那会把"自变更守卫哪天被改坏"的污染静默吞掉），也让本条的计数**更敏感**——
+    // 自变更若真的滚出第三轮，多出来的扫描一样会让下面的相等断言见红。
+    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([
+      document.getElementById('mi'),
+      document.getElementById('jy-toast'),
+    ]);
     const scans = subtreeCollect.mock.calls.length;
     const requests = translateRequests(worker).length;
-    expect(scans).toBe(1);
+    expect(scans).toBe(2);
 
     // 反复 flush + 推窗口：计数一个都不许多。
     for (let i = 0; i < 5; i += 1) {
@@ -1164,4 +1196,337 @@ describe('增量翻译：无限滚动模拟（X/Twitter 型验收）', () => {
     // jsdom 给 1000 个宿主挂 Shadow DOM 本身就慢；这条是负载模拟用例，值这个预算。
     60_000,
   );
+});
+
+/**
+ * 观察根 = `documentElement`（而不是 `body`）。
+ *
+ * portal 把浮层挂到 `<html>` 下、成为 body 的**兄弟**时，挂在 body 上的观察者一个字节都
+ * 看不见——digitalocean 顶部导航下拉菜单的候选原因之一。这一组既钉「看得见」，
+ * 也钉「提根之后自变更防护仍然有效」（我们自己的浮层全都挂在 documentElement 上）。
+ */
+describe('增量翻译：观察根提到 documentElement（portal 是 body 的兄弟）', () => {
+  /** portal 形状：面板挂在 `<html>` 下，与 `<body>` 同级。 */
+  function appendPortal(html: string): HTMLElement {
+    const portal = document.createElement('div');
+    portal.id = 'portal';
+    portal.innerHTML = html;
+    document.documentElement.append(portal);
+    return portal;
+  }
+
+  it('portal 挂到 documentElement 下的新内容：被增量翻译（改回 body 做根这条必红）', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // 注意这里**没有**派发任何用户交互：本条要钉的是 childList 路径本身看得见 portal，
+    // 与「交互兜底重扫」是两回事（那条由下面一组单独钉）。
+    const portal = appendPortal('<p>Portal panel text</p>');
+    await runDebounceWindow();
+
+    expect(sentTexts(worker)).toEqual(['Portal panel text']);
+    expect(findHostByText(translate('Portal panel text'))).toBeDefined();
+    // 扫的是 portal 自己（它是新增元素、父 <html> 不是混合容器）。
+    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([portal]);
+    expect(fullPageCollect).not.toHaveBeenCalled();
+  });
+
+  it('自变更防护在提根后仍然有效：浮层写 documentElement + 反复 flush 也不滚出第二轮', async () => {
+    await chromeStub.storage.local.set({ 'jinyi:settings': { version: 2, displayMode: 'bilingual' } });
+    mount('<article><p>Hello world</p></article>');
+    // 我们自己的浮层写在 documentElement 上（toast / tooltip / 悬停高亮）：提根之后这些写入
+    // 全都在观察范围内，自变更防护必须照样挡得住。这里**先断言浮层确实挂在 documentElement 上**
+    // ——否则这条用例会在"我们的浮层换了个挂点"时静默失效，钉了个寂寞。
+    // 排在整页翻译**之前**：它的挂载/替换发生在 enable 之前，不会成为本轮计数里的噪声。
+    toast('提根后的自变更探针');
+    const toastHost = document.getElementById('jy-toast') as HTMLElement;
+    expect(toastHost.parentElement).toBe(document.documentElement);
+
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // 混合容器是最好的试金石（隐藏 span 插入 + 原文搬移 + 宿主插入，全是 childList）。
+    appendMixedContainer('self-mut-root', 'Root intro echo', 'Root nested echo');
+    await runDebounceWindow();
+    expect(sentTexts(worker)).toEqual(['Root intro echo', 'Root nested echo']);
+    const scans = subtreeCollect.mock.calls.length;
+    const requests = translateRequests(worker).length;
+    expect(scans).toBeGreaterThan(0);
+
+    for (let i = 0; i < 5; i += 1) {
+      await flushMicrotasks();
+      await runDebounceWindow();
+    }
+    expect(subtreeCollect.mock.calls.length).toBe(scans);
+    expect(translateRequests(worker)).toHaveLength(requests);
+    expect(hosts().filter((host) => bodyTextOf(host) === translate('Root intro echo'))).toHaveLength(1);
+  });
+});
+
+/**
+ * 用户交互后的整页重扫。
+ *
+ * 兜的是「内容出现了，但没留下任何我们能观察到的痕迹」：React 在点击时现渲染 portal、
+ * 站点只切自定义属性、面板早已在 DOM 里只是被某个看不见的东西控制——digitalocean 顶部
+ * 导航下拉菜单就是实证。**不猜是哪一种**：用户一碰页面就重跑一次整页采集，
+ * 靠既有的 (容器, 文本) 账本跳过已经翻过的内容。
+ *
+ * 这一组里最要紧的一条是「没把全页扫接进变动路径」：重扫**只由用户交互触发**，
+ * 绝不能由 MutationObserver 触发，否则整个增量层的复杂度承诺当场作废。
+ */
+describe('增量翻译：用户交互后的整页重扫', () => {
+  /** 用户交互（捕获阶段挂在 document 上的监听器收得到）。 */
+  function click(): void {
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  /** 到目前为止，`documentElement` 当过几次采集根（= 发生过几次整页重扫）。 */
+  function fullRescanCount(): number {
+    return subtreeCollect.mock.calls.filter((call) => call[0] === document.documentElement).length;
+  }
+
+  /** 只推过一个交互防抖窗口：用来验"到点之前还没扫"。 */
+  async function runInteractionWindow(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(INTERACTION_RESCAN_DEBOUNCE_MS + 1);
+  }
+
+  /** 推过一整条"防抖 + 节流 + 余量"的链路（`INTERACTION_RESCAN_THROTTLE_MS` 已含余量）。 */
+  async function runThrottleWindow(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(
+      INTERACTION_RESCAN_DEBOUNCE_MS + INTERACTION_RESCAN_THROTTLE_MS,
+    );
+  }
+
+  /**
+   * 推到一个"一切尘埃落定"的时刻：防抖窗口 + 节流窗口都过去了，在排的定时器全部跑完。
+   *
+   * 为什么不能只用防抖窗口：被节流推迟的那一轮要等到 `lastFullRescanAt + 1000ms` 才跑，
+   * 而它的重排延迟是"剩余的节流等待"，只推 400ms 会让这类用例随机变红。
+   *
+   * 为什么每轮只推一个窗口：一次推太远会把"补排的下一轮定时器"也一起推过去，
+   * 于是本来只该发生一次的整页重扫变成两次（实测坑过）。一轮一轮推，推完看还有没有
+   * 待办定时器——有就再推一轮，直到干净为止。
+   */
+  async function runFullInteractionWindow(): Promise<void> {
+    for (let i = 0; i < 5; i += 1) {
+      await runThrottleWindow();
+      if (vi.getTimerCount() === 0) return;
+    }
+  }
+
+  it('只改 DOM、不加任何交互：采集次数与改动前完全一致（全页扫绝没接进变动路径）', async () => {
+    mount('<article id="feed"><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+    const feed = document.getElementById('feed') as HTMLElement;
+
+    // 基准取在**这一步之前**：翻译轮自己可能还有在排的收尾定时器（账本与节流基准都在
+    // 增量层内部，测试碰不到），断言只看"从这一刻起又多了几次"，与那些残留无关。
+    const rescansBefore = fullRescanCount();
+
+    // 两种不同形状的变动：新段落（childList）、混合容器（改扫父容器）。
+    appendParagraph('Mutation only addition', feed);
+    appendMixedContainer('mutation-only-box', 'Mutation only intro', 'Mutation only body');
+    await runDebounceWindow();
+    const scans = subtreeCollect.mock.calls.length;
+    const requests = translateRequests(worker).length;
+    expect(scans).toBe(2); // 新 p + 混合容器各一次
+    expect(requests).toBeGreaterThan(0);
+
+    // 再变动、再等——包括等够一个交互防抖窗口：没有交互就**不该**有整页重扫。
+    appendParagraph('Second mutation only', feed);
+    for (let i = 0; i < 4; i += 1) await runInteractionWindow();
+
+    // 采集次数只涨那一次（新 p），不是"每次都 +1 次整页"。
+    expect(subtreeCollect.mock.calls.length).toBe(scans + 1);
+    expect(translateRequests(worker).length).toBe(requests + 1);
+    expect(fullRescanCount()).toBe(rescansBefore);
+    // 整页采集（`collectSegments`）从头到尾一次都没跑过。
+    expect(fullPageCollect).not.toHaveBeenCalled();
+  });
+
+  it('派发一次 click：发生一次整页采集，根是 documentElement（不是某个子树）', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+    const rescansBefore = fullRescanCount();
+
+    click();
+    await runFullInteractionWindow();
+
+    // 一次点击恰好换来**一次**整页采集（`subtreeCollect` 的调用只有它）；
+    // 根 = documentElement：与观察根同一个节点，portal 挂在它下面才捞得回来。
+    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.documentElement]);
+    expect(fullRescanCount() - rescansBefore).toBe(1);
+    // 整页重扫走的是**现有的**入口（collectSegmentsWithin），不是另起一条整页采集。
+    expect(fullPageCollect).not.toHaveBeenCalled();
+    // 页面早已全部译好：重扫只花钱、不重复请求。
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
+  it('交互后新出现的 portal 内容（点击后 React 才渲染）被翻译', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // 点击 → 面板在 200ms 后由 React 渲染出来（防抖窗口之内，但**不是**同步发生：
+    // 真实站点的展开是点击处理器里的一次异步渲染）。
+    click();
+    setTimeout(() => {
+      const portal = document.createElement('div');
+      portal.id = 'late-portal';
+      portal.innerHTML = '<p>Late portal card text</p>';
+      document.documentElement.append(portal);
+    }, 200);
+    await runFullInteractionWindow();
+
+    expect(sentTexts(worker)).toEqual(['Late portal card text']);
+    expect(findHostByText(translate('Late portal card text'))).toBeDefined();
+  });
+
+  it('交互后新出现的内容（直接 append 到 body）被翻译', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    click();
+    setTimeout(() => {
+      const bodyChild = document.createElement('div');
+      bodyChild.innerHTML = '<p>Direct body addition text</p>';
+      document.body.append(bodyChild);
+    }, 200);
+    await runFullInteractionWindow();
+
+    expect(sentTexts(worker)).toEqual(['Direct body addition text']);
+    expect(findHostByText(translate('Direct body addition text'))).toBeDefined();
+  });
+
+  it('连续 10 次点击：整页重扫被节流限制住（同一时刻的连点只换来一次）', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+    const rescansBefore = fullRescanCount();
+
+    // 10 次点击**没有任何时间流逝**（同一批微任务）：防抖窗口被反复重置，
+    // 没有节流的话这串点击会连着排 10 轮整页采集。
+    for (let i = 0; i < 10; i += 1) click();
+    await runInteractionWindow();
+    expect(fullRescanCount() - rescansBefore).toBe(1);
+
+    // 节流窗口内再点 10 次（此刻距上一次重扫只有 1ms）：整页重扫的数量一点也不许多。
+    for (let i = 0; i < 10; i += 1) click();
+    await runInteractionWindow();
+    expect(fullRescanCount() - rescansBefore).toBe(1);
+    expect(INTERACTION_RESCAN_THROTTLE_MS).toBeGreaterThan(INTERACTION_RESCAN_DEBOUNCE_MS);
+
+    // 节流窗口过去之后点击才重新换来一次整页重扫：说明被推迟的那次不是被静默吞掉，
+    // 只是等了 1 秒。
+    await runFullInteractionWindow();
+    expect(fullRescanCount() - rescansBefore).toBe(2);
+    click();
+    await runFullInteractionWindow();
+    expect(fullRescanCount() - rescansBefore).toBe(3);
+    expect(translateRequests(worker)).toHaveLength(0); // 整轮下来一次请求都没多发
+  });
+
+  it('一次点击风暴里两次整页重扫的最小间隔不小于节流窗口', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    const stamps: number[] = [];
+    subtreeCollect.mockImplementation(((root: Element) => {
+      if (root === document.documentElement) stamps.push(Date.now());
+      return [];
+    }) as never);
+
+    // 1.2 秒内每 40ms 敲一下（人连点的节奏；+7ms 让定时器不与游标精确重合），
+    // 之后跨过窗口再敲两下。
+    for (let i = 0; i < 30; i += 1) {
+      click();
+      await vi.advanceTimersByTimeAsync(47);
+    }
+    await runFullInteractionWindow();
+    click();
+    await runFullInteractionWindow();
+    click();
+    await runFullInteractionWindow();
+
+    expect(stamps.length).toBeGreaterThanOrEqual(2);
+    const gaps = stamps.slice(1).map((at, i) => at - (stamps[i] as number));
+    for (const gap of gaps) expect(gap).toBeGreaterThanOrEqual(INTERACTION_RESCAN_THROTTLE_MS);
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
+  it('重扫不重复翻译已译段落：请求数与宿主数都不涨（账本与 data-jy-translated 生效）', async () => {
+    await chromeStub.storage.local.set({ 'jinyi:settings': { version: 2, displayMode: 'bilingual' } });
+    mount('<div id="box">Standing intro text<p>Standing body text</p></div>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+    const hostsBefore = hosts().length;
+    const requestsBefore = translateRequests(worker).length;
+    const rescansBefore = fullRescanCount();
+
+    // 连点三次（每次跨过节流窗口）：每次都是一轮完整的整页采集。
+    for (let round = 0; round < 3; round += 1) {
+      click();
+      await runFullInteractionWindow();
+    }
+
+    // 确实扫了三遍整页——不是因为"什么都没发生"才没涨。
+    expect(fullRescanCount() - rescansBefore).toBe(3);
+    expect(translateRequests(worker)).toHaveLength(requestsBefore); // 一段都不重发
+    expect(hosts()).toHaveLength(hostsBefore); // 也不多插一个宿主
+  });
+
+  it('未翻译时点击：零扫描零请求', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    // 注意：不发 TRANSLATE_PAGE。
+    resetCounts(worker);
+
+    for (let i = 0; i < 3; i += 1) click();
+    for (let i = 0; i < 3; i += 1) await runFullInteractionWindow();
+
+    expect(subtreeCollect).not.toHaveBeenCalled();
+    expect(fullPageCollect).not.toHaveBeenCalled();
+    expect(translateRequests(worker)).toHaveLength(0);
+    void contentListener;
+  });
+
+  it('还原之后点击：零扫描零请求（观察者停摆）', async () => {
+    mount('<article id="a"><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    await dispatch(contentListener, MSG.RESTORE_PAGE);
+    resetCounts(worker);
+
+    for (let i = 0; i < 3; i += 1) click();
+    for (let i = 0; i < 3; i += 1) await runFullInteractionWindow();
+
+    expect(subtreeCollect).not.toHaveBeenCalled();
+    expect(fullPageCollect).not.toHaveBeenCalled();
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
 });
