@@ -87,7 +87,14 @@ function fullRescanCount(): number {
   return subtreeCollect.mock.calls.filter((call) => call[0] === document.documentElement).length;
 }
 
-/** 把元素数这一个读数伪装成"超大页面"，其余读数照常走真实实现。 */
+/**
+ * 把元素数这一个读数伪装成"超大页面"，其余读数照常走真实实现。
+ *
+ * 这里的 **15001 是硬编码的**，不是 `FULL_RESCAN_MAX_ELEMENTS + 1`。
+ * 原来写成 +1 时，桩会跟着常量一起漂，于是"阈值改成任意值"都测不出来——
+ * 实测把 `FULL_RESCAN_MAX_ELEMENTS` 改成 `Number.MAX_SAFE_INTEGER` 仍然 3 条全绿。
+ * 硬编码之后，常量一旦漂离 15000，下面的用例就会红。
+ */
 function stubHugePage(): MockInstance {
   const realLookup = document.documentElement.getElementsByTagName.bind(document.documentElement);
   return vi.spyOn(document.documentElement, 'getElementsByTagName').mockImplementation(((
@@ -95,7 +102,7 @@ function stubHugePage(): MockInstance {
   ) => {
     if (name === '*') {
       return Object.assign([], {
-        length: FULL_RESCAN_MAX_ELEMENTS + 1,
+        length: 15001,
       }) as unknown as HTMLCollectionOf<Element>;
     }
     return realLookup(name);
@@ -115,6 +122,15 @@ afterEach(() => {
 });
 
 describe('增量翻译：整页重扫的元素数护栏', () => {
+  it('阈值本身钉在 15000（这是有意的设计取舍，不是随手写的数）', () => {
+    // 为什么要显式钉一个常量：护栏用例的桩是硬编码 15001，常量漂了它们会红；
+    // 但"为什么取 15000"这个决策本身也该可追溯，所以再钉一次。
+    // 依据见 observer.ts 里 FULL_RESCAN_MAX_ELEMENTS 的注释：一次整页采集 ≈ 每元素一次
+    // getComputedStyle，1.5 万元素在主流机器上是几十毫秒量级、且覆盖绝大多数内容型页面；
+    // 再往上单次就是几百毫秒，挂在每次点击后面就是可感知的卡顿。
+    expect(FULL_RESCAN_MAX_ELEMENTS).toBe(15000);
+  });
+
   async function translatedPage(): Promise<{
     worker: MockInstance<MessageListener>;
     feed: HTMLElement;

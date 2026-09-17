@@ -335,6 +335,33 @@ describe('增量翻译：启用条件', () => {
 });
 
 describe('增量翻译：自变更防护（不循环、不风暴）', () => {
+  /**
+   * 关键网：观察根提到 documentElement 之后，插件自己的浮层（toast / 气泡 / 悬停高亮）
+   * 第一次挂载会成为 documentElement 下的一次 childList 新增，于是作为候选根进入采集。
+   * 挡下它的是 extractor 的 `closest('[data-jy-root]')` 短路——**这条守卫一旦被改坏，
+   * 我们自己的浮层文字就会被当成页面内容送进翻译接口**。
+   *
+   * 补这条是因为它此前只在"属性路径"上有测试（见本组后面那条写隐藏 span 的用例），
+   * childList 路径是**空口断言**：实测把 extractor 里那条守卫删掉，本文件的 47 条用例全绿。
+   */
+  it('新增的插件浮层（带 data-jy-root）里的文本不会被送去翻译', async () => {
+    mount('<article><p>Hello world</p></article>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    // 文本要用**确实可译**的英文：否则"没被翻译"可能只是被噪声闸拦下了，测不出这条守卫。
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-jy-root', '');
+    overlay.textContent = 'Untranslated plugin layer text';
+    document.body.append(overlay);
+    await runDebounceWindow();
+
+    expect(sentTexts(worker)).toEqual([]);
+    expect(translateRequests(worker)).toHaveLength(0);
+  });
+
   it('一轮增量翻译后反复 flush + 推防抖窗口：不产生第二轮扫描或请求', async () => {
     mount('<article><p>Hello world</p></article>');
     const { worker, contentListener } = await loadContentScript();
