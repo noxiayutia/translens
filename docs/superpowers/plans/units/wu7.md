@@ -690,6 +690,18 @@ export interface ExtractedSegment {
 export interface ExtractorOptions {
   targetLang: string;
   /**
+   * **只分析、不落笔**：采集判定逐字不变，但不给页面留任何痕迹
+   * （不写 `data-jy-id` / `data-jy-translated`、不产出段落）。
+   *
+   * 只给诊断模式用（`content/diagnose.ts`）：它要在**真实页面上**问"这个元素会不会被采集"，
+   * 而真正的采集是有副作用的——写下的 `data-jy-translated` 会把那个元素永久标成已处理，
+   * 于是用户点一下诊断，那段内容以后就再也不翻了。自带一份"影子判据"更是本文件开头
+   * 反复警告的那种漂移。所以要分析就在这里分析。
+   *
+   * 省略时行为与本参数出现之前**逐字相同**（历史调用点一个都不用改）。
+   */
+  readOnly?: boolean;
+  /**
    * 页面级判定：**整页**文本里出现过假名（由 {@link pageHasKana} 在采集前算一次，
    * 调用方负责本轮复用）。true 时本段的"看起来已是目标语言"不再构成跳过理由——
    * 汉字是中日共用的书写系统，有假名的页面上纯汉字段落更可能是日文。
@@ -748,8 +760,11 @@ const SKIP_TAGS = new Set([
  * 命名空间的元素大写化——内联 `<svg>`（以及它里面的 `<title>` / `<style>` / `<script>`）
  * 的 tagName 是**小写**的，`SKIP_TAGS.has('SVG')` 永远对不上，"svg 一律跳过"其实一直没生效。
  * 两处各写一份大写化的判断迟早漂移，所以只留这一个谓词给三个调用点用。
+ *
+ * **导出**：诊断模式要单独报出"这类标签本就不翻"（与"可编辑区域"分开——
+ * 用户看到 `code` 块不翻，与看到草稿框不翻，该做的事完全不同）。
  */
-function hasSkipTag(element: Element): boolean {
+export function hasSkipTag(element: Element): boolean {
   return SKIP_TAGS.has(element.tagName) || SKIP_TAGS.has(element.tagName.toUpperCase());
 }
 
@@ -830,12 +845,24 @@ export function createStyleLookup(): StyleLookup {
  * `isEffectivelyHidden`），整页采集则是自顶向下把 `ancestorHidden` 传下去。
  */
 export function isHidden(element: Element, styleOf: StyleLookup): boolean {
-  if (element.hasAttribute('hidden')) return true;
-  if (element.getAttribute('aria-hidden') === 'true') return true;
+  return detectHiddenKind(element, styleOf) !== undefined;
+}
+
+/**
+ * {@link isHidden} 的**诊断口径**：返回"自己是怎么藏的"（`display:none` / `visibility:hidden`
+ * / `hidden` / `aria-hidden`），没藏返回 undefined。
+ *
+ * 只有一份判定逻辑——{@link isHidden} 就是它取反，所以两者永远不可能给出不同答案。
+ * 单独导出是因为诊断要把**具体哪一种**隐藏如实报给用户：`display:none` 是"真隐藏"，
+ * `visibility:hidden` 往往是"展开动画还没走完"，处置完全不同。
+ */
+export function detectHiddenKind(element: Element, styleOf: StyleLookup): string | undefined {
+  if (element.hasAttribute('hidden')) return 'hidden';
+  if (element.getAttribute('aria-hidden') === 'true') return 'aria-hidden';
   const style = styleOf(element);
-  if (style.display === 'none') return true;
-  if (style.visibility === 'hidden' || style.visibility === 'collapse') return true;
-  return false;
+  if (style.display === 'none') return 'display:none';
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') return `visibility:${style.visibility}`;
+  return undefined;
 }
 
 /**
@@ -918,7 +945,15 @@ export function findLeafTextAncestor(element: Element | null): HTMLElement | nul
   return null;
 }
 
-function hasBlockBoundaryChild(element: Element, styleOf: StyleLookup): boolean {
+/**
+ * 元素里有没有一个「块级边界」子元素（见 {@link isBlockBoundary}）：
+ * 有就说明它是**容器**，块级子元素各自成段；没有才是"最内层的文本块"。
+ * 与采集端 `visitBlock` 的分叉判据同一份（那边用的是等价的 `blocks.length` 列表）。
+ *
+ * **导出**：诊断模式要回答"这一级是不是段落"——答案就是这条判据取反。
+ * 两处各写一份会在真机上表现为"诊断说这段能翻、实际没翻"。
+ */
+export function hasBlockBoundaryChild(element: Element, styleOf: StyleLookup): boolean {
   for (const child of Array.from(element.children)) {
     if (isSkippedForText(child) || child.nodeName === 'BR') continue;
     if (isBlockBoundary(child, styleOf, 0)) return true;
@@ -927,17 +962,17 @@ function hasBlockBoundaryChild(element: Element, styleOf: StyleLookup): boolean 
 }
 
 /**
- * 一个子元素算不算**块级边界**（即：父元素的文本到此为止，这块自己成段）：
- * 1. 它的 computed display 在白名单里；或者
- * 2. 它是透明包裹（inline-block / inline-flex / inline-grid / contents）**并且**内部存在块级后代。
- *
  * 第 2 条是必须的：`<span style="display:inline-block"><h3>标题</h3><p>正文</p></span>`
  * 与 Tailwind 的 `contents` 工具类在真实站点里都很常见。少了它，包裹内部整棵子树
  * 既不成段也不参与拼接，那片区域永远没有译文。
  * 反过来，`<span style="display:inline-block">world</span>` 内部没有块级后代，
  * 就不算边界——它仍然是父段的一部分，`<p>Hello <span …>world</span></p>` 抽成一段。
+ *
+ * **导出**：诊断模式要用**同一条**判据回答"这个元素自己是不是一段"
+ * （`hasBlockBoundaryChild(element)` 为假 + 这条为真 ⇒ 它自己成段），
+ * 另写一份就会与采集端漂移（见 {@link findLeafTextAncestor} 的同一段纪律）。
  */
-function isBlockBoundary(element: Element, styleOf: StyleLookup, depth: number): boolean {
+export function isBlockBoundary(element: Element, styleOf: StyleLookup, depth: number): boolean {
   const display = styleOf(element).display;
   if (isBlockDisplay(display)) return true;
   if (!TRANSPARENT_DISPLAYS.has(display)) return false;
@@ -1102,8 +1137,11 @@ function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegm
   const segments: ExtractedSegment[] = [];
   const styleOf = createStyleLookup();
   const marked = new Set<Element>();
+  // 只分析不落笔（见 ExtractorOptions.readOnly）：判定流程一个字都不改，只是不写标记、不产出段落。
+  const readOnly = options.readOnly === true;
 
   const markTranslated = (element: Element): void => {
+    if (readOnly) return;
     if (marked.has(element)) return;
     element.setAttribute('data-jy-translated', '1');
     marked.add(element);
@@ -1117,7 +1155,7 @@ function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegm
     if (shouldSkip(text, options.targetLang, { allowSameScriptSkip: !options.pageHasKana })) return false;
 
     const id = `jy-${segments.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
-    element.setAttribute('data-jy-id', id);
+    if (!readOnly) element.setAttribute('data-jy-id', id);
     const segment: ExtractedSegment = {
       id,
       text,
