@@ -4,7 +4,8 @@ import { planBatches, type TextSegment } from '../core/segmenter';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
-import { collectSegments, pageHasKana, type ExtractedSegment } from './extractor';
+import { collectSegments, pageHasKana, type ExtractedSegment, type ExtractorOptions } from './extractor';
+import { installDiagnose } from './diagnose';
 import { createHoverTranslator, type HoverController } from './hover';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
@@ -680,14 +681,30 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
  *   绝不能进增量队列；在飞的增量批次由 renderer 身份守卫丢弃）。
  */
 const incremental = createIncrementalObserver({
-  scanOptions: () =>
-    pageSnapshot === null
-      ? null
-      : { targetLang: pageSnapshot.targetLang, pageHasKana: pageKanaSnapshot },
+  scanOptions: currentScanOptions,
   isTranslated: () => renderer !== null,
   isStale: () => (globalThis as { __jinyiContentInstance?: symbol }).__jinyiContentInstance !== INSTANCE_TOKEN,
   translate: translateIncremental,
 });
+
+/**
+ * 本轮采集选项：页面翻译那一刻的设置快照（未翻译时是 null，见 `pageSnapshot`）。
+ * 整页采集、增量轮与**诊断模式**读的是同一份——诊断报出来的结论必须与采集端真正
+ * 会做的事逐字一致，所以只留这一个出口，谁也不许另读设置。
+ */
+function currentScanOptions(): ExtractorOptions | null {
+  if (pageSnapshot === null) return null;
+  return { targetLang: pageSnapshot.targetLang, pageHasKana: pageKanaSnapshot };
+}
+
+/**
+ * 诊断模式（Alt+Shift + 点击任意元素）：页面内弹一条"这段为什么没被翻译"。
+ *
+ * 与翻译开关无关地常驻——它**只在 Alt+Shift+点击时**工作，其余时候一个回调都不跑
+ * （见 `diagnose.ts` 的 `installDiagnose`）。未翻译的页面上也照样能用：那正是要
+ * 区分"压根没进采集"与"采了但没翻"的场景。
+ */
+installDiagnose({ scanOptions: currentScanOptions, stats: () => incremental.stats() });
 
 /**
  * 悬停/划词的翻译入口：仍是"一条正常的 `TRANSLATE_TEXTS` 请求"，走后台——

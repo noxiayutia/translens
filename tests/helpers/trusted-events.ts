@@ -32,7 +32,16 @@ function implOf(event: Event): { isTrusted: boolean } | null {
 
 /** 需要伪可信的事件类型。捕获阶段挂 window：事件派发路径以 window 为最上游，
  *  这里排在任何 document/window 上的生产监听器之前（本模块的 import 早于 enable()）。 */
-const FLIPPED_TYPES = ['mouseup', 'mousedown', 'pointerdown', 'mouseover', 'keydown', 'keyup'] as const;
+const FLIPPED_TYPES = [
+  'mouseup',
+  'mousedown',
+  'pointerdown',
+  'mouseover',
+  'keydown',
+  'keyup',
+  // 诊断模式（Alt+Shift+点击）也走同一个 isTrusted 闸门，见 content/diagnose.ts。
+  'click',
+] as const;
 
 for (const type of FLIPPED_TYPES) {
   window.addEventListener(

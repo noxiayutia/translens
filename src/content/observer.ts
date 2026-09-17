@@ -69,6 +69,70 @@ export const FULL_RESCAN_MAX_ELEMENTS = 15000;
 const INTERACTION_EVENTS = ['pointerdown', 'click', 'keydown'] as const;
 
 /**
+ * 观察者此刻的读数。诊断模式（`content/diagnose.ts`）如实报给用户的就是这几个字段——
+ * 它们对"为什么这段没被翻译"这个问题都可能是关键证据，所以各自独立、不合并。
+ */
+export interface IncrementalStats {
+  /** 页面是否处于已翻译状态（观察者启用 = 增量翻译在工作）。 */
+  enabled: boolean;
+  /**
+   * 「已处理」账本里记着多少个**容器 → 段文本**条目（`enable` 时用首轮的段落做种子）。
+   *
+   * 为什么值得单独报：它是"这一段到底进没进过采集"的第三个读数。用户点开菜单没反应时，
+   * 这个数在涨说明内容采到了、问题在请求/渲染；一直是 1~2 说明**压根没扫到**。
+   */
+  processedSegments: number;
+  /** 最近一轮**增量**（DOM 变动触发）跑完的时刻；`undefined` = 一轮都还没跑过。 */
+  lastIncrementalAt: number | undefined;
+  /** 最近一轮增量采集到的段数（0 也是有效读数："扫了但什么都没有"）。 */
+  lastIncrementalSegments: number | undefined;
+  /** 最近一次**交互兜底整页重扫**执行（或被护栏跳过、被节流推迟）的时刻。 */
+  lastInteractionRescanAt: number | undefined;
+  /** 最近一次交互重扫的结果：跑了 / 因元素数超阈值跳过 / 因节流推迟到下一轮。 */
+  lastInteractionRescan: 'ran' | 'skipped-too-large' | 'throttled' | undefined;
+  /** 最近一次交互重扫采集到的段数（`skipped-too-large` 时是 0）。 */
+  lastInteractionRescanSegments: number | undefined;
+  /** 当前 `documentElement` 的实时元素数（与护栏同一个判据）。 */
+  elementCount: number;
+  /** 有整页重扫正等着跑（防抖窗口还没到 / 节流还没放行）。 */
+  pendingInteractionRescan: boolean;
+}
+
+/**
+ * 指标读取组件的来源：诊断要用**与护栏逐字相同**的元素数判据，所以由调用方把
+ * `elementsBelowGuard` 传进来（默认就是本文件的 {@link FullRescanGuard}）——
+ * 测试里那个"装成超大页面"的桩只需要换这一处，读数与决策不会各读一份。
+ */
+export interface StatsDeps {
+  elementsBelowGuard(): boolean;
+}
+
+/**
+ * 整页重扫的元素数护栏：`documentElement` 下超过 {@link FULL_RESCAN_MAX_ELEMENTS}
+ * 就不做这一轮。
+ *
+ * 只数元素：一次整页采集的成本 ≈ 每个元素一次 `getComputedStyle` + 隐藏/块级判定，
+ * 元素数就是那个成本最好的代理量。用 `getElementsByTagName('*').length` 而不是
+ * `querySelectorAll`：前者返回**活集合**、`length` 由引擎维护，不构造静态 NodeList
+ * （在几万节点的页面上，为了一次计数分配一个数组本身就是可观的开销）。
+ *
+ * 读的是**调用这一刻**的实时数量：防抖窗口里页面还在长，点击那一刻读的是旧数字。
+ */
+export const FullRescanGuard: StatsDeps = {
+  elementsBelowGuard(): boolean {
+    return elementCount() <= FULL_RESCAN_MAX_ELEMENTS;
+  },
+};
+
+/**
+ * 实时元素数。护栏与诊断读的是**同一个**读数：
+ * 拆成两处的话，"诊断说没超阈值、实际被跳过"就是迟早的事。
+ */
+export function elementCount(): number {
+  return document.documentElement.getElementsByTagName('*').length;
+}
+
+/**
  * 一轮是被谁排起来的：`mutation` = DOM 变动（500ms 防抖），
  * `interaction` = 用户交互要求的整页重扫（400ms 防抖 + 节流，见 `schedule`）。
  * 两者的**处理链完全相同**，只有窗口与「本轮到点时扫什么根」不同。
@@ -89,6 +153,11 @@ export interface IncrementalDeps {
    * 不清理就会在下一条用例/下一次注入里往现在的页面乱写。
    */
   isStale(): boolean;
+  /**
+   * 指标读取组件的来源（见 {@link StatsDeps}）。省略即用 {@link FullRescanGuard}。
+   * 存在的唯一理由是测试要只换"元素数"这一个读数，而不碰其余真实实现。
+   */
+  stats?: StatsDeps;
   /**
    * 把新段落送进**现有**的批次/并发/缓存链路（planBatches + runPool + sendToBackground）。
    * 两条硬契约（自变更防护窗口的收口方式依赖它们）：
@@ -112,6 +181,17 @@ export interface IncrementalObserver {
   enable(alreadyTranslated: readonly ExtractedSegment[]): void;
   /** 还原时停用：断开观察、清掉在排的防抖与全部积压（含排队中的溢出段）。 */
   disable(): void;
+  /**
+   * 观察者的当前读数（供诊断模式如实报告"增量层此刻是什么状态"）。
+   *
+   * 为什么要有这个出口：这些状态**都在闭包里**，而诊断要回答的几个问题恰恰只能由它
+   * 回答——页面到底处于已翻译状态吗、最近一轮增量是什么时候跑的、用户那次交互有没有
+   * 因为元素数超过阈值而被跳过。没有它，诊断就只能去猜，或者把同一套字段在 index.ts
+   * 里再存一份（那又是本文件反复警告的"两处各写一份"）。
+   *
+   * **纯读**：不触发扫描、不改任何状态，随时可调。
+   */
+  stats(): IncrementalStats;
 }
 
 /**
@@ -212,8 +292,15 @@ function globalRegistry(): InternalHandle[] {
  *    否则规则 2 的复杂度承诺当场作废，每次 DOM 变动都变成一次 O(整页)。
  */
 export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObserver {
-  /** 「已处理」记录：容器元素 → 该容器内已采集过的段文本。enable 时整体换新（新一轮翻译重新记账）。 */
+  /**
+   * 「已处理」记录：容器元素 → 该容器内已采集过的段文本。enable 时整体换新（新一轮翻译重新记账）。
+   */
   let processed = new WeakMap<HTMLElement, Set<string>>();
+  /**
+   * `processed` 里到底有几个条目。WeakMap 数不出大小，而诊断要报这个读数（见
+   * {@link IncrementalStats.processedSegments}），所以在唯一的写入点顺手维护一个计数。
+   */
+  let processedSegments = 0;
   /**
    * 本轮的待办集合：只有**真实的**新增节点。交互重扫是另一个独立的布尔标志
    * （`pendingInteractionRescan`），两者在 `process()` 里汇合成同一轮。
@@ -238,6 +325,27 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
   let pendingInteractionRescan = false;
   /** 上一次整页重扫**执行**的时刻（节流基准）。`undefined` = 还没跑过。 */
   let lastFullRescanAt: number | undefined;
+
+  /**
+   * 诊断读数（见 {@link IncrementalObserver.stats}）：只在**轮次收口**时各写一次，
+   * 轮内不写——读到的永远是"最近一轮的结论"，而不是一轮跑到一半的中间态。
+   *
+   * 与 `lastFullRescanAt` 的关系：那个是**节流基准**（只记执行时刻、语义单一），
+   * 这里是给人看的读数（含"被跳过""被节流推迟"这些没执行的结局）。不合并成一份，
+   * 免得为了显示多一种结局而让节流逻辑跟着改。
+   */
+  let lastIncrementalAt: number | undefined;
+  let lastIncrementalSegments: number | undefined;
+  let lastInteractionRescanAt: number | undefined;
+  let lastInteractionRescan: IncrementalStats['lastInteractionRescan'];
+  let lastInteractionRescanSegments: number | undefined;
+
+  /** 记下"交互重扫有了一个结局"。三种结局都记，被跳过的那种最需要用户看见。 */
+  function noteInteractionOutcome(outcome: 'ran' | 'skipped-too-large' | 'throttled', segments: number): void {
+    lastInteractionRescanAt = Date.now();
+    lastInteractionRescan = outcome;
+    lastInteractionRescanSegments = segments;
+  }
 
   /**
    * 整页重扫距"被节流放行"还有多久（毫秒，0 = 现在就能跑）。
@@ -330,6 +438,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
     }
     if (texts.has(segment.text)) return false;
     texts.add(segment.text);
+    processedSegments += 1;
     return true;
   }
 
@@ -423,17 +532,11 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
   }
 
   /**
-   * 整页重扫的元素数护栏：超过 {@link FULL_RESCAN_MAX_ELEMENTS} 就不做这一轮。
-   *
-   * 只数元素：一次整页采集的成本 ≈ 每个元素一次 `getComputedStyle` + 隐藏/块级判定，
-   * 元素数就是那个成本最好的代理量。用 `getElementsByTagName('*').length` 而不是
-   * `querySelectorAll`：前者返回**活集合**、`length` 由引擎维护，不构造静态 NodeList
-   * （在几万节点的页面上，为了一次计数分配一个数组本身就是可观的开销）。
-   *
-   * 读的是**调用这一刻**的实时数量：防抖窗口里页面还在长，点击那一刻读的是旧数字。
+   * 整页重扫的元素数护栏，判据本身在 {@link FullRescanGuard}（与诊断共用同一份实现）。
+   * 这里只是把它换成可注入的 `deps.stats`，好让测试能只替换这一个读数。
    */
   function fullRescanAllowed(): boolean {
-    return document.documentElement.getElementsByTagName('*').length <= FULL_RESCAN_MAX_ELEMENTS;
+    return (deps.stats ?? FullRescanGuard).elementsBelowGuard();
   }
 
   const observer = new MutationObserver((records) => {
@@ -519,6 +622,16 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         }
         pendingAttrTargets = new Set();
 
+        /**
+         * 本轮"由 DOM 变动攒出来的"候选根个数，在交互重扫往同一个集合里加根**之前**取。
+         *
+         * 用途只有一个：分辨这一轮是不是**纯粹的增量轮**。判定"这轮是增量"若只看
+         * `roots` 里有没有 `documentElement`，一类真实形态会被误判成增量——用户点击时
+         * 页面同时既有属性变动（站点切了个类）又有整页重扫，两者共用这一轮。
+         * 反之，这一轮没有任何变动候选根、也没发生重扫，那就只可能是变动防抖排起来的。
+         */
+        const candidateRootCount = roots.size;
+
         // —— 交互重扫：三条决策都在这里做（防抖窗口之后、真正扫描之前）——
         // 节流放行了吗、页面大到不该扫吗、这一次到底扫哪个根。
         //
@@ -526,9 +639,14 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
         // **不能**被静默吞掉，否则点得密一点就永远等不到那一次重扫。按元素数的护栏则相反，
         // 是**直接放弃**：页面大到采集不划算，推迟到什么时候都还是这么大，重试只是白等。
         // 推迟与否只看 `pendingInteractionRescan` 还留不留着，不另设标志。
+        //
+        // 三种结局都进诊断读数（`noteInteractionOutcome`）：被护栏跳过与被节流推迟
+        // 恰恰是"用户点了页面却什么都没发生"的两个候选原因，不能只记成功的那一次。
+        let interactionOutcome: 'ran' | 'skipped-too-large' | 'throttled' | undefined;
         if (pendingInteractionRescan) {
           if (fullRescanDelay() > 0) {
             // 保留标志，下一轮再试。
+            interactionOutcome = 'throttled';
           } else {
             pendingInteractionRescan = false;
             if (fullRescanAllowed()) {
@@ -536,6 +654,9 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
               // 重扫的根是 `documentElement`：与观察根同一个节点。portal 把面板挂到
               // `<html>` 下时它是 body 的**兄弟**，只扫 body 会漏掉它——那正是这次要修的事。
               roots.add(document.documentElement);
+              interactionOutcome = 'ran';
+            } else {
+              interactionOutcome = 'skipped-too-large';
             }
           }
         }
@@ -546,6 +667,14 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
             if (!claimProcessed(segment)) continue; // 同容器同文本：已经插过宿主，跳过。
             fresh.push(segment);
           }
+        }
+
+        // —— 诊断读数收口：一轮的"结论"在扫描完之后才成立（`fresh` 就是这一轮采到的段）。
+        if (interactionOutcome !== undefined) noteInteractionOutcome(interactionOutcome, fresh.length);
+        if (interactionOutcome === undefined && candidateRootCount > 0) {
+          // 纯增量轮：候选根全部来自 DOM 变动（新增/新可见的子树），没有整页重扫掺进来。
+          lastIncrementalAt = Date.now();
+          lastIncrementalSegments = fresh.length;
         }
 
         const items = queued.length > 0 ? [...queued, ...fresh] : fresh;
@@ -599,6 +728,7 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
       registry.push(handle);
 
       processed = new WeakMap(); // 新一轮翻译：增量记账从零开始，再灌首轮种子。
+      processedSegments = 0;
       pendingNodes = new Set();
       pendingAttrTargets = new Set();
       queued = [];
@@ -625,6 +755,28 @@ export function createIncrementalObserver(deps: IncrementalDeps): IncrementalObs
       const index = registry.indexOf(handle);
       if (index >= 0) registry.splice(index, 1);
       teardown();
+    },
+    /**
+     * 纯读快照（见 {@link IncrementalStats}）。刻意**不**读 `deps.scanOptions()`：
+     * 那一条会去问设置快照，而"观察者开没开"就是 `enabled` 这一个布尔量——
+     * 多问一处只会在"快照已被收回、观察者还没 disable"的夹缝里给出自相矛盾的读数。
+     */
+    stats(): IncrementalStats {
+      return {
+        enabled,
+        // 账本条目数**不**随停用清零：它就是一个事实（账本里现在有多少条），
+        // 而提示里只在"已启用"那一支显示它——多一层条件只是多一处能写错的地方。
+        processedSegments,
+        // 另外五个读数的语义都是"**最近一轮增量/重扫**如何如何"：页面已经不在翻译状态了，
+        // 把上一轮的残值继续报出来只会把排查带偏（元素数是页面的事实，与观察者无关）。
+        lastIncrementalAt: enabled ? lastIncrementalAt : undefined,
+        lastIncrementalSegments: enabled ? lastIncrementalSegments : undefined,
+        lastInteractionRescanAt: enabled ? lastInteractionRescanAt : undefined,
+        lastInteractionRescan: enabled ? lastInteractionRescan : undefined,
+        lastInteractionRescanSegments: enabled ? lastInteractionRescanSegments : undefined,
+        elementCount: elementCount(),
+        pendingInteractionRescan: enabled && pendingInteractionRescan,
+      };
     },
   };
 
