@@ -13,7 +13,13 @@
  * 而不是打桩那些谓词——打桩就等于在测试里再写一份判据，两处一起漂。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createStyleLookup, inlineText } from '../../src/content/extractor';
+import {
+  collectSegments,
+  createStyleLookup,
+  findLeafTextAncestor,
+  inlineText,
+} from '../../src/content/extractor';
+import { FULL_RESCAN_MAX_ELEMENTS, type IncrementalStats } from '../../src/content/observer';
 import { diagnoseElement, formatClipboard, formatToast, type Diagnosis } from '../../src/content/diagnose';
 
 /** 分析上下文：目标语言一定是中文（下面所有现场都是英文文本）。 */
@@ -22,6 +28,48 @@ const OPTIONS = { targetLang: 'zh-Hans', pageHasKana: false };
 function analyze(target: EventTarget, options: typeof OPTIONS | null = OPTIONS): Diagnosis {
   // 观察者读数在接线层才注入，分析内核不依赖它（这里的 null 就是"没有观察者信息"）。
   return diagnoseElement(target, { scanOptions: () => options, stats: () => null });
+}
+
+/** 一份观察者读数的现场（M1 的三分要靠它区分：页面到底翻译了没有、这一段进没进过账本）。 */
+function stats(overrides: Partial<IncrementalStats> = {}): IncrementalStats {
+  return {
+    enabled: true,
+    processedSegments: 2,
+    lastIncrementalAt: undefined,
+    lastIncrementalSegments: undefined,
+    lastInteractionRescanAt: undefined,
+    lastInteractionRescan: undefined,
+    lastInteractionRescanSegments: undefined,
+    elementCount: 12,
+    pendingInteractionRescan: false,
+    ...overrides,
+  };
+}
+
+/** 带观察者读数的分析（纯分析场景没有观察者，这里的读数就是接线层会喂进来的那些）。 */
+function analyzeWithStats(target: EventTarget, reading: IncrementalStats | null): Diagnosis {
+  return diagnoseElement(target, { scanOptions: () => OPTIONS, stats: () => reading });
+}
+
+/**
+ * 造一个与渲染器同形的译文宿主：`[data-jy-root]` + `data-jy-for` + shadow 里的 `.jy-body`。
+ * 现场一律用真实标记构造（不用桩替掉谓词），免得在测试里再写一份判据。
+ */
+function makeHost(segmentId: string, text: string, pending = false): HTMLElement {
+  const host = document.createElement('jy-translation');
+  host.setAttribute('data-jy-root', '');
+  host.setAttribute('data-jy-for', segmentId);
+  const body = document.createElement('span');
+  body.className = pending ? 'jy-body jy-pending' : 'jy-body';
+  body.textContent = pending ? '翻译中…' : text;
+  host.attachShadow({ mode: 'open' }).append(body);
+  return host;
+}
+
+/** 一次诊断的**结论指向**（用于"自身 vs 祖先"那组矩阵断言）。 */
+function culpritOf(diagnosis: Diagnosis): string {
+  const element = diagnosis.finding.reportedElement as HTMLElement;
+  return element.id === '' ? element.tagName.toLowerCase() : `#${element.id}`;
 }
 
 /** 主结论的原因码。 */
@@ -35,19 +83,23 @@ beforeEach(() => {
 });
 
 describe('诊断分析：逐级给结论，主结论取最靠近点击处的那一级', () => {
-  it('未被采集的普通段落：结论是「已采集未翻译」并指明宿主不存在', () => {
-    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
-    const paragraph = document.getElementById('p') as HTMLElement;
+  it('真的采集过、但宿主不存在：结论是「已采集未翻译」，并指向这一段真正的归属元素', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    // 真的跑一遍采集（**非** readOnly）：它给成段元素写下 `data-jy-id`，
+    // 那就是"这一段进过采集"的现场证据。松散文本段的归属元素是**容器**
+    // （见 extractor 的 SegmentAnchor），所以证据落在 #card 上。
+    const segments = collectSegments(document.body, OPTIONS);
+    expect(segments[0]?.element).toBe(document.getElementById('card'));
+    const span = document.getElementById('s') as HTMLElement;
 
-    const diagnosis = analyze(paragraph);
+    const diagnosis = analyze(span);
 
-    expect(diagnosis.element).toBe(paragraph);
-    // "会成段"这一半是确定的——分析真的跑了一遍采集（只分析、不落笔，见 readOnly）。
-    // 不确定的、也是最要命的那一半恰好是：宿主不存在 ⇒ 请求/渲染环节出了问题。
+    expect(diagnosis.element).toBe(span);
+    // 采过 + 没渲染 = 请求/渲染环节的问题——这正是这一条结论要指出的。
     expect(diagnosis.finding.reason).toBe('collected');
     expect(diagnosis.finding.detail).toContain('宿主不存在');
     // 主结论就是**最靠近点击处**那一级的结论（下面每一级的链路都能看到）。
-    expect(diagnosis.levels[0]?.element).toBe(paragraph);
+    expect(diagnosis.levels[0]?.element).toBe(span);
     expect(diagnosis.levels[0]?.reason).toBe('collected');
     // 点击处自己就有结论：链路到此为止，不需要再往上找（这正是"最靠近点击处"的含义）。
     expect(diagnosis.levels).toHaveLength(1);
@@ -62,11 +114,18 @@ describe('诊断分析：逐级给结论，主结论取最靠近点击处的那�
     const wrapper = analyze(document.getElementById('s') as HTMLElement);
     const paragraph = analyze(document.getElementById('p') as HTMLElement);
 
-    expect(wrapper.finding.reason).toBe('collected');
-    expect(paragraph.finding.reason).toBe('collected');
+    // 页面已翻译（有采集快照）、但这一段还没进过账本：两条路给**同一句话**。
+    // 注意这里**不能**说"已采集"：没跑过采集的段落说自己采过，就是把排查引向不存在的 bug（M1）。
+    expect(wrapper.finding.reason).toBe('not-in-ledger');
+    expect(paragraph.finding.reason).toBe(wrapper.finding.reason);
     expect(wrapper.finding.detail).toBe(paragraph.finding.detail);
     // 链路至少含点击处自己那一级。
     expect(wrapper.levels[0]?.element).toBe(document.getElementById('s'));
+
+    // 真的采集过一遍之后：两条路依旧一致（这一次是「已翻译」——段落被标记，采集端会整段跳过）。
+    collectSegments(document.body, OPTIONS);
+    expect(reasonOf(document.getElementById('s') as HTMLElement)).toBe('already-translated');
+    expect(reasonOf(document.getElementById('p') as HTMLElement)).toBe('already-translated');
   });
 
   it('已经被整段翻译过的段落：结论是「已翻译」', () => {
@@ -141,7 +200,8 @@ describe('诊断分析：逐级给结论，主结论取最靠近点击处的那�
       '<div contenteditable="true"><p id="readonly" contenteditable="false">Read only text</p></div>';
     const readonly = document.getElementById('readonly') as HTMLElement;
 
-    expect(reasonOf(readonly)).toBe('collected');
+    // 不是"可编辑"这一支；它确实会成段，只是还没进过采集（页面已翻译、这一段不在账本里）。
+    expect(reasonOf(readonly)).toBe('not-in-ledger');
   });
 
   it('元素自身 display:none：点名是**自身**隐藏', () => {
@@ -207,9 +267,9 @@ describe('诊断分析：逐级给结论，主结论取最靠近点击处的那�
     document.body.innerHTML = '<p id="p">这已经是一段中文</p>';
 
     // 页面级判定的唯一作用点就是这个开关（见 core/lang.ts 的 shouldSkip）。
-    // 关掉"已是目标语言"这条跳过之后，它就是一整段会被采集的文本。
+    // 关掉"已是目标语言"这条跳过之后，它就是一整段会被采集的文本（还没进过账本，见 M1）。
     expect(reasonOf(document.getElementById('p') as HTMLElement, { ...OPTIONS, pageHasKana: true })).toBe(
-      'collected',
+      'not-in-ledger',
     );
   });
 
@@ -222,7 +282,7 @@ describe('诊断分析：逐级给结论，主结论取最靠近点击处的那�
     expect(diagnosis.finding.reason).toBe('drills-down');
     expect(diagnosis.finding.detail).toContain('子元素');
     // 子元素自己才是那一段：主结论确实取了最近一级，而不是容器的。
-    expect(reasonOf(document.getElementById('body') as HTMLElement)).toBe('collected');
+    expect(reasonOf(document.getElementById('body') as HTMLElement)).toBe('not-in-ledger');
   });
 
   it('会下钻的容器即使已被采集过（悬浮文本段）也提示点里面：那里才是独立的一段', () => {
@@ -237,8 +297,9 @@ describe('诊断分析：逐级给结论，主结论取最靠近点击处的那�
   it('被跳过的标签（表单控件 / code / svg）单独成一类原因，不混进"可编辑区域"', () => {
     document.body.innerHTML = '<div id="box"><button id="btn">Submit now</button><code id="code">const a = 1</code></div>';
 
-    // 按钮**不在**跳过名单里（digitalocean 的事故就是它）：照常算可采集。
-    expect(reasonOf(document.getElementById('btn') as HTMLElement)).toBe('collected');
+    // 按钮**不在**跳过名单里（digitalocean 的事故就是它）：照常算可采集
+    // （这里还没跑过采集，所以是"不在账本里"这一支；跑过之后才谈得上"采了没渲染"）。
+    expect(reasonOf(document.getElementById('btn') as HTMLElement)).toBe('not-in-ledger');
     expect(reasonOf(document.getElementById('code') as HTMLElement)).toBe('skip-tag');
   });
 
@@ -269,7 +330,7 @@ describe('诊断分析：逐级给结论，主结论取最靠近点击处的那�
     const diagnosis = analyze(text);
 
     expect(diagnosis.element).toBe(document.getElementById('p'));
-    expect(diagnosis.finding.reason).toBe('collected');
+    expect(diagnosis.finding.reason).toBe('not-in-ledger');
   });
 
   it('极端输入一张空白页：结论可读、不抛错', () => {
@@ -298,21 +359,27 @@ describe('诊断分析：不改变页面（分析是纯读）', () => {
     expect(inlineText(paragraph, createStyleLookup())).toBe(textBefore);
   });
 
-  it('页面还没翻译（没有采集选项）时也能跑：结论照样可读', () => {
+  it('页面还没翻译（没有采集选项）时也能跑：结论说"页面还没开始翻译"，不说"已采集"', () => {
     document.body.innerHTML = '<p id="p">Ready to deploy</p>';
 
     const diagnosis = analyze(document.getElementById('p') as HTMLElement, null);
 
     // 没有快照就没有目标语言可判：不因"看起来已是目标语言"而报跳过。
-    expect(diagnosis.finding.reason).toBe('collected');
-    expect(diagnosis.finding.text).not.toBe('');
+    expect(diagnosis.finding.reason).toBe('page-idle');
+    expect(diagnosis.finding.text).toContain('还没开始翻译');
+    // 用户要的下一步就在这里（触发方式不该只写在文档里）。
+    expect(diagnosis.finding.text).toContain('Alt+T');
+    // 一句"已采集"会把排查引向不存在的请求/渲染 bug——这是 M1 要修的原文案。
+    expect(diagnosis.finding.text).not.toContain('已采集');
   });
 });
 
 describe('诊断输出：页面内两行 / 剪贴板全文', () => {
   it('页面内提示两行：第一行是结论，第二行是观察者状态（截图里带得上的上下文）', () => {
-    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
-    const diagnosis = analyze(document.getElementById('p') as HTMLElement);
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    // 真的采过一遍（非 readOnly）：只有这样，"采了没渲染"这条结论才站得住（见 M1）。
+    collectSegments(document.body, OPTIONS);
+    const diagnosis = analyze(document.getElementById('s') as HTMLElement);
 
     const toast = formatToast(diagnosis);
     const lines = toast.split('\n');
@@ -369,5 +436,405 @@ describe('诊断输出：页面内两行 / 剪贴板全文', () => {
     // 被元素数上限跳过的那一次必须如实写出来：那是"点了没反应"最可能的解释。
     expect(text).toContain('被元素数上限跳过');
     expect(text).toContain('12345 元素');
+  });
+});
+
+describe('F1：祖先被跳过（code/pre/svg…）——整棵子树在采集端根本不存在', () => {
+  it('<pre><span> 的后代：点名祖先 pre，且与真实采集结果一致', () => {
+    document.body.innerHTML = '<pre id="pre"><span id="s">const answer = 1</span></pre>';
+    const span = document.getElementById('s') as HTMLElement;
+
+    // 现场事实先钉住：真实采集**一段都不产出**（核验者的复现就是这句 expect 的实测结果）。
+    expect(collectSegments(document.body, OPTIONS)).toEqual([]);
+
+    const diagnosis = analyze(span);
+
+    expect(diagnosis.finding.reason).toBe('skip-tag');
+    expect(diagnosis.finding.detail).toContain('祖先');
+    expect(diagnosis.finding.detail).toContain('pre');
+    // 结论指向**真正让整棵子树不存在**的那个祖先（不是被点的 span）。
+    expect(diagnosis.finding.reportedElement).toBe(document.getElementById('pre'));
+    // 一句"已采集/宿主不存在"会把排查引向不存在的请求/渲染 bug——这正是 F1 要修的错。
+    expect(diagnosis.finding.text).not.toContain('已采集');
+    expect(diagnosis.finding.text).not.toContain('宿主不存在');
+  });
+
+  it('<svg><text> 的后代：同样点名祖先 svg（tagName 小写的内联 svg 也要认出来）', () => {
+    document.body.innerHTML = '<svg id="chart"><text id="t">Chart label</text></svg>';
+    const label = document.getElementById('t') as HTMLElement;
+
+    expect(collectSegments(document.body, OPTIONS)).toEqual([]);
+
+    const diagnosis = analyze(label);
+
+    expect(diagnosis.finding.reason).toBe('skip-tag');
+    expect(diagnosis.finding.detail).toContain('祖先');
+    expect(diagnosis.finding.detail).toContain('svg');
+    expect(diagnosis.finding.reportedElement).toBe(document.getElementById('chart'));
+    expect(diagnosis.finding.text).not.toContain('宿主不存在');
+  });
+
+  it('间隔着几层的祖先（pre > div > span）也要认出来，且点名的是最近的那一层', () => {
+    document.body.innerHTML = '<pre id="pre"><div id="inner"><span id="s">const answer = 1</span></div></pre>';
+    const span = document.getElementById('s') as HTMLElement;
+
+    expect(collectSegments(document.body, OPTIONS)).toEqual([]);
+
+    const diagnosis = analyze(span);
+
+    expect(diagnosis.finding.reason).toBe('skip-tag');
+    expect(diagnosis.finding.reportedElement).toBe(document.getElementById('pre'));
+  });
+
+  it('四种"祖先这类标签"的形态逐例与 collectSegments 对照：都产不出段落，都不说"已采集"', () => {
+    const shapes = [
+      ['<pre><span id="x">Alpha beta</span></pre>', 'pre'],
+      ['<code><span id="x">Alpha beta</span></code>', 'code'],
+      ['<svg><text id="x">Alpha beta</text></svg>', 'svg'],
+      ['<div><textarea id="x">Alpha beta</textarea></div>', 'textarea'],
+    ];
+
+    for (const [html, tag] of shapes) {
+      document.body.innerHTML = html ?? '';
+      // 真实采集：这段内容永远不在段落列表里。
+      expect(collectSegments(document.body, OPTIONS)).toEqual([]);
+
+      const diagnosis = analyze(document.getElementById('x') as HTMLElement);
+
+      expect(diagnosis.finding.reason).toBe('skip-tag');
+      expect(diagnosis.finding.detail).toContain(tag);
+      expect(diagnosis.finding.text).not.toContain('已采集');
+    }
+  });
+
+  it('点击处自己是跳过标签时照旧报"自身"（既有语义不变）', () => {
+    document.body.innerHTML = '<div id="box"><code id="code">const a = 1</code></div>';
+
+    const diagnosis = analyze(document.getElementById('code') as HTMLElement);
+
+    expect(diagnosis.finding.reason).toBe('skip-tag');
+    expect(diagnosis.finding.detail).toContain('自身');
+    expect(diagnosis.finding.reportedElement).toBe(document.getElementById('code'));
+  });
+
+  it('extractor 的向上判据对"祖先被跳过"给出的正是 null（诊断复用的就是这条证据）', () => {
+    document.body.innerHTML = '<pre id="pre"><span id="s">const answer = 1</span></pre>';
+
+    // 这一段根本不存在：`findLeafTextAncestor` 撞上被跳过的祖先就返回 null。
+    expect(findLeafTextAncestor(document.getElementById('s'))).toBeNull();
+
+    document.body.innerHTML = '<p id="p">Hello <b id="b">world</b></p>';
+
+    // 反过来，它在"整元素段落里的行内后代"上正好返回那个段落——归属元素判定的第一半。
+    expect(findLeafTextAncestor(document.getElementById('b'))).toBe(document.getElementById('p'));
+  });
+});
+
+describe('F2：松散文本段——译文就在页面上，不能说"宿主不存在"', () => {
+  it('双语模式现场：宿主挂在容器里，点容器里的行内 span 就是「已翻译」', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    const card = document.getElementById('card') as HTMLElement;
+    const segments = collectSegments(document.body, OPTIONS);
+
+    // 钉住"归属元素是容器"这个前提：松散文本段的宿主正是插在容器里的（见 renderer）。
+    expect(segments[0]?.element).toBe(card);
+    expect(segments[0]?.textRun).toBe(true);
+    card.insertBefore(makeHost('jy-1-abc', '介绍文字'), document.getElementById('body'));
+
+    const diagnosis = analyze(document.getElementById('s') as HTMLElement);
+
+    expect(diagnosis.finding.reason).toBe('translated');
+    expect(diagnosis.finding.text).toContain('已翻译');
+    expect(diagnosis.finding.text).not.toContain('宿主不存在');
+  });
+
+  it('宿主还停在「翻译中…」时同理：报到归属元素上，结论是"还在翻译中"', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    const card = document.getElementById('card') as HTMLElement;
+    collectSegments(document.body, OPTIONS);
+    card.insertBefore(makeHost('jy-1-abc', '', true), document.getElementById('body'));
+
+    const diagnosis = analyze(document.getElementById('s') as HTMLElement);
+
+    expect(diagnosis.finding.reason).toBe('pending');
+    expect(diagnosis.finding.detail).toContain('翻译中');
+  });
+
+  it('查宿主时不能只看点击处的后代：松散文本段的宿主不在 span 里，而在容器里', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    const card = document.getElementById('card') as HTMLElement;
+    collectSegments(document.body, OPTIONS);
+    const host = makeHost('jy-1-abc', '介绍文字');
+    card.insertBefore(host, document.getElementById('body'));
+
+    // 前提前钉死：宿主确实**不是**点击处的后代（旧实现就是在这里两头落空）。
+    expect(document.getElementById('s')?.querySelector('[data-jy-for]')).toBeNull();
+    expect(card.querySelector('[data-jy-for]')).toBe(host);
+
+    expect(analyze(document.getElementById('s') as HTMLElement).finding.reason).toBe('translated');
+  });
+
+  it('钉死 findLeafTextAncestor 对松散文本段的行为：返回 null（所以归属元素要另取块根）', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+
+    // extractor 自己文档里写明的已知边界：混合容器（<div>Intro<p>Body</p></div>）不成段，
+    // 所以它回答不了"这段归谁"——诊断必须按块根再判一次，否则就会退回到"点击处为根"的老错。
+    expect(findLeafTextAncestor(document.getElementById('s'))).toBeNull();
+    expect(findLeafTextAncestor(document.getElementById('card'))).toBeNull();
+  });
+
+  it('整元素段落的行内后代：归属元素就是那个段落（两条判据在这一侧一致）', () => {
+    document.body.innerHTML = '<p id="p">Hello <b id="b">world</b></p>';
+    const paragraph = document.getElementById('p') as HTMLElement;
+    const segments = collectSegments(document.body, OPTIONS);
+    expect(segments[0]?.element).toBe(paragraph);
+
+    // 双语模式的宿主插在段落之后（兄弟位置），段落自己带 data-jy-translated：
+    // 结论由那条更早的判据给出，同样不会说"宿主不存在"。
+    const diagnosis = analyze(document.getElementById('b') as HTMLElement);
+
+    expect(diagnosis.finding.reason).toBe('already-translated');
+    expect(diagnosis.finding.text).toContain('已翻译');
+  });
+
+  it('已知边界（刻意保守）：容器里还留着别的宿主时，不说"宿主不存在"', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    const card = document.getElementById('card') as HTMLElement;
+    collectSegments(document.body, OPTIONS);
+    // 只摘掉松散文本段自己的宿主，容器里还留着兄弟段落（p#body）的宿主：
+    // 按归属元素查宿主时认不出"这个宿主是不是这一段的"，于是当作有宿主。
+    card.append(makeHost('jy-2-xyz', '正文译文'));
+
+    const diagnosis = analyze(document.getElementById('s') as HTMLElement);
+
+    // 宁少报一次"采了没渲染"，也不要把"译文其实在页面上"说成缺失——
+    // 「框架把卡片里的节点整个重建」那种宿主全没的现场照常报得出来（见 M1 的 ③）。
+    expect(diagnosis.finding.reason).toBe('translated');
+    expect(diagnosis.finding.text).not.toContain('宿主不存在');
+  });
+});
+
+describe('F3：是谁引入的隐藏——自身 vs 祖先 × 四种隐藏方式', () => {
+  interface HiddenCase {
+    name: string;
+    html: string;
+    by: 'self' | 'ancestor';
+    kind: string;
+    /** 引入隐藏的那个元素：自身场景就是被点的元素，祖先场景是那个祖先。 */
+    culprit: string;
+  }
+
+  const CASES: HiddenCase[] = [
+    {
+      name: 'display:none 自身',
+      html: '<p id="x" style="display:none">Hidden text</p>',
+      by: 'self',
+      kind: 'display:none',
+      culprit: '#x',
+    },
+    {
+      name: 'display:none 祖先',
+      html: '<div id="a" style="display:none"><p id="x">Hidden text</p></div>',
+      by: 'ancestor',
+      kind: 'display:none',
+      culprit: '#a',
+    },
+    {
+      name: 'visibility:hidden 自身',
+      html: '<p id="x" style="visibility:hidden">Hidden text</p>',
+      by: 'self',
+      kind: 'visibility:hidden',
+      culprit: '#x',
+    },
+    {
+      name: 'visibility:hidden 祖先（继承属性，后代 computed 也都是 hidden）',
+      html: '<div id="a" style="visibility:hidden"><p id="x">Hidden text</p></div>',
+      by: 'ancestor',
+      kind: 'visibility:hidden',
+      culprit: '#a',
+    },
+    {
+      name: '[hidden] 自身',
+      html: '<p id="x" hidden>Hidden text</p>',
+      by: 'self',
+      kind: 'hidden',
+      culprit: '#x',
+    },
+    {
+      name: '[hidden] 祖先',
+      html: '<div id="a" hidden><p id="x">Hidden text</p></div>',
+      by: 'ancestor',
+      kind: 'hidden',
+      culprit: '#a',
+    },
+    {
+      name: 'aria-hidden 自身',
+      html: '<p id="x" aria-hidden="true">Hidden text</p>',
+      by: 'self',
+      kind: 'aria-hidden',
+      culprit: '#x',
+    },
+    {
+      name: 'aria-hidden 祖先',
+      html: '<div id="a" aria-hidden="true"><p id="x">Hidden text</p></div>',
+      by: 'ancestor',
+      kind: 'aria-hidden',
+      culprit: '#a',
+    },
+  ];
+
+  for (const item of CASES) {
+    it(`${item.name}：报 ${item.by}，引入者是 ${item.culprit}`, () => {
+      document.body.innerHTML = item.html;
+      const clicked = document.getElementById('x') as HTMLElement;
+
+      const diagnosis = analyze(clicked);
+
+      expect(diagnosis.finding.reason).toBe('hidden');
+      expect(diagnosis.finding.hiddenBy).toBe(item.by);
+      expect(diagnosis.finding.hiddenKind).toBe(item.kind);
+      // "自身 vs 祖先"决定下一步该做什么（真隐藏 vs 展开后没重新扫）：必须指对元素。
+      expect(culpritOf(diagnosis)).toBe(item.culprit);
+      expect(diagnosis.finding.detail).toContain(item.by === 'self' ? '自身' : '祖先');
+      if (item.by === 'ancestor') expect(diagnosis.finding.detail).toContain(item.culprit);
+      // 点击处本身仍是那个被点的元素，与"该负责的元素"分开报。
+      expect(diagnosis.element).toBe(clicked);
+    });
+  }
+
+  it('嵌套现场（外层 display:none + 内层 visibility:hidden）：点名真正引入隐藏的那一层', () => {
+    document.body.innerHTML =
+      '<div id="outer" style="display:none"><div id="inner" style="visibility:hidden"><p id="t">Gone text</p></div></div>';
+
+    const diagnosis = analyze(document.getElementById('t') as HTMLElement);
+
+    expect(diagnosis.finding.reason).toBe('hidden');
+    expect(diagnosis.finding.hiddenBy).toBe('ancestor');
+    // 引入者 = 祖先链上"自己是隐藏的、父元素不隐藏"的最外层那一个：就是外层 div。
+    expect(culpritOf(diagnosis)).toBe('#outer');
+    expect(diagnosis.finding.hiddenKind).toBe('display:none');
+    expect(diagnosis.finding.detail).toContain('outer');
+  });
+
+  it('自身隐藏 + 祖先隐藏：报祖先（真正引入的那一层），不把责任推给被点的元素', () => {
+    document.body.innerHTML =
+      '<div id="a" style="visibility:hidden"><p id="x" style="visibility:hidden">Hidden text</p></div>';
+
+    const diagnosis = analyze(document.getElementById('x') as HTMLElement);
+
+    expect(diagnosis.finding.hiddenBy).toBe('ancestor');
+    expect(culpritOf(diagnosis)).toBe('#a');
+  });
+
+  it('同一个判据覆盖 display:none 与 visibility:hidden（不是给 visibility 打的补丁）', () => {
+    // 两条现场只有一个属性不同，其余读数必须同形：隐藏方式如实报、引入者都指祖先。
+    const shapes = [
+      ['<div id="a" style="display:none"><p id="x">Alpha beta</p></div>', 'display:none'],
+      ['<div id="a" style="visibility:hidden"><p id="x">Alpha beta</p></div>', 'visibility:hidden'],
+    ];
+
+    for (const [html, kind] of shapes) {
+      document.body.innerHTML = html ?? '';
+      const diagnosis = analyze(document.getElementById('x') as HTMLElement);
+      expect(diagnosis.finding.hiddenBy).toBe('ancestor');
+      expect(culpritOf(diagnosis)).toBe('#a');
+      expect(diagnosis.finding.hiddenKind).toBe(kind);
+    }
+  });
+
+  it('隐藏加在 <html> 上时也要找得到引入者（不放任它掉进采集环节的结论）', () => {
+    document.body.innerHTML = '<p id="x">Alpha beta</p>';
+    // 加载态/过渡态里 `<html style="visibility:hidden">` 是真实写法：整条链的 computed
+    // 都是 hidden，父元素也全"隐藏"，只有最外层（父元素为 null）的那一个才算引入者。
+    document.documentElement.style.visibility = 'hidden';
+    try {
+      const diagnosis = analyze(document.getElementById('x') as HTMLElement);
+
+      expect(diagnosis.finding.reason).toBe('hidden');
+      expect(diagnosis.finding.hiddenBy).toBe('ancestor');
+      expect(diagnosis.finding.hiddenKind).toBe('visibility:hidden');
+      expect(diagnosis.finding.reportedElement).toBe(document.documentElement);
+    } finally {
+      document.documentElement.style.visibility = '';
+    }
+  });
+});
+
+describe('M1：三种"没翻译"各自说准（页面没开翻译 / 不在账本 / 真的采了没渲染）', () => {
+  it('① 页面还没开始翻译（观察者未启用）：说"页面还没开始翻译"并提示按 Alt+T', () => {
+    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
+
+    // 页面级的那个读数就是"观察者启用没启用"（接线层喂进来的 stats）。
+    const diagnosis = analyzeWithStats(document.getElementById('p') as HTMLElement, stats({ enabled: false }));
+
+    expect(diagnosis.finding.reason).toBe('page-idle');
+    expect(diagnosis.finding.text).toContain('还没开始翻译');
+    expect(diagnosis.finding.text).toContain('Alt+T');
+    expect(diagnosis.finding.text).not.toContain('已采集');
+    expect(diagnosis.finding.text).not.toContain('宿主不存在');
+  });
+
+  it('② 页面已翻译、但这一段不在已处理账本里：说"可能是翻译后才出现的"，不说宿主不存在', () => {
+    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
+
+    const diagnosis = analyzeWithStats(document.getElementById('p') as HTMLElement, stats());
+
+    expect(diagnosis.finding.reason).toBe('not-in-ledger');
+    expect(diagnosis.finding.detail).toContain('翻译后才出现');
+    // 这一段还可能落在单轮上限之外：有读数时把话说全。
+    expect(diagnosis.finding.detail).toContain('交互重扫');
+    expect(diagnosis.finding.text).not.toContain('宿主不存在');
+    expect(diagnosis.finding.text).not.toContain('已采集');
+  });
+
+  it('② 页面大到整页重扫会被护栏跳过时，补上"落在元素数上限之外"这个读数', () => {
+    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
+
+    const diagnosis = analyzeWithStats(
+      document.getElementById('p') as HTMLElement,
+      // 与 observer 的护栏同一个判据、同一个常量：不在这里另写一份阈值。
+      stats({ elementCount: FULL_RESCAN_MAX_ELEMENTS + 1 }),
+    );
+
+    expect(diagnosis.finding.reason).toBe('not-in-ledger');
+    expect(diagnosis.finding.detail).toContain('上限');
+    expect(diagnosis.finding.detail).toContain(String(FULL_RESCAN_MAX_ELEMENTS + 1));
+  });
+
+  it('③ 真的采集过但没有宿主：只有这一种才说「已采集未翻译：宿主不存在」', () => {
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    const clicked = document.getElementById('s') as HTMLElement;
+
+    // 对照组：同一个现场、同一份读数，只差"有没有真的采过"。
+    const before = analyzeWithStats(clicked, stats());
+    expect(before.finding.reason).toBe('not-in-ledger');
+
+    collectSegments(document.body, OPTIONS); // 真的采一遍：容器上留下 data-jy-id
+    const after = analyzeWithStats(clicked, stats());
+
+    expect(after.finding.reason).toBe('collected');
+    expect(after.finding.detail).toContain('宿主不存在');
+    expect(after.finding.text).toContain('已采集未翻译');
+  });
+
+  it('三种情况的文案两两不同（诊断说错原因比没有诊断更坏）', () => {
+    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
+    const clicked = document.getElementById('p') as HTMLElement;
+    const idle = analyzeWithStats(clicked, stats({ enabled: false })).finding.text;
+    const notLedger = analyzeWithStats(clicked, stats()).finding.text;
+
+    document.body.innerHTML = '<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>';
+    collectSegments(document.body, OPTIONS);
+    const noHost = analyzeWithStats(document.getElementById('s') as HTMLElement, stats()).finding.text;
+
+    expect(new Set([idle, notLedger, noHost]).size).toBe(3);
+  });
+
+  it('观测者读数缺失（纯分析场景）时按"页面已翻译"处理：不拿未知冒充未启用', () => {
+    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
+
+    // stats 为 null 只说明"没有观察者信息"，不等于"页面没翻译"——
+    // 有采集快照（options）时页面就是已翻译状态，结论落在"不在账本里"这一支。
+    expect(analyze(document.getElementById('p') as HTMLElement).finding.reason).toBe('not-in-ledger');
   });
 });

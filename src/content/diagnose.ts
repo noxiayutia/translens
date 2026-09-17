@@ -12,6 +12,9 @@
  * 1. **判据一律从 extractor 复用**，本文件一条判定逻辑都不自己写——"什么算隐藏"、
  *    "什么算一段"、"什么算可编辑区域"在采集端与诊断里必须逐字相同，两处各写一份注定漂移。
  *    采集判定本身也是**真的跑一遍采集**（`ExtractorOptions.readOnly`），不是另写一套模拟。
+ *    连"这一段归谁"也要按采集端**真正会走的那条路**问：判据的入口是
+ *    `findLeafTextAncestor` 与 `isBlockBoundary`，重跑的根取**归属元素**而不是点击处
+ *    ——以点击处为根重跑会绕过祖先那几道闸门，结论就会说反（见 `findSegmentOwner`）。
  * 2. **绝不改变页面**：不 preventDefault、不 stopPropagation、不写标记、不插节点、不发请求。
  *    诊断是观察，不是干预——用户点它是为了看结论，不是为了改页面。
  * 3. **只在 Alt+Shift+点击时工作**，其余时候一个监听回调都不跑（见 {@link installDiagnose}）。
@@ -23,6 +26,7 @@ import {
   collectSegmentsWithin,
   createStyleLookup,
   detectHiddenKind,
+  findLeafTextAncestor,
   hasBlockBoundaryChild,
   hasSkipTag,
   inlineText,
@@ -32,7 +36,7 @@ import {
   type ExtractorOptions,
   type StyleLookup,
 } from './extractor';
-import type { IncrementalStats } from './observer';
+import { FULL_RESCAN_MAX_ELEMENTS, type IncrementalStats } from './observer';
 import { toast } from './toast';
 
 /**
@@ -56,16 +60,25 @@ export type DiagnoseReason =
   | 'empty'
   /** 判定为"已是目标语言"而跳过。 */
   | 'target-language'
-  /** 被跳过的标签（表单控件的值、code/svg 等）。 */
+  /**
+   * 元素自身**或某个祖先**是"一律跳过"的标签（表单控件的值、code/pre/svg 等）。
+   * 祖先被跳过 ⇒ 整棵子树在采集端永远不会被访问，所以这一条与"点击处自己是 code"
+   * 是同一个结论码，只在 `detail` 里分清"自身"还是"哪个祖先"。
+   */
   | 'skip-tag'
-  /** 会/已经被采集为一段，但查不到译文宿主（采了没渲染 → 请求/渲染环节）。 */
+  /** 页面压根没开始翻译（观察者未启用）：此时"没采集"与请求/渲染环节无关。 */
+  | 'page-idle'
+  /**
+   * 页面已翻译，但这一段**不在已处理账本里**：多半是翻译后才出现的、增量轮或交互
+   * 重扫还没轮到它（也可能页面大到整页重扫被护栏跳过）。与"采了没渲染"是两回事。
+   */
+  | 'not-in-ledger'
+  /** 真的采集过这一段，但查不到译文宿主（采了没渲染 → 请求/渲染环节）。 */
   | 'collected'
   /** 已经采集为一整段，但宿主还停在「翻译中…」。 */
   | 'pending'
   /** 就是这一段，而且已有译文。 */
-  | 'translated'
-  /** 会在下一次采集里成段，但此刻还没有宿主（**防御性**：按现有判据取不到，见 classify）。 */
-  | 'would-collect';
+  | 'translated';
 
 /** 不可见的来源：元素自己，还是某个祖先（这决定是"真隐藏"还是"展开后没重新扫"）。 */
 export type HiddenBy = 'self' | 'ancestor';
@@ -143,27 +156,91 @@ function describeElement(element: Element): string {
   return `${tag}${id}${first === null ? '' : `.${first}`}`;
 }
 
-/** 元素的**自身**隐藏方式（不追祖先）。`undefined` = 自己没藏。 */
-function selfHiddenKind(element: Element, styleOf: StyleLookup): string | undefined {
-  return detectHiddenKind(element, styleOf);
+/**
+ * **是谁把这一级藏起来的**：祖先链上"自己是隐藏的、而它的父元素不是隐藏的"那个
+ * **最外层**元素，就是引入者（含点击处自身）。
+ *
+ * 为什么要这条判据，而不是"从点击处往上找第一个隐藏的节点"：
+ * `visibility` 是**继承属性**，祖先 `visibility:hidden` 时每个后代的 computed 值都是
+ * `hidden`——"第一个命中的节点"永远是被点的那个元素，真凶一次都点不到名。
+ * 而"自身 vs 祖先"这个区分决定用户下一步该做什么（真隐藏 vs 展开后没重新扫），
+ * 报错了就是把排查引向不存在的 bug。
+ *
+ * 一条逻辑同时覆盖 `display:none` 与 `visibility`：判据不关心是哪种隐藏，只关心
+ * "隐藏是从哪一层开始的"（`display:none` 不继承，因此它天然命中引入者那一层）。
+ * 隐藏方式本身仍由 extractor 的 `detectHiddenKind` 如实报出。
+ */
+function locateHidden(element: Element, styleOf: StyleLookup): { kind: string; target: Element } | undefined {
+  let culprit: { kind: string; target: Element } | undefined;
+  // 走到 `null`（含 `documentElement`）而不是停在 body：隐藏也可能加在 `<html>` 上
+  // （`<html style="visibility:hidden">` 这类加载态/过渡态），停在 body 就找不到引入者了。
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const kind = detectHiddenKind(node, styleOf);
+    if (kind !== undefined) {
+      const parent = node.parentElement;
+      // 父元素也隐藏 ⇒ 这一层只是"继承来的隐藏"，不是引入者；越靠外层的引入者越有资格。
+      if (parent === null || detectHiddenKind(parent, styleOf) === undefined) culprit = { kind, target: node };
+    }
+  }
+  return culprit;
 }
 
 /**
- * 找出把元素藏起来的那个祖先（含自身，最近的优先）。
- * 自身与祖先分开报，是因为两者的处置完全不同：真隐藏（祖先被收起）不该翻，
- * 而"展开后没重新扫"要的是再扫一次——用户看到的那一行字就是他下一步动作的依据。
+ * 祖先链上最近的"这类标签一律跳过"的那一级（含自身，见 {@link hasSkipTag}）。
+ *
+ * **必须沿祖先链查**：采集端的跳过是**整棵子树**的（`visitBlock` 在 `isSkippable` 上一票
+ * 否决，后代永远不会被访问）。只看点击处自己，`<pre><span>`、`<svg><text>`、
+ * `<code><span class="token">` 这些形态就会被误报成"采了这一段但没渲染"。
  */
-function locateHidden(element: Element, styleOf: StyleLookup): { kind: string; target: Element } | undefined {
+function locateSkipTag(element: Element): Element | undefined {
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
-    const kind = detectHiddenKind(node, styleOf);
-    if (kind !== undefined) return { kind, target: node };
+    if (hasSkipTag(node)) return node;
   }
   return undefined;
 }
 
-/** 宿主状态：`[data-jy-for]` 的落点。没有宿主 = 采了没渲染（请求/渲染环节的问题）。 */
-function hostFor(segment: Element): HTMLElement | undefined {
-  const host = segment.querySelector('[data-jy-for]');
+/**
+ * 这一段的**归属元素**：真实采集会把它算成哪一段的承载元素（译文宿主就挂在它上面/里面）。
+ *
+ * 为什么不能拿点击处当根重跑采集：`collectSegmentsWithin(点击处)` 把点击处当成一个块根，
+ * 于是祖先那几道闸门（跳过标签、隐藏、可编辑）一次都不会被问到，松散文本段还会凭空多出
+ * 一段"以点击处为归属"的假段落。两条判据按顺序取，都是 extractor 自己的：
+ *
+ * 1. {@link findLeafTextAncestor}——"整元素段落"的归属元素（段落里的行内后代 → 那个段落）；
+ * 2. **块根回退**——`findLeafTextAncestor` 有一个文档里写明的已知边界（混合容器不成段，
+ *    见 extractor 的注释），松散文本段拿不到，返回 null。此时归属元素是**块根**：
+ *    真实采集只从两处进入 `visitBlock`——body 的直接子元素，或某个被访问块未被跳过的
+ *    块级边界子元素（见 extractor 的 `visitContent`）——所以从点击处往上找第一个这样的
+ *    元素，就是这一段被访问时所在的那一级。`<div><span>Intro</span><p>Body</p></div>` 的
+ *    Intro 因此归到那个 `div`：宿主正是插在它里面的。
+ *
+ * 取不到（脱离文档、`documentElement` 这类极端输入）时返回 undefined，调用方退回
+ * "就在点击处这一级问采集"的老口径。
+ */
+function findSegmentOwner(element: Element, styleOf: StyleLookup): Element | undefined {
+  const leaf = findLeafTextAncestor(element);
+  if (leaf !== null) return leaf;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    // body 自己的直接文本不在采集范围里（整页采集以它为根，扫的是它的孩子）。
+    if (node === document.body) return undefined;
+    if (node.parentElement === document.body) return node;
+    if (isBlockBoundary(node, styleOf, 0) && !isHidden(node, styleOf)) return node;
+  }
+  return undefined;
+}
+
+/**
+ * 这一段自己的译文宿主：宿主挂在**归属元素**上（整元素段落挂在元素里或紧随其后，
+ * 松散文本段挂在容器里——见 renderer 的 `ensureHost` / `insertHostAtAnchor`）。
+ *
+ * **已知边界（刻意保守）**：查的是归属元素这棵子树，认不出"这个宿主是不是这一段的"。
+ * 容器里还留着兄弟段落的宿主、而这一段自己的宿主没了时，这里会当作"有宿主"，
+ * 于是不说"宿主不存在"。宁可少报一次"采了没渲染"，也不要把"译文其实在页面上"说成缺失
+ * ——后者正是 F2 那一类错，比不报更难查。真正的"框架把卡片里的节点整个重建"（宿主全没）
+ * 仍然是能报出来的。
+ */
+function hostFor(owner: Element): HTMLElement | undefined {
+  const host = owner.querySelector('[data-jy-for]');
   return host instanceof HTMLElement ? host : undefined;
 }
 
@@ -172,6 +249,30 @@ function hostState(host: HTMLElement): 'pending' | 'error' | 'done' {
   if (body?.classList.contains('jy-pending') === true) return 'pending';
   if (body?.classList.contains('jy-error') === true) return 'error';
   return 'done';
+}
+
+/**
+ * 「这一段真的进过采集吗」——**唯一的现场证据是采集端自己写下的段落标记**。
+ *
+ * `data-jy-id` 只在真采集里写：它由 `collectFrom` 的 `push` 给每个产出段落的承载元素打上，
+ * 而诊断的重跑是 `readOnly`（只分析、不落笔），永远不会写它；`restore()` 统一清掉。
+ * 观察者的「已处理账本」记的正是这些段落（每个被生产出来的段落要么当场入账、要么早就在账里），
+ * 所以"有标记"就是"在账本里"的可靠读数——诊断不需要、也不许为此再维护一套状态。
+ */
+function wasCollected(owner: Element): boolean {
+  return owner.hasAttribute('data-jy-id');
+}
+
+/**
+ * "不在账本里"的下一步提示：两种真实成因都写出来。
+ * 元素数上限用的是 observer 导出的那一个常量（与护栏同一个判据），不在这里另写一份阈值。
+ */
+function ledgerHint(stats: IncrementalStats | null): string {
+  const parts = ['可能是翻译后才出现的，点一下页面或等一次交互重扫'];
+  if (stats !== null && stats.elementCount > FULL_RESCAN_MAX_ELEMENTS) {
+    parts.push(`也可能落在整页重扫的元素数上限之外（${stats.elementCount} 元素）`);
+  }
+  return parts.join('；');
 }
 
 /**
@@ -194,8 +295,15 @@ type Verdict = Omit<DiagnoseLevel, 'element' | 'path' | 'reportedElement'> & {
 function classify(
   element: Element,
   options: ExtractorOptions | null,
+  stats: IncrementalStats | null,
   styleOf: StyleLookup,
 ): Verdict | null {
+  // 页面处于"已翻译"状态的**唯一**判据：有采集快照（`scanOptions`），且观察者不是在停用态。
+  // 这两条分别来自 index.ts 的接线与 observer 的读数——诊断不自己去问设置、也不另存一份状态。
+  // 观察者读数缺失（纯分析场景）时按"已翻译"处理：null 只说明"没有观察者信息"，
+  // 不等于"页面没翻译"，拿未知冒充未启用会把结论说反。
+  const pageTranslated = options !== null && (stats === null || stats.enabled);
+
   // 1. 插件自己的浮层：`closest` 查的是祖先链，与采集端 `isSkippedForText` 同一份语义。
   //    报**最近的那个浮层**（不是最外层的那一个）：`toast` 挂在 `documentElement` 上、
   //    译文宿主挂在段落里——用户点到的通常是宿主，说"这是插件自己的浮层"就够，
@@ -224,8 +332,17 @@ function classify(
   }
 
   // 4. 被跳过的标签：表单控件的值、code/pre、svg 等（按钮**不在**名单里，
-  //    它承载的正是界面上最该翻的字）。
-  if (hasSkipTag(element)) return { reason: 'skip-tag', detail: element.tagName.toLowerCase() };
+  //    它承载的正是界面上最该翻的字）。**沿祖先链查**——祖先被跳过时整棵子树在采集端
+  //    永远不会被访问，只看点击处自己就会把"这一段根本不存在"误报成"采了没渲染"。
+  const skip = locateSkipTag(element);
+  if (skip !== undefined) {
+    return {
+      reason: 'skip-tag',
+      // 点名是哪一层：用户看到的是一段普通文字，得告诉他上面那层 code/pre 才是原因。
+      detail: skip === element ? `自身 ${skip.tagName.toLowerCase()}` : `祖先 ${describeElement(skip)}`,
+      reportAs: skip,
+    };
+  }
 
   // 5. 宿主状态：真的跑一遍采集（只分析、不落笔，见 ExtractorOptions.readOnly）问出
   //    确定答案——它是不是真的被采成一段了、以及有没有译文宿主。
@@ -265,19 +382,30 @@ function classify(
     };
   }
 
-  const segment = collectSegmentsWithin(element, { ...(options ?? { targetLang: '' }), readOnly: true }).find(
-    (candidate) => candidate.element === element,
+  // 10. 归属元素 + **以它为根**只读重跑采集：问"这一段到底会不会成段、以及宿主在不在"。
+  //     根取归属元素而不是点击处，是这一条的全部要害（见 findSegmentOwner）：
+  //     以点击处为根的问法会绕过祖先的闸门，并且会给松散文本段凭空造一段假段落。
+  //     取不到归属元素（极端输入）时退回点击处——与这条判据出现之前的行为一致。
+  const owner = findSegmentOwner(element, styleOf) ?? element;
+  const segment = collectSegmentsWithin(owner, { ...(options ?? { targetLang: '' }), readOnly: true }).find(
+    (candidate) => candidate.element === owner,
   );
   if (segment === undefined) {
-    // 防御性分支：按上面的判据，走到这里的元素**一定**会被采成一段（文本合格、不是容器、
+    // 防御性分支：按上面的判据，走到这里的归属元素**一定**会成段（文本合格、不是容器、
     // 没被任何闸拦下），所以这一支在真实页面上取不到。留着是为了万一将来某个闸加了进来，
-    // 诊断说的是"还不在这轮的采集范围内"这句实话，而不是硬报一个"采了没渲染"。
-    return { reason: 'would-collect', detail: '还不在这轮的采集范围内' };
+    // 诊断说的是"这一段还不在采集范围内"这句实话，而不是硬报一个"采了没渲染"。
+    return { reason: 'not-in-ledger', detail: ledgerHint(stats) };
   }
-  if (host === undefined) {
+  const ownerHost = hostFor(owner);
+  if (ownerHost === undefined) {
+    // 三种"没翻译"在这里分开（见 M1）：页面没开翻译 / 这一段还没进过账本 / 真的采了没渲染。
+    // 合成一句"已采集未翻译"会把前两种也指去查请求与渲染——那是两个不存在的 bug。
+    if (!pageTranslated) return { reason: 'page-idle', detail: '按 Alt+T 开始翻译整页' };
+    if (!wasCollected(owner)) return { reason: 'not-in-ledger', detail: ledgerHint(stats) };
     // 采了但没渲染：这正是 digitalocean 那类事故最需要区分出来的一种。
     return { reason: 'collected', detail: '宿主不存在' };
   }
+  if (hostState(ownerHost) === 'pending') return { reason: 'pending', detail: '宿主在「翻译中…」' };
   return { reason: 'translated' };
 }
 
@@ -292,10 +420,11 @@ const REASON_LABEL: Record<DiagnoseReason, string> = {
   empty: '未采集：这里没有可见文本',
   'target-language': '未采集：已是目标语言',
   'skip-tag': '未采集：这类标签一律跳过',
+  'page-idle': '页面还没开始翻译',
+  'not-in-ledger': '未采集：这一段还不在已处理账本里',
   collected: '已采集未翻译：宿主不存在',
   pending: '已采集，还在翻译中',
   translated: '已翻译',
-  'would-collect': '未采集：宿主不存在',
 };
 
 /** 提示的第一行（结论 + 具体情况）。 */
@@ -365,7 +494,7 @@ export function diagnoseElement(target: EventTarget, deps: DiagnoseDeps): Diagno
     target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
 
   while (node !== null) {
-    const verdict = classify(node, options, styleOf);
+    const verdict = classify(node, options, stats, styleOf);
     const entry: DiagnoseLevel = { element: node, path: describeElement(node) };
     if (verdict !== null) {
       // `reportAs` 是"该指向哪个元素"，落进 `reportedElement`；其余字段原样带上。

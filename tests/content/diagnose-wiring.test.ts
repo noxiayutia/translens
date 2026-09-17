@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 import { dispatchSynthetic, dispatchTrusted } from '../helpers/trusted-events';
 import { MSG, type PageState } from '../../src/shared/messages';
+import { CURRENT_VERSION, SETTINGS_KEY } from '../../src/shared/settings';
 
 type SendResponse = (response?: unknown) => void;
 type MessageListener = (message: unknown, sender: unknown, sendResponse: SendResponse) => boolean | undefined;
@@ -41,6 +42,12 @@ function sentTexts(worker: MockInstance<MessageListener>): string[] {
 /** 页面内那条 toast 的纯文本内容（`toast()` 把消息写进 shadow DOM）。 */
 function toastText(): string | null {
   return document.getElementById(TOAST_ID)?.shadowRoot?.textContent ?? null;
+}
+
+/** 页面内那条 toast 的**文字节点**（M3 要读它的计算样式：真浏览器里换行折不折叠全看它）。 */
+function toastSpan(): HTMLElement | null {
+  const span = document.getElementById(TOAST_ID)?.shadowRoot?.querySelector('span');
+  return span instanceof HTMLElement ? span : null;
 }
 
 async function dispatch(
@@ -117,6 +124,36 @@ async function translatedPage(): Promise<{
   return { contentListener, worker, fresh, translated };
 }
 
+/**
+ * 用**真实链路**把任意现场翻译好（内容脚本 + 后台替身，响应是 `译:原文`）。
+ *
+ * 与 `translatedPage()` 的分工：那个是固定现场（首段 + 翻译后新增的一段，测状态读数用），
+ * 这个给"结论必须与真实采集/渲染一致"那组用例用——F1 的 pre、F2 的松散文本段都要真翻一遍
+ * 才成立（诊断里最要命的错就是结论与真实链路不一致）。
+ */
+async function translateFixture(html: string): Promise<void> {
+  document.body.innerHTML = html;
+  /**
+   * 显示模式必须在内容脚本 import **之前**进存储：它读的是当时那份设置。
+   * 这里用**双语对照**：只有它能让松散文本段直接可达（仅译文模式会把原文整体搬进
+   * `[data-jy-root]` 隐藏容器，那一段就点不到了——说明里写明的 F2 可达性）。
+   */
+  await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, displayMode: 'bilingual' } });
+  await import('../../src/content/index');
+  const contentListener = chromeStub.runtime.onMessage.listeners()[0];
+  if (contentListener === undefined) throw new Error('内容脚本没有注册 onMessage 监听器');
+  const worker = vi.fn<MessageListener>(() => undefined);
+  chromeStub.runtime.onMessage.addListener(worker);
+  worker.mockImplementation((message, _sender, sendResponse) => {
+    if (!isTranslateRequest(message)) return false;
+    const { items } = (message as { payload: { items: Array<{ id: string; text: string }> } }).payload;
+    sendResponse({ ok: true, results: items.map((item) => ({ id: item.id, text: `译:${item.text}` })) });
+    return true;
+  });
+  await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+  worker.mockClear();
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
   for (const host of Array.from(document.querySelectorAll('[data-jy-root]'))) host.remove();
@@ -172,14 +209,18 @@ describe('诊断模式：触发条件（必须仍走 isTrusted 闸门）', () =>
     expect(clipboardWrites).toHaveLength(0);
   });
 
-  it('页面还没翻译时也能跑（用来区分"压根没进采集"与"采了但没翻"）', async () => {
+  it('页面还没翻译时也能跑：结论是"页面还没开始翻译"并提示按 Alt+T（不是"已采集"）', async () => {
     document.body.innerHTML = '<p id="p">Ready to deploy</p>';
     await import('../../src/content/index');
 
     click(document.getElementById('p') as HTMLElement);
 
-    // 未翻译的页面上没有采集快照：结论仍然可读，并指明是宿主不存在。
-    expect(toastText()).toContain('宿主不存在');
+    // 页面压根没翻译：说"已采集未翻译：宿主不存在"会把排查引向不存在的请求/渲染 bug（M1）。
+    const text = toastText() ?? '';
+    expect(text).toContain('还没开始翻译');
+    expect(text).toContain('Alt+T');
+    expect(text).not.toContain('宿主不存在');
+    expect(text).not.toContain('已采集');
   });
 });
 
@@ -193,14 +234,18 @@ describe('诊断模式：结论', () => {
     expect(clipboardWrites[0]).toContain('已翻译');
   });
 
-  it('点一个可见但尚未翻译的段落（翻译后新增、增量还没跑）→ 说「未采集」并指明原因', async () => {
+  it('点一个可见但尚未翻译的段落（翻译后新增、增量还没跑）→ 说"不在已处理账本里"', async () => {
     const { fresh } = await translatedPage();
 
     click(fresh);
 
-    // 会成段、但查不到译文宿主：这一条正是"采了没渲染"（请求/渲染环节）的指纹。
-    expect(toastText()).toContain('宿主不存在');
-    expect(toastText()).not.toContain('已翻译');
+    // 这一段从来没进过采集（翻译之后才出现的），所以**不能**说"宿主不存在"——
+    // 那是"采了没渲染"的指纹，会把排查引向不存在的请求/渲染 bug（M1）。
+    const text = toastText() ?? '';
+    expect(text).toContain('未采集');
+    expect(text).toContain('翻译后才出现');
+    expect(text).not.toContain('宿主不存在');
+    expect(text).not.toContain('已翻译');
   });
 
   it('点一个 display:none 里的元素 → 指明是**祖先**导致不可见', async () => {
@@ -394,5 +439,84 @@ describe('诊断模式：观察者状态', () => {
     expect(text).not.toContain('已执行');
     expect(text).not.toContain('被元素数上限跳过');
     expect(text).not.toContain('节流');
+  });
+});
+
+describe('诊断模式：结论与真实链路逐条对上（F1 / F2 / M1 / M3）', () => {
+  it('F1：<pre><span> 的后代 → 说"祖先这类标签被跳过"，而真实链路里它一段都没产出', async () => {
+    await translateFixture(
+      '<p id="other">Ready to deploy</p><pre id="pre"><span id="s">const answer = 1</span></pre>',
+    );
+    // 真实链路只给可翻译的那一段挂了宿主：pre 整棵子树被跳过，里面一个宿主都没有。
+    // （不能拿诊断自己的采集当证据——那正是 F1 的错源：以点击处为根重跑，祖先那道闸没人问。）
+    expect(document.querySelectorAll('[data-jy-for]')).toHaveLength(1);
+    expect(document.getElementById('pre')?.querySelector('[data-jy-for]')).toBeNull();
+
+    click(document.getElementById('s') as HTMLElement);
+
+    const text = toastText() ?? '';
+    expect(text).toContain('祖先');
+    expect(text).toContain('pre');
+    expect(text).not.toContain('已采集');
+    expect(text).not.toContain('宿主不存在');
+  });
+
+  it('F2：双语模式下松散文本段（译文已渲染）→ 说"已翻译"，绝不说宿主不存在', async () => {
+    await translateFixture('<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>');
+    const card = document.getElementById('card') as HTMLElement;
+    const host = card.querySelector('[data-jy-for]');
+    // 复现现场先钉住：译文确实渲染出来了，而且宿主挂在**容器**里（不在被点的 span 里）。
+    expect(host).not.toBeNull();
+    expect(host?.shadowRoot?.textContent).toContain('译:Intro text');
+    expect(document.getElementById('s')?.querySelector('[data-jy-for]')).toBeNull();
+
+    click(document.getElementById('s') as HTMLElement);
+
+    const text = toastText() ?? '';
+    expect(text).toContain('已翻译');
+    expect(text).not.toContain('宿主不存在');
+  });
+
+  it('M1①：完全没翻译的页面 → "页面还没开始翻译"并提示按 Alt+T', async () => {
+    document.body.innerHTML = '<p id="p">Ready to deploy</p>';
+    await import('../../src/content/index');
+
+    click(document.getElementById('p') as HTMLElement);
+
+    const text = toastText() ?? '';
+    expect(text).toContain('还没开始翻译');
+    expect(text).toContain('Alt+T');
+    expect(text).not.toContain('宿主不存在');
+    expect(text).not.toContain('已采集');
+  });
+
+  it('M1③：真的采过、宿主被框架摘掉 → 才说「已采集未翻译：宿主不存在」', async () => {
+    await translateFixture('<div id="card"><span id="s">Intro text</span><p id="body">Body text</p></div>');
+    const card = document.getElementById('card') as HTMLElement;
+    // 模拟"框架重建卡片里的节点、顺手把宿主一起摘了"（README 写明的那一类）。
+    // 这一段**确实进过采集**（容器上有 data-jy-id），此时"宿主不存在"才是请求/渲染环节的结论。
+    const hosts = Array.from(card.querySelectorAll('[data-jy-for]'));
+    expect(hosts.length).toBeGreaterThan(0);
+    for (const host of hosts) host.remove();
+
+    click(document.getElementById('s') as HTMLElement);
+
+    const text = toastText() ?? '';
+    expect(text).toContain('已采集未翻译');
+    expect(text).toContain('宿主不存在');
+  });
+
+  it('M3：提示的两行在真浏览器里真的分两行（文字节点的计算样式保留换行）', async () => {
+    const { translated } = await translatedPage();
+
+    click(translated);
+
+    const span = toastSpan();
+    expect(span).not.toBeNull();
+    expect(span?.textContent?.split('\n')).toHaveLength(2);
+    // jsdom 不做排版，所以这里读**计算样式**：只说"换行不会被折叠成空格"这件事。
+    // 注意 jsdom 对"根本没设"给的是空串而不是 'normal'：两条断言都要，缺一条就拦不住漏设。
+    expect(getComputedStyle(span as HTMLElement).whiteSpace).not.toBe('normal');
+    expect(getComputedStyle(span as HTMLElement).whiteSpace).toBe('pre-line');
   });
 });

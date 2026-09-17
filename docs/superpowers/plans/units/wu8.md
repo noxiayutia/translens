@@ -39,6 +39,15 @@ export function toast(message: string): void {
   const span = document.createElement('span');
   // 一律用 textContent：错误信息里可能带引擎返回的原文片段，绝不能被当成 HTML 解析。
   span.textContent = message;
+  /**
+   * 保留换行。诊断模式的提示是**两行**（结论 + 观察者读数），而宿主只有 inline style、
+   * shadow root 里也没有样式表——真浏览器的默认 `white-space: normal` 会把 `\n` 折叠成
+   * 一个空格，用户看到的是一行连排（jsdom 不做排版，测试永远发现不了）。
+   *
+   * `pre-line` 而不是 `pre`：只保留换行，其余空白照旧折叠、长行照旧换行——
+   * 既有调用方（翻译失败提示、限流提示）发的都是单行文案，行为逐字不变。
+   */
+  span.style.whiteSpace = 'pre-line';
   shadow.append(span);
 
   document.documentElement.append(host);

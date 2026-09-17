@@ -63,4 +63,31 @@ describe('页面内轻提示', () => {
 
     expect(document.body.innerHTML).toBe(before);
   });
+
+  it('多行消息保留换行：文字节点的计算样式里 white-space 不是 normal', () => {
+    toast('第一行\n第二行');
+
+    const span = toastHost()?.shadowRoot?.querySelector('span');
+    expect(span).toBeInstanceOf(HTMLElement);
+    // 消息本身带换行（诊断模式就是两行：结论 + 观察者读数）。
+    expect(span?.textContent).toBe('第一行\n第二行');
+
+    // jsdom 不做排版，"两行会不会被折叠成一行"只能读**计算样式**回答。
+    // 未设时 jsdom 给的是空串（不是 'normal'），所以这两条断言缺一不可：
+    // 「不是 normal」挡住"被页面 CSS 折成一行"，「就是 pre-line」挡住"根本没设"。
+    expect(getComputedStyle(span as HTMLElement).whiteSpace).not.toBe('normal');
+    // pre-line：保留换行，其余空白照常折叠（pre 会把长行撑爆宿主宽度）。
+    expect(getComputedStyle(span as HTMLElement).whiteSpace).toBe('pre-line');
+    expect((span as HTMLElement).style.whiteSpace).toBe('pre-line');
+  });
+
+  it('换行保留不影响既有调用方：单行消息照旧原样显示、HTML 照旧不被解析', () => {
+    toast('<b>翻译失败</b>');
+
+    const shadow = toastHost()?.shadowRoot;
+    expect(shadow?.querySelector('b')).toBeNull();
+    expect(shadow?.textContent).toBe('<b>翻译失败</b>');
+    // 单行消息没有任何换行，多出来的这条规则不会改动它的文本。
+    expect(shadow?.textContent?.split('\n')).toHaveLength(1);
+  });
 });
