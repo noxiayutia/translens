@@ -291,8 +291,21 @@ describe('设置页：初始化与列表渲染', () => {
       DISPLAY_MODES.map((mode) => [mode.value, mode.label]),
     );
     expect(displayMode.value).toBe('bilingual');
-    // 设置页也要如实说明"仅译文"的代价：段落里的链接点不了。
-    expect(pick<HTMLElement>('target-hint').textContent).toContain('链接点不了');
+    // §6 文案修正：旧文案说"段落里的链接点不了"，那**早就不成立**了——链接保留下划线、
+    // 颜色与可点击是已经实现的行为（README「渲染」一节写的就是这个）。这里的断言因此改成
+    // 钉住**如实**的说法，而不是删掉一条断言：
+    //   ① 整段几乎就是一个链接时，译文里的链接仍可点击；
+    //   ② 多链接段落与文字占主的段落里，链接仍可能失去下划线与可点击（这是仍存在的限制）；
+    //   ③ 反向钉住：那句不成立的旧说法不许回来。
+    const hint = pick<HTMLElement>('target-hint').textContent ?? '';
+    expect(hint).toContain('链接仍可点击');
+    expect(hint).toContain('仍可能失去下划线与可点击');
+    expect(hint).not.toContain('链接点不了');
+    // ④ 结尾那句「改完点下面的『保存语言与显示』」本任务**故意保留**：此刻那个按钮还在
+    //    （`#save` 到 Task 3 才随即时保存一起删掉），这句话在这个提交上是**真的**，
+    //    现在删它反而会让文案与界面不符。它的收尾写在 Task 3 Step 13：那里删按钮，
+    //    并把这条断言改成 `not.toContain('保存语言与显示')`——一句话只在一个地方改。
+    expect(hint).toContain('保存语言与显示');
   });
 
   it('隐私说明写明：密钥只存本机、Key 输入框永远从空开始、除翻译请求外不发网络请求', async () => {
