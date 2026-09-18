@@ -175,7 +175,22 @@ Expected: PASS（8 个 `it`：`hostMatchesPattern` 5 + `matchSiteRule` 2 + `isNe
 Run: `npx vitest run tests/core/layering.test.ts`
 Expected: PASS —— 若它报 `core` 里出现 `chrome`/`document` 等，说明 Step 3 的代码被改花了，回到上面重来。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: 变异验证（证明这些测试真的承重）**
+
+逐个把源码改坏，每次跑 `npx vitest run tests/core/site-rules.test.ts`，**必须有用例变红**；
+全部还原后再跑一次全量确认绿。至少要覆盖这五个变异体（质量审查实测过它们的行为）：
+
+| 变异 | 必须被杀，否则说明 |
+| --- | --- |
+| `hostMatchesPattern(rule.pattern, hostname)`（实参对调） | 通配路径从没被集成测过 → Task 2 拦不住任何站点 |
+| `return rules[0]`（命中了却返回第一条） | Task 3 的"一键解除"会删掉错误的规则 |
+| `isNeverTranslate` 改成 `rules.some(...)`（忽略首条命中） | 优先级语义没测；脏存储里 `[translate, never]` 同 pattern 今天就能出现 |
+| 删掉 `if (suffix === '') return false;` | 光杆 `*.` 的守卫没有见证者（注意：只有**尾点 FQDN** 主机名 `example.com.` 才能区分，用 `example.com` 测永远杀不死） |
+| `p` 不 `toLowerCase()` | 模式侧大小写没人管，而 `pickSiteRules` 原样存 pattern、不折大小写 |
+
+**这一步是本单元的硬门槛**：上一轮就是因为计划没排它，I1/I2 两个缺口才一路混到审查阶段。
+
+- [ ] **Step 7: 提交**
 
 ```bash
 git add src/core/site-rules.ts tests/core/site-rules.test.ts
