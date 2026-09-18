@@ -117,7 +117,9 @@ Expected: FAIL —— `Cannot find module '../../src/core/site-rules'`
 // src/core/site-rules.ts
 
 /**
- * 站点规则的主机名匹配。纯函数：不碰 DOM、不碰 `chrome`（`tests/core/layering.test.ts` 守着这条）。
+ * 站点规则的主机名匹配。纯函数：不碰 DOM、不碰扩展宿主 API（`tests/core/layering.test.ts` 守着这条）。
+ *
+ * （注意：这条守卫按**源码文本**扫描、连注释一起扫，所以注释里也不要写出那些标识符本身。）
  *
  * 只支持两种形状，**刻意不做更花哨的通配**——规则越少越可预测：
  *
@@ -166,7 +168,7 @@ export function isNeverTranslate(rules: readonly SiteRule[], hostname: string): 
 - [ ] **Step 4: 跑到绿**
 
 Run: `npx vitest run tests/core/site-rules.test.ts`
-Expected: PASS（10 个用例）
+Expected: PASS（8 个 `it`：`hostMatchesPattern` 5 + `matchSiteRule` 2 + `isNeverTranslate` 1）
 
 - [ ] **Step 5: 分层守卫仍然成立**
 
