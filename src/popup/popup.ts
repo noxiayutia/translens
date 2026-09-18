@@ -1,5 +1,6 @@
 // src/popup/popup.ts
 import { LANGUAGES } from '../core/lang';
+import { isNeverTranslate, matchSiteRule } from '../core/site-rules';
 import { DEFAULT_ENGINE_ID, getEngine } from '../engines/registry';
 import { hasHostPermission, originPattern } from '../shared/host-permission';
 import { MSG, type PageState } from '../shared/messages';
@@ -21,6 +22,8 @@ import {
  */
 const toggleButton = document.getElementById('toggle') as HTMLButtonElement;
 const statusText = document.getElementById('status') as HTMLParagraphElement;
+const siteRuleHint = document.getElementById('site-rule-hint') as HTMLParagraphElement;
+const siteRuleUnblock = document.getElementById('site-rule-unblock') as HTMLButtonElement;
 const displayModeSelect = document.getElementById('display-mode') as HTMLSelectElement;
 const hoverCheckbox = document.getElementById('hover-translate') as HTMLInputElement;
 const selectionCheckbox = document.getElementById('selection-translate') as HTMLInputElement;
@@ -83,11 +86,41 @@ function applySettings(next: Settings): void {
   );
   fillSelect(engineSelect, engineOptions(settings), settings.engineId);
   renderEngineHint();
+  // 站点规则提示行的判据是"当前标签页的主机名 + 这一份设置"，两个输入都刚变过，
+  // 所以放在这里重算：`start()` 的首次渲染与"保存失败回滚"都走本函数，两条路都不会漏。
+  void refreshSiteRuleHint();
 }
 
 async function activeTabId(): Promise<number | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab?.id ?? null;
+}
+
+/**
+ * 当前标签页的主机名。受限页面（chrome://、扩展商店、部分 about/）拿不到 `tab.url`，
+ * 返回 null —— 此时**不显示**提示行，而不是猜一个"没被拦"：猜错的两个方向都难看
+ * （凭空说"这站永不翻译"、或给出一个点了会写坏存储的解除按钮）。
+ */
+async function activeHostname(): Promise<string | null> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (typeof tab?.url !== 'string') return null;
+  try {
+    return new URL(tab.url).hostname;
+  } catch {
+    return null; // 畸形 url：与"拿不到"同等处理
+  }
+}
+
+/**
+ * 命中 never 才显示提示行。设置变化后必须重算（解除、切标签页）。
+ *
+ * 只切 `hidden`，文案是 HTML 里写死的静态文本——命中与否是唯一变量，没有第二个要改的地方。
+ * 但 `hidden` 与样式之间还隔着 `popup.css` 的 `.hint[hidden]`：`.hint` 是 flex 容器，
+ * 少了那条规则这里就只是"属性为真、照样占一行"（见那份 CSS 的注释）。
+ */
+async function refreshSiteRuleHint(): Promise<void> {
+  const host = await activeHostname();
+  siteRuleHint.hidden = !(host !== null && isNeverTranslate(settings.siteRules, host));
 }
 
 /**
@@ -446,6 +479,37 @@ function init(): void {
   );
   engineSelect.addEventListener('change', onEngineChange);
   optionsButton.addEventListener('click', () => chrome.runtime.openOptionsPage());
+
+  // 站点规则的「解除」：**必须**在这第一个 await 之前挂好（同上）。解除按钮只在命中
+  // 「永不翻译」时才可见，而可见性本身是初始化那次异步判定给的——即使如此也不把监听器
+  // 挪进那个异步链里：监听器一旦变成"有条件注册"，就多出一条"界面看着正常、点了没反应"
+  // 的失败路径，而这里多挂一个监听器的成本是零。
+  siteRuleUnblock.addEventListener('click', () => {
+    void (async () => {
+      const host = await activeHostname();
+      if (host === null) return;
+      const rule = matchSiteRule(settings.siteRules, host);
+      if (rule === null) return;
+      // 按对象身份删，不按 pattern 删：同一个 pattern 可能被写了多条规则，
+      // 用户点一次解除只该撤掉生效的那一条（首条命中的那条）。
+      const next: Settings = { ...settings, siteRules: settings.siteRules.filter((item) => item !== rule) };
+      try {
+        await saveSettings(next);
+      } catch {
+        // 写盘失败不能静默：不报告就变成"点了没反应"，用户会反复点。
+        // 这里不用 `saveSettingsOrReport`：那个辅助的契约是"回滚一个下拉控件"，
+        // 它的 `control` 只收 `HTMLSelectElement`、`field` 只收三个下拉字段名，
+        // 而解除按钮不是下拉、改的也不是那三个字段——硬套要么改它的签名（牵动三个既有
+        // 调用点），要么传一个假控件进去。失败文案也本来就不同（这里没有"回滚"可做：
+        // 规则还在存储里，提示行照旧显示，再点一次即可）。
+        statusText.textContent = '解除失败：设置没能写入，再试一次';
+        return;
+      }
+      settings = next;
+      await refreshSiteRuleHint();
+      statusText.textContent = '已解除，点「翻译此页」开始';
+    })();
+  });
 
   runSafely('设置读取失败', start);
 }

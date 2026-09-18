@@ -88,6 +88,26 @@ async function storedSettings(): Promise<Record<string, unknown>> {
   return (raw[SETTINGS_KEY] ?? {}) as Record<string, unknown>;
 }
 
+/**
+ * 直读存储里的站点规则：解除按钮"只删了哪一条"的落盘结果从这里看。
+ * 读的是**存储**而不是弹窗内存里那份 `settings`——按对象身份删的语义只有落盘之后才可观察。
+ */
+async function storedSiteRules(): Promise<Array<{ pattern: string; action: string }>> {
+  const rules = (await storedSettings()).siteRules;
+  return Array.isArray(rules) ? (rules as Array<{ pattern: string; action: string }>) : [];
+}
+
+/**
+ * 给活动标签页替身装上 `url`——它是站点规则判定的唯一输入（弹窗读 `tab.url` 的主机名）。
+ *
+ * 替身默认的活动标签**没有** url（见 `chrome-stub` 的 `DEFAULT_ACTIVE_TAB`），和真机上
+ * `chrome://` 一类受限页面同形；所以只有显式调过本函数的用例才会命中提示行，既有用例的
+ * 行为一点没动。传 `undefined` 就是"拿不到 url"那条路径。
+ */
+function stubActiveTabUrl(url: string | undefined): void {
+  chromeStub.tabs.activeTabs = [{ id: 7, active: true, currentWindow: true, url }];
+}
+
 function mountPopupHtml(): void {
   const html = readFileSync(POPUP_HTML_PATH, 'utf-8');
   const parsed = new DOMParser().parseFromString(html, 'text/html');
@@ -155,8 +175,9 @@ describe('popup.html 结构', () => {
     expect(script?.getAttribute('type')).toBe('module');
     expect(script?.getAttribute('src')).toBe('./popup.ts');
     // 测试靠这些 id 取控件；HTML 里少一个，上面 `ui()` 就会失败——这里再钉一次更直白的原因。
-    // 7 个原有控件 + 「悬停翻译」「划词翻译」两个快捷开关（规格 §7.1 第 5 项）。
-    expect(parsed.querySelectorAll('[id]').length).toBe(9);
+    // 9 个控件（7 个原有 + 「悬停翻译」「划词翻译」两个快捷开关，规格 §7.1 第 5 项）
+    // + 站点规则提示行 `#site-rule-hint` 与它的「解除」按钮 `#site-rule-unblock`（Task 3）。
+    expect(parsed.querySelectorAll('[id]').length).toBe(11);
   });
 });
 
@@ -186,7 +207,12 @@ describe('弹窗初始化', () => {
       ['p-deep', '我的 DeepSeek'],
     ]);
     // 活动标签页是唯一的查询口径：后台标签页的状态不该被读进来。
-    expect(chromeStub.tabs.queries).toEqual([{ active: true, currentWindow: true }]);
+    // 初始化时查两次、各取一件东西：`tabId`（页面状态）与 `url`（站点规则的主机名）。
+    // 两次的条件必须**完全一致**——任一次带上别的条件都可能读到非活动标签页。
+    expect(chromeStub.tabs.queries).toEqual([
+      { active: true, currentWindow: true },
+      { active: true, currentWindow: true },
+    ]);
   });
 
   it('初始文案取自内容脚本的 PageState，而不是猜一个默认值', async () => {
@@ -776,5 +802,102 @@ describe('悬停/划词快捷开关', () => {
     expect(hoverToggle.checked).toBe(true);
     // 保存都没成，就更不该往页面推 APPLY_SETTINGS。
     expect(sentTypes()).toEqual([MSG.GET_PAGE_STATE]);
+  });
+});
+
+/**
+ * 站点规则「永不翻译」在弹窗里的那一半（内容脚本那一半见 `tests/content/index.test.ts`）。
+ *
+ * 判定的输入是**活动标签页的 url**：替身默认的活动标签没有 url，所以每个用例都得先
+ * `stubActiveTabUrl(...)`——那正是"当前站点是哪个"的唯一来源。判定本身（通配、首条命中）
+ * 由 `core/site-rules` 的测试守着，这里只钉弹窗的三件事：**什么时候显示**、**解除删哪一条**、
+ * **写盘失败会不会静默**。
+ *
+ * `hidden` 断言用的是属性而不是样式：`popup.css` 里的 `.hint` 是 flex 容器、要显式补一条
+ * `.hint[hidden] { display: none }` 才盖得住（见那份 CSS 的注释），而 `hidden` 属性正是
+ * 逻辑与样式之间那个可断言的接口。
+ */
+describe('站点规则「永不翻译」：弹窗状态行与一键解除', () => {
+  it('当前站点命中 never：提示行出现，并带一个解除按钮', async () => {
+    stubActiveTabUrl('https://blocked.example.com/path');
+    await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'never' }] });
+    await loadPopup();
+    const hint = document.getElementById('site-rule-hint') as HTMLElement;
+    expect(hint.hidden).toBe(false);
+    expect(hint.textContent).toContain('永不翻译');
+    expect(document.getElementById('site-rule-unblock')).not.toBeNull();
+  });
+
+  it('未命中时提示行整行隐藏（不用空文案占位）', async () => {
+    stubActiveTabUrl('https://ok.example.com/');
+    await seedSettings({ siteRules: [{ pattern: 'blocked.example.com', action: 'never' }] });
+    await loadPopup();
+    expect((document.getElementById('site-rule-hint') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('点解除：只删掉命中的那一条，其余规则原样留在存储里', async () => {
+    stubActiveTabUrl('https://blocked.example.com/');
+    await seedSettings({
+      siteRules: [
+        { pattern: '*.example.com', action: 'never' },
+        { pattern: 'keep.me', action: 'never' },
+      ],
+    });
+    await loadPopup();
+    (document.getElementById('site-rule-unblock') as HTMLButtonElement).click();
+    await waitFor(async () => (await storedSiteRules()).length === 1);
+    expect((await storedSiteRules())[0].pattern).toBe('keep.me');
+  });
+
+  /**
+   * 「按对象身份删」的**唯一**读数：上面那条用例里两条规则 pattern 各不相同，按 pattern
+   * 过滤与按身份过滤给出同一个结果，它杀不掉那个变异。同 pattern 两条是真实可达的脏数据
+   * （`pickSiteRules` 不去重、不排序），只有它能分辨两种删法。
+   */
+  it('同 pattern 有多条时只撤掉生效的那一条，不按 pattern 一锅端', async () => {
+    stubActiveTabUrl('https://blocked.example.com/');
+    await seedSettings({
+      siteRules: [
+        { pattern: '*.example.com', action: 'never' },
+        { pattern: '*.example.com', action: 'never' },
+        { pattern: 'keep.me', action: 'never' },
+      ],
+    });
+    await loadPopup();
+
+    (document.getElementById('site-rule-unblock') as HTMLButtonElement).click();
+
+    await waitFor(async () => (await storedSiteRules()).length === 2);
+    // 撤掉的是首条命中的那一条；同 pattern 的第二条与无关的 keep.me 都原样留着。
+    expect((await storedSiteRules()).map((rule) => rule.pattern)).toEqual(['*.example.com', 'keep.me']);
+  });
+
+  it('受限页面拿不到 url 时不报错、提示行隐藏', async () => {
+    stubActiveTabUrl(undefined); // chrome:// 页面，tab.url 不可得
+    await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'never' }] });
+    await loadPopup();
+    expect((document.getElementById('site-rule-hint') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('写盘失败不静默：如实说解除失败，规则与提示行都留在原地', async () => {
+    stubActiveTabUrl('https://blocked.example.com/');
+    await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'never' }] });
+    await loadPopup();
+
+    const hint = document.getElementById('site-rule-hint') as HTMLElement;
+    expect(hint.hidden).toBe(false);
+    // 真实可达：存储里的版本高于本代码时 saveSettings 明确拒绝（用户回退过版本）。
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: { version: CURRENT_VERSION + 1, siteRules: [{ pattern: '*.example.com', action: 'never' }] },
+    });
+
+    (document.getElementById('site-rule-unblock') as HTMLButtonElement).click();
+
+    const { status } = ui();
+    await waitFor(() => status.textContent.includes('解除失败'));
+    // 没写盘就不能报"已解除"：提示行与存储都得留在原样，用户还能再点一次。
+    expect(status.textContent).not.toContain('已解除');
+    expect(hint.hidden).toBe(false);
+    expect((await storedSiteRules()).length).toBe(1);
   });
 });

@@ -31,6 +31,13 @@
     <button id="toggle" class="primary" type="button">翻译此页</button>
     <p id="status" class="status"></p>
 
+    <!-- 站点规则状态行：只在命中「永不翻译」时出现，否则整行 hidden。
+         不用空文案占位——那会在主按钮下面撑出一段无意义留白。 -->
+    <p id="site-rule-hint" class="hint" hidden>
+      此站已设为「永不翻译」。
+      <button id="site-rule-unblock" class="link" type="button">解除</button>
+    </p>
+
     <div class="group">
       <p class="group-title">显示</p>
 

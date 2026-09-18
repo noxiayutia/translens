@@ -404,6 +404,35 @@ body {
   color: var(--danger);
 }
 
+/*
+ * `.hint` 是 flex 容器，而 `display: flex` 会盖掉 UA 样式表里的 `[hidden] { display: none }`
+ * （作者样式永远赢 UA 样式，同特异度下只看源码顺序）。站点规则提示行靠 `hidden` **整行**
+ * 开关，所以这条必须显式补回来——否则"隐藏"只是属性为真，屏幕上照样占着一行，
+ * 正是要避免的那段无意义留白。
+ */
+.hint[hidden] {
+  display: none;
+}
+
+/*
+ * 正文里的内联操作（站点规则提示行的「解除」）。它嵌在一句话里，做成按钮会喧宾夺主：
+ * 无底色、无边框，只用强调色 + 下划线表示可点。颜色一律走令牌——硬编码颜色在暗色主题下
+ * 会失效（见文件头那条纪律）。
+ */
+.link {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link:hover {
+  color: var(--accent-hover);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .toggle-track,
   .toggle-track::after {
