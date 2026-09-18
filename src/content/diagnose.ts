@@ -33,6 +33,7 @@ import {
   isBlockBoundary,
   isEditable,
   isHidden,
+  MAX_WRAPPER_DEPTH,
   type ExtractorOptions,
   type StyleLookup,
 } from './extractor';
@@ -73,6 +74,13 @@ export type DiagnoseReason =
    * 重扫还没轮到它（也可能页面大到整页重扫被护栏跳过）。与"采了没渲染"是两回事。
    */
   | 'not-in-ledger'
+  /**
+   * 这一段自己会成段（owner 往下的判据全过），**但从采集根走不到 owner**（owner 往上的
+   * 下钻通路断了）：某个祖先既不是块级、`isBlockBoundary` 又不认为它内部有块级内容，
+   * `visitBlock` 从不下钻进去 → 整棵子树永远采不到。与 "not-in-ledger" 的区别是决定性的：
+   * 那种**等一次交互重扫就好**，这种**重扫一万次也不会采到，要修采集判据**。
+   */
+  | 'not-drillable'
   /** 真的采集过这一段，但查不到译文宿主（采了没渲染 → 请求/渲染环节）。 */
   | 'collected'
   /** 已经采集为一整段，但宿主还停在「翻译中…」。 */
@@ -197,6 +205,45 @@ function locateSkipTag(element: Element): Element | undefined {
     if (hasSkipTag(node)) return node;
   }
   return undefined;
+}
+
+/**
+ * 「**从采集根走不走得到 owner**」——owner 自己成不成段是另一半问题（{@link isOwnParagraph}），
+ * 这里查的是下钻通路：真实采集从 `document.body` 的直接子元素进 `visitBlock`，
+ * 之后只会钻进「块级边界」的孩子（{@link isBlockBoundary}，与采集端**同一条判据**，不另写一份）。
+ * 链上第一个不被认成边界的元素，就是采集永不到达的断点：它连同整棵子树永远采不到，
+ * 而"这一段自己会不会成段"从 owner 往下问却一切正常——只问下半问题就会给出
+ * "等一次交互重扫就好"的**假希望**（digitalocean 卡片事故的诊断盲区，正是这条闸门出现的理由）。
+ *
+ * 主修（2026-09，inline 载体包块级）之后，真实可达的断点只剩一类形态：
+ * **连续非块级包裹超过 `MAX_WRAPPER_DEPTH`（16）层**，块级后代探查被深度上限截断
+ * （styled-components 的深层 wrapper 链可复现；README 已知限制有记载）。
+ * 隐藏 / 跳过标签 / 插件浮层那些断法各有闸门在先（classify 的 1~4 条），轮不到这里报。
+ * 所以这条闸门报出的每一句都是"要修代码/收窄包裹"，与 ledgerHint 的"等一下就好"严格区分。
+ */
+function locateDrillBreak(owner: Element, styleOf: StyleLookup): { element: Element; display: string } | undefined {
+  if (owner === document.body || document.body.contains(owner) === false) return undefined;
+  // owner 往上走到 body（不含），再倒序 = 从采集根往下的通路。
+  const chain: Element[] = [];
+  for (let node: Element | null = owner; node !== null && node !== document.body; node = node.parentElement) {
+    chain.unshift(node);
+  }
+  // chain[0] 是 body 的直接子元素：整页采集无条件 visitBlock 每一个孩子（collectSegments 的
+  // 语义就是"扫 root 的孩子"），从它往下的每一跳都必须被认成块级边界，父级才会下钻进去。
+  for (const hop of chain.slice(1)) {
+    if (!isBlockBoundary(hop, styleOf, 0)) return { element: hop, display: styleOf(hop).display };
+  }
+  return undefined;
+}
+
+/** 断点那一级的点名：tag/类与 display，以及"为什么等多久都没用"。 */
+function drillBreakHint(breakPoint: { element: Element; display: string }): string {
+  const { element, display } = breakPoint;
+  return (
+    `采集的下钻在 ${describeElement(element)}（display:${display}）处断：` +
+    `它不是块级边界，里面的块级内容在 ${MAX_WRAPPER_DEPTH} 层探查上限内不可见——` +
+    `重扫一万次也不会采到，需要修采集代码或收窄包裹链`
+  );
 }
 
 /**
@@ -401,7 +448,20 @@ function classify(
     // 三种"没翻译"在这里分开（见 M1）：页面没开翻译 / 这一段还没进过账本 / 真的采了没渲染。
     // 合成一句"已采集未翻译"会把前两种也指去查请求与渲染——那是两个不存在的 bug。
     if (!pageTranslated) return { reason: 'page-idle', detail: '按 Alt+T 开始翻译整页' };
-    if (!wasCollected(owner)) return { reason: 'not-in-ledger', detail: ledgerHint(stats) };
+    if (!wasCollected(owner)) {
+      // 闸门（见 locateDrillBreak）："不在账本"有两种成因，下一步完全不同——
+      // 增量轮还没轮到 = 等一下就好；下钻通路从根上就断 = 等多久都没用。
+      // 不问这一道就会对静默漏翻说出"点一下页面或等一次交互重扫"的假希望。
+      const breakPoint = locateDrillBreak(owner, styleOf);
+      if (breakPoint !== undefined) {
+        return {
+          reason: 'not-drillable',
+          detail: drillBreakHint(breakPoint),
+          reportAs: breakPoint.element,
+        };
+      }
+      return { reason: 'not-in-ledger', detail: ledgerHint(stats) };
+    }
     // 采了但没渲染：这正是 digitalocean 那类事故最需要区分出来的一种。
     return { reason: 'collected', detail: '宿主不存在' };
   }
@@ -422,6 +482,7 @@ const REASON_LABEL: Record<DiagnoseReason, string> = {
   'skip-tag': '未采集：这类标签一律跳过',
   'page-idle': '页面还没开始翻译',
   'not-in-ledger': '未采集：这一段还不在已处理账本里',
+  'not-drillable': '未采集：采集端下钻不到这里（交互重扫永远不会采到，需要修代码）',
   collected: '已采集未翻译：宿主不存在',
   pending: '已采集，还在翻译中',
   translated: '已翻译',
@@ -567,21 +628,69 @@ export function formatClipboard(diagnosis: Diagnosis, now = Date.now()): string 
       : `采集上下文：目标语言 ${options.targetLang}${options.pageHasKana === true ? ' · 页面含假名' : ''}`;
   return [
     `【浸译诊断】${diagnosis.finding.text}`,
-    `元素：${diagnosis.level === null ? '（未定位）' : describePath(diagnosis.levels)}`,
+    `元素：${diagnosis.level === null ? '（未定位）' : describePath(diagnosis)}`,
     context,
     observerLine(diagnosis.stats, now),
   ].join('\n');
 }
 
-/** 链路里每一级的可读路径（从 body 到点击处）。 */
-function describePath(levels: DiagnoseLevel[]): string {
-  const chain: string[] = [];
-  for (let index = levels.length - 1; index >= 0; index -= 1) {
-    const level = levels[index];
-    if (level !== undefined) chain.push(level.path);
+/** 中间段被压缩掉时的占位（带省略级数，方便对照 DevTools 数层数）。 */
+const ELLIPSIS = (skipped: number): string => `…${skipped} 级…`;
+
+/** 单级路径 + 断点标记（`not-drillable` 的结论指向元素带 `⟨断点⟩`）。 */
+function labelLevel(element: Element, diagnosis: Diagnosis): string {
+  const base = describeElement(element);
+  return element === diagnosis.finding.reportedElement && diagnosis.finding.reason === 'not-drillable'
+    ? `${base}⟨断点⟩`
+    : base;
+}
+
+/**
+ * 一次诊断的**真实祖先链**（从 `body` 到点击处，沿 `parentElement` 逐级走）。
+ *
+ * 为什么不能从 `levels` 拼（旧实现的错误）：`diagnoseElement` 的循环在**第一个出结论的
+ * 层级就 break**，`levels` 只有点击处到结论级那几层；旧 `describePath` 发现链头不是 body
+ * 就直接补一个 `body > ` 前缀——于是把"中间 17 层不存在"的父子关系**凭空编造**出来
+ * （实测输出过 `body > p.Typographystyles`，真实深度 19 级）。排查时这条假路径会把人
+ * 引向完全错误的方向。这里改为只报真实的 `parentElement` 链；链很长时头尾压缩，
+ * 但**结论级 / 结论指向的元素（如 not-drillable 的断点）/ 点击处**一律保留，不被压掉。
+ *
+ * 脱离 body 子树的极端输入（ detached 节点）：如实从链头打到点击处，不补任何假前缀。
+ */
+function describePath(diagnosis: Diagnosis): string {
+  const clicked = diagnosis.levels[0]?.element ?? diagnosis.element;
+  const chain: Element[] = [];
+  for (let node: Element | null = clicked; node !== null; node = node.parentElement) {
+    chain.unshift(node);
+    if (node === document.body) break;
   }
-  const head = describeElement(document.body);
-  return chain[0] === head ? chain.join(' > ') : [head, ...chain].join(' > ');
+
+  const keep = new Set<Element>([clicked, diagnosis.finding.reportedElement]);
+  for (const level of diagnosis.levels) {
+    if (level.reason !== undefined) keep.add(level.element);
+    if (level.reportedElement !== undefined) keep.add(level.reportedElement);
+  }
+
+  // 短链整个就是信息，不做任何压缩；只有长链才留关键级、把其余折成省略段。
+  if (chain.length <= 6) return chain.map((element) => labelLevel(element, diagnosis)).join(' > ');
+
+  const parts: string[] = [];
+  let skipped = 0;
+  chain.forEach((element, index) => {
+    // 头（链头/body）、尾两级（点击处与它爹——DevTools 里对照最常看这两级）、
+    // 以及全部关键级（出结论的层、结论指向的元素，含 not-drillable 的断点）不许压掉。
+    const important = keep.has(element) || index === 0 || index >= chain.length - 2;
+    if (!important) {
+      skipped += 1;
+      return;
+    }
+    if (skipped > 0) {
+      parts.push(ELLIPSIS(skipped));
+      skipped = 0;
+    }
+    parts.push(labelLevel(element, diagnosis));
+  });
+  return parts.join(' > ');
 }
 
 // ------------------------------------------------------------------

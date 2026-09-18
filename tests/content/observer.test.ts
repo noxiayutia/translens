@@ -1484,22 +1484,30 @@ describe('增量翻译：用户交互后的整页重扫', () => {
       return [];
     }) as never);
 
-    // 1.2 秒内每 40ms 敲一下（人连点的节奏；+7ms 让定时器不与游标精确重合），
-    // 之后跨过窗口再敲两下。
-    for (let i = 0; i < 30; i += 1) {
+    try {
+      // 1.2 秒内每 40ms 敲一下（人连点的节奏；+7ms 让定时器不与游标精确重合），
+      // 之后跨过窗口再敲两下。
+      for (let i = 0; i < 30; i += 1) {
+        click();
+        await vi.advanceTimersByTimeAsync(47);
+      }
+      await runFullInteractionWindow();
       click();
-      await vi.advanceTimersByTimeAsync(47);
-    }
-    await runFullInteractionWindow();
-    click();
-    await runFullInteractionWindow();
-    click();
-    await runFullInteractionWindow();
+      await runFullInteractionWindow();
+      click();
+      await runFullInteractionWindow();
 
-    expect(stamps.length).toBeGreaterThanOrEqual(2);
-    const gaps = stamps.slice(1).map((at, i) => at - (stamps[i] as number));
-    for (const gap of gaps) expect(gap).toBeGreaterThanOrEqual(INTERACTION_RESCAN_THROTTLE_MS);
-    expect(translateRequests(worker)).toHaveLength(0);
+      expect(stamps.length).toBeGreaterThanOrEqual(2);
+      const gaps = stamps.slice(1).map((at, i) => at - (stamps[i] as number));
+      for (const gap of gaps) expect(gap).toBeGreaterThanOrEqual(INTERACTION_RESCAN_THROTTLE_MS);
+      expect(translateRequests(worker)).toHaveLength(0);
+    } finally {
+      // **必须还原**：`vi.fn(original.…)` 的 spy 对象整个文件共享一份（mock factory 的返回值
+      // 不随 resetModules 重建），这里的 `mockImplementation(() => [])` 若留着，后面每个用例的
+      // 增量采集都会拿到空数组——本文件排在它后面的旧用例恰好只断言调用次数/参数与"零请求"，
+      // 从不依赖**返回值**，才一直没暴露。任何依赖真实扫描结果的新用例都会被无声毒化。
+      subtreeCollect.mockRestore();
+    }
   });
 
   it('重扫不重复翻译已译段落：请求数与宿主数都不涨（账本与 data-jy-translated 生效）', async () => {
@@ -1555,5 +1563,98 @@ describe('增量翻译：用户交互后的整页重扫', () => {
     expect(subtreeCollect).not.toHaveBeenCalled();
     expect(fullPageCollect).not.toHaveBeenCalled();
     expect(translateRequests(worker)).toHaveLength(0);
+  });
+});
+
+/**
+ * 主修（isBlockBoundary 判据改为"内部有没有块级内容"）之后，增量层各判据的连锁结论。
+ *
+ * `isMixedContainer` 用的是另一条**更便宜**的判据（`isBlockDisplay`——"有没有块级直接子元素"，
+ * 它只为决定"要不要改扫父容器"服务，不是"什么算一段"），本次修复**不碰它**；
+ * 真正受影响的是它的两个下游：candidateRoots 交给 `collectSegmentsWithin` 的子树现在能采到
+ * inline 载体包着的卡片段落，`insideTranslatedBlock` 也因为卡片段落第一次拿到了
+ * `data-jy-translated` 而开始在这块区域生效。逐条钉住：
+ */
+describe('增量翻译：inline 载体包卡片（mega-menu 形状）的连锁', () => {
+  const CARD =
+    '<div class="grid-item"><a class="cardlink" href="/x" style="display:inline">' +
+    '<div class="styled"><div class="content">' +
+    '<h3>Droplets heading</h3><p>Droplets description text</p>' +
+    '</div></div></a></div>';
+
+  function content(): HTMLElement {
+    return document.querySelector('.content') as HTMLElement;
+  }
+
+  it('整页翻译就把卡片两段送出去（修复前这两段永远进不了任何一轮）', async () => {
+    mount(CARD);
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    const state = (await dispatch(contentListener, MSG.TRANSLATE_PAGE)) as { total: number };
+    expect(sentTexts(worker)).toEqual(['Droplets heading', 'Droplets description text']);
+    expect(state.total).toBe(2);
+    expect(findHostByText(translate('Droplets heading'))).toBeDefined();
+    expect(findHostByText(translate('Droplets description text'))).toBeDefined();
+  });
+
+  it('往卡片深处追加新段落：增量轮照常采到并翻译（候选根 = 新增元素自己）', async () => {
+    mount(CARD);
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    resetCounts(worker);
+
+    appendParagraph('Card addition paragraph', content());
+    await runDebounceWindow();
+
+    expect(sentTexts(worker)).toEqual(['Card addition paragraph']);
+    expect(findHostByText(translate('Card addition paragraph'))).toBeDefined();
+  });
+
+  it('已译卡片段落的 data-jy-translated 生效：整页重扫与子孙切入的裸文本追加都不重译', async () => {
+    mount(CARD);
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    const cardP = content().querySelector('p') as HTMLElement;
+    expect(cardP.hasAttribute('data-jy-translated')).toBe(true);
+    resetCounts(worker);
+    const hostsBefore = hosts().length;
+
+    // 路径 A：交互重扫从祖先切入——段落自身被 data-jy-translated 短路。
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(INTERACTION_RESCAN_DEBOUNCE_MS + INTERACTION_RESCAN_THROTTLE_MS);
+    expect(sentTexts(worker)).toEqual([]);
+
+    // 路径 B：增量从子孙切入（往已译段落里追加裸文本）——insideTranslatedBlock 沿祖先查，
+    // 候选根被丢弃，已译卡片内容不重发、不多挂宿主。
+    cardP.append(document.createTextNode(' sneaked suffix'));
+    await runDebounceWindow();
+    for (let i = 0; i < 4; i += 1) await runDebounceWindow();
+
+    expect(sentTexts(worker)).toEqual([]);
+    expect(hosts()).toHaveLength(hostsBefore);
+  });
+
+  it('isMixedContainer 维持自己的便宜判据：inline 载体不算块级子元素（行为逐字不变）', async () => {
+    // 容器只有「直接文本 + inline 载体（内部含块级）」时，isMixedContainer 仍返回 false：
+    // 新增元素只扫自己。这不是漏翻——容器的直接文本在全页采集里就是松散文本段
+    // （修复后 visitBlock 会为它成段），新增元素的子树里也没有"属于容器的旧文本"。
+    // 这条钉住「观察者没有被迫 import 更重的块级探查」这个决定是深思熟虑的，不是遗漏。
+    mount('<div id="box">Container loose intro<a style="display:inline"><p>Wrapped body text</p></a></div>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    // 全页链路：松散 intro 与卡片 p 两段都在（旧行为会整段丢卡片、intro 并入载体文本）。
+    expect(sentTexts(worker).sort()).toEqual(['Container loose intro', 'Wrapped body text']);
+    resetCounts(worker);
+
+    appendParagraph('Added after wrap', document.getElementById('box') as HTMLElement);
+    await runDebounceWindow();
+    // 候选根 = 新增 p 自己（父容器不算混合）——新段落照样翻出来。
+    expect(subtreeCollect.mock.calls.map((call) => (call[0] as Element).textContent)).toEqual([
+      'Added after wrap',
+    ]);
+    expect(sentTexts(worker)).toEqual(['Added after wrap']);
   });
 });

@@ -132,14 +132,12 @@ export function isBlockDisplay(display: string | undefined): boolean {
 }
 
 /**
- * 透明包裹：自身不生成块级盒（`contents` 连盒都不生成），但里面的块级后代仍然要按块处理。
- * 只看 BLOCK_DISPLAYS 会把这些包裹整体当成行内，于是整棵子树既不成段也不参与拼接，
- * 那片区域永远没有译文，父容器还会被标记成已翻译——静默漏翻。
+ * 递归判定的深度上限。DOM 是树、不可能成环，但病态深树不该把调用栈吃掉。
+ *
+ * **导出**：测试与诊断要按同一个数说话（"超过多少层仍会漏"是这条上限的真实后果，
+ * 见 README 已知限制），不许在别处再抄一份字面量。
  */
-const TRANSPARENT_DISPLAYS = new Set(['inline-block', 'inline-flex', 'inline-grid', 'contents']);
-
-/** 递归判定的深度上限。DOM 是树、不可能成环，但病态深树不该把调用栈吃掉。 */
-const MAX_WRAPPER_DEPTH = 16;
+export const MAX_WRAPPER_DEPTH = 16;
 
 interface ElementStyle {
   display: string;
@@ -304,23 +302,52 @@ export function hasBlockBoundaryChild(element: Element, styleOf: StyleLookup): b
 }
 
 /**
- * 第 2 条是必须的：`<span style="display:inline-block"><h3>标题</h3><p>正文</p></span>`
- * 与 Tailwind 的 `contents` 工具类在真实站点里都很常见。少了它，包裹内部整棵子树
- * 既不成段也不参与拼接，那片区域永远没有译文。
- * 反过来，`<span style="display:inline-block">world</span>` 内部没有块级后代，
- * 就不算边界——它仍然是父段的一部分，`<p>Hello <span …>world</span></p>` 抽成一段。
+ * 「这个元素自己算不算一个块级边界（该不该被 visitBlock 下钻）」的**唯一**判据。
  *
- * **导出**：诊断模式要用**同一条**判据回答"这个元素自己是不是一段"
- * （`hasBlockBoundaryChild(element)` 为假 + 这条为真 ⇒ 它自己成段），
- * 另写一份就会与采集端漂移（见 {@link findLeafTextAncestor} 的同一段纪律）。
+ * 判据是「**这个元素里有没有需要独立成段的块级内容**」，不是「这个元素自己的 display 是什么」：
+ * 块级 display 自身就是边界；其余一切 display（`inline` / `inline-block` / `contents` /
+ * 未知或空值）都探查一次内部——只要装着一棵块级内容的子树，父级就必须为它下钻。
+ *
+ * **为什么纯 `inline` 也曾被漏掉（本判据的历史事故，别再漏第二遍）**：
+ * 上一版只对 4 种「透明包裹」display（`inline-block` / `inline-flex` / `inline-grid` /
+ * `contents`）做块级后代探查，其余非块级 display 在 `TRANSPARENT_DISPLAYS.has(display)`
+ * 处直接判负——**纯 `inline` 恰恰不在豁免名单里**。而 `<a>` 的默认 display 就是 `inline`，
+ * 「整张卡片包在一个链接里」（`<a><div class=Card>…<h3>T</h3><p>D</p></div></a>`，
+ * digitalocean mega-menu 的实测形状，styled-components 逐层包 div）是极常见的写法。
+ * 这种「自身 inline、孩子全是块级」的元素在两条路上都落空：不是边界 → 走 `inlineText()`
+ * 拼接，而 `inlineText` 的语义是「块级后代各自成段，这里一概不碰」→ 返回空串 →
+ * `visitContent` 的 `if (text === '') continue;` 把它整个跳过 → **整棵子树既不成段也不参与
+ * 拼接，那片区域永远没有译文**——旧注释自己就写下过这个失效形态（"于是整棵子树既不成段也不
+ * 参与拼接，那片区域永远没有译文"），却只给 4 种 display 开了门。
+ * 现在判据统一成「非块级 ⇒ 探查块级后代」，display 的取值不再决定要不要看内部。
+ * 历史豁免名单 `TRANSPARENT_DISPLAYS` 因此冗余，已删除。
+ *
+ * **`display:none` 短路**：隐藏子树整体不可见，由 `isHidden` 那道闸统一处理（一个字符都不采），
+ * 不该为了它去遍历一棵可能很大的隐藏子树。这是纯优化，也守住「隐藏内容不做无谓递归」的边界。
+ *
+ * **已知限制（深度上限从"防御"变成了"会漏翻"）**：探查受 {@link MAX_WRAPPER_DEPTH} 约束，
+ * 连续 >16 层的非块级包裹会把探查截断，那片子树仍然采不到。刻意不调大上限
+ * （拿栈换正确性不值当）；诊断模式对「从采集根走不到这一段」有专门的可达性闸门点名断点
+ * （见 `diagnose.ts` 的 not-drillable 结论），README 的已知限制同步记载。
+ *
+ * **导出**：诊断模式要用**同一条**判据回答"这个元素自己是不是一段"，渲染器经
+ * {@link carriesVisibleText} 复用它——"什么算一段"整页采集、增量、悬停、诊断只此一份
+ * （见 {@link findLeafTextAncestor} 的同一段纪律）。
  */
 export function isBlockBoundary(element: Element, styleOf: StyleLookup, depth: number): boolean {
   const display = styleOf(element).display;
   if (isBlockDisplay(display)) return true;
-  if (!TRANSPARENT_DISPLAYS.has(display)) return false;
+  if (display === 'none') return false;
   return hasBlockDescendant(element, styleOf, depth);
 }
 
+/**
+ * 元素内部（深度上限以内）有没有块级边界后代。{@link isBlockBoundary} 的探查臂。
+ *
+ * 被 `isSkippedForText` 与 `<br>` 跳过的直接子元素**不往下看**：前者（code/pre/svg/
+ * 可编辑区/插件宿主）整棵子树本就不采，后者是换行不是盒容器——为它们下钻既白费也可能
+ * 采出根本不会渲染的文字。
+ */
 function hasBlockDescendant(
   element: Element,
   styleOf: StyleLookup,

@@ -18,6 +18,7 @@ import {
   createStyleLookup,
   findLeafTextAncestor,
   inlineText,
+  MAX_WRAPPER_DEPTH,
 } from '../../src/content/extractor';
 import { FULL_RESCAN_MAX_ELEMENTS, type IncrementalStats } from '../../src/content/observer';
 import { diagnoseElement, formatClipboard, formatToast, type Diagnosis } from '../../src/content/diagnose';
@@ -836,5 +837,168 @@ describe('M1：三种"没翻译"各自说准（页面没开翻译 / 不在账本
     // stats 为 null 只说明"没有观察者信息"，不等于"页面没翻译"——
     // 有采集快照（options）时页面就是已翻译状态，结论落在"不在账本里"这一支。
     expect(analyze(document.getElementById('p') as HTMLElement).finding.reason).toBe('not-in-ledger');
+  });
+});
+
+/**
+ * 第 2 项闸门：「从采集根走不走得到这一段」。
+ *
+ * 旧诊断只问"这一段自己成不成段"（owner 往下），从不检查 owner 往上的下钻通路——
+ * 于是对采集端**结构上就到不了**的内容报出"点一下页面或等一次交互重扫"的假希望。
+ * 主修（2026-09 inline 载体包块级）完成后，真实可达的断点形态是**超过探查深度上限的
+ * 连续非块级包裹链**（styled-components 深链），闸门必须能点名它、并且不与"等一下就好"混淆。
+ */
+describe('闸门：not-drillable（下钻通路断了，等多久都不会采到）', () => {
+  /** `div.host > a.wrap > N 层 display:inline span > div.card > p`（>16 层时探查被上限截断）。 */
+  function deepWrapChainHtml(layers: number): string {
+    let inner = '<div class="card"><p class="deep">Deeply wrapped card text</p></div>';
+    for (let i = 0; i < layers; i += 1) {
+      inner = `<span class="w${i}" style="display:inline">${inner}</span>`;
+    }
+    return `<div class="host"><a class="wrap" href="#" style="display:inline">${inner}</a></div>`;
+  }
+
+  it(`${MAX_WRAPPER_DEPTH + 1} 层连续 inline 包裹：结论是 not-drillable，点名断点元素与 display`, () => {
+    document.body.innerHTML = deepWrapChainHtml(MAX_WRAPPER_DEPTH + 1);
+    const deep = document.querySelector('p.deep') as HTMLElement;
+    const link = document.querySelector('a.wrap') as HTMLElement;
+
+    const diagnosis = analyzeWithStats(deep, stats());
+
+    expect(diagnosis.finding.reason).toBe('not-drillable');
+    // 点名断在哪一级祖先：采集从根往下第一个不被认成边界的元素——`a`（父容器根本没下钻给它）。
+    expect(diagnosis.finding.reportedElement).toBe(link);
+    expect(diagnosis.finding.detail).toContain('a.wrap');
+    expect(diagnosis.finding.detail).toContain('display:inline');
+    expect(diagnosis.finding.detail).toContain(String(MAX_WRAPPER_DEPTH));
+  });
+
+  it('文案与「等一次交互重扫」严格区分：not-drillable 不许说"点一下页面/等一下就好"', () => {
+    document.body.innerHTML = deepWrapChainHtml(MAX_WRAPPER_DEPTH + 1);
+    const text = analyzeWithStats(document.querySelector('p.deep') as HTMLElement, stats()).finding.text;
+
+    expect(text).toContain('需要修代码');
+    expect(text).not.toContain('点一下页面');
+    expect(text).not.toContain('可能是翻译后才出现的');
+  });
+
+  it('对照：修复后的 digitalocean 形状（1 层 inline）通路完好 → 仍是 not-in-ledger，不许误报 not-drillable', () => {
+    document.body.innerHTML =
+      '<div class="Layout"><nav><ul><li><div class="Dropdown"><div class="GridItemstyles">' +
+      '<a class="CardLink" href="/x"><div class="Card"><div class="Content">' +
+      '<h3 class="Title">Droplets heading</h3><p class="Desc">Droplets description text</p>' +
+      '</div></div></a></div></div></li></ul></nav></div>';
+    const p = document.querySelector('p.Desc') as HTMLElement;
+
+    const diagnosis = analyzeWithStats(p, stats());
+
+    // 采集端会下钻（真实重扫采得到）→ 该给的"等一下就好"提示照给，闸门不误伤。
+    expect(diagnosis.finding.reason).toBe('not-in-ledger');
+    expect(diagnosis.finding.detail).toContain('点一下页面或等一次交互重扫');
+    // 现场证据：真的重扫一次（非 readOnly），这两段就会被采到——"等就好"是实话。
+    const rescan = collectSegments(document.body, OPTIONS);
+    expect(rescan.map((s) => s.text)).toEqual(['Droplets heading', 'Droplets description text']);
+  });
+
+  it('display:none 的"断"仍由 hidden 闸门先接（各闸门不互相抢话）', () => {
+    document.body.innerHTML =
+      '<div><a style="display:inline"><div class="panel" style="display:none">' +
+      '<p class="deep">Panel hidden card text</p></div></a></div>';
+
+    expect(reasonOf(document.querySelector('p.deep') as HTMLElement)).toBe('hidden');
+  });
+});
+
+/**
+ * 第 3 项：诊断输出的元素路径必须是**真实祖先链**。
+ *
+ * 旧 `describePath` 从 `levels` 拼链，而 `diagnoseElement` 在第一个出结论的层级就 break——
+ * 链头不是 body 时它直接补 `body > ` 前缀，凭空造出不存在的父子关系（实测把 19 层的卡片
+ * 报成 `body > p.Typographystyles`，排查时把人引向完全错误的方向）。
+ */
+describe('describePath：打印的每一级在 DOM 里都真实成立', () => {
+  /** 元素路径行（`元素：…`），不含前缀。 */
+  function pathLine(diagnosis: Diagnosis): string {
+    const line = formatClipboard(diagnosis)
+      .split('\n')
+      .find((row) => row.startsWith('元素：'));
+    if (line === undefined) throw new Error('剪贴板里没有元素路径行');
+    return line.slice('元素：'.length);
+  }
+
+  /**
+   * 把打印出的路径解析成**真实元素序列**并钉住关系：
+   * 相邻两级之间没有省略号 ⇒ 必须严格 `parentElement` 成立；有省略号 ⇒ 必须是真祖先。
+   * （describeElement 的输出本身就是可用的 CSS 选择器：`tag`、`tag#id`、`tag.firstClass`。）
+   */
+  function assertRealChain(path: string): void {
+    const tokens = path.split(' > ');
+    expect(tokens[0], `链头必须是 body，实际 ${tokens[0]}`).toBe('body');
+    let previous: { token: string; element: Element } | undefined;
+    let gap = false;
+    let kept = 0;
+    for (const token of tokens) {
+      if (/^…\d+ 级…$/.test(token)) {
+        gap = true;
+        continue;
+      }
+      const selector = token.replace(/⟨[^⟩]*⟩$/, '');
+      const found = document.querySelector(selector);
+      expect(found, `打印出的这一级在 DOM 里不存在：${token}`).not.toBeNull();
+      if (previous !== undefined) {
+        if (gap) {
+          expect(previous.element.contains(found as Element), `${previous.token} 不是 ${token} 的祖先`).toBe(true);
+        } else {
+          expect(found?.parentElement, `假父子关系：${previous.token} > ${token}`).toBe(previous.element);
+        }
+      }
+      previous = { token, element: found as Element };
+      gap = false;
+      kept += 1;
+    }
+    expect(kept).toBeGreaterThan(1);
+  }
+
+  it('短链（≤6 级）：全量输出且每对相邻都是真实 parentElement', () => {
+    document.body.innerHTML = '<div class="L1"><div class="L2"><p class="L3">Short chain text</p></div></div>';
+    const diagnosis = analyzeWithStats(document.querySelector('p.L3') as HTMLElement, stats());
+    const path = pathLine(diagnosis);
+
+    expect(path).toBe('body > div.L1 > div.L2 > p.L3');
+    assertRealChain(path);
+  });
+
+  it('19 层真实形状：不再编造 "body > p" 的假路径，中间层全部真实存在', () => {
+    document.body.innerHTML =
+      '<div class="L0"><div class="L1"><header class="L2"><div class="L3"><nav class="L4">' +
+      '<div class="L5"><ul class="L6"><li class="L7"><div class="L8"><div class="L9">' +
+      '<div class="L10"><div class="L11"><div class="L12"><a class="L13"><div class="L14">' +
+      '<div class="L15"><div class="L16"><h3 class="L17">Card title text</h3>' +
+      '<p class="L18">Card description text</p></div></div></div></a></div></div></div></div>' +
+      '</div></div></div></div></div></nav></div></header></div></div>';
+    const p = document.querySelector('p.L18') as HTMLElement;
+
+    const path = pathLine(analyzeWithStats(p, stats()));
+
+    // 旧实现的编造输出（这条曾经真实出现过）：直接把 19 级压成 2 级的假父子。
+    expect(path).not.toBe('body > p.L18');
+    assertRealChain(path);
+    // 链里确实有真实中间层（压缩后的省略段如实报省略级数）。
+    expect(path).toMatch(/…\d+ 级…/);
+  });
+
+  it('not-drillable 现场：断点级不被头尾压缩掉，且带 ⟨断点⟩ 标记', () => {
+    let inner = '<div class="card"><p class="deep">Deeply wrapped card text here</p></div>';
+    for (let i = 0; i < MAX_WRAPPER_DEPTH + 1; i += 1) {
+      inner = `<span class="w${i}" style="display:inline">${inner}</span>`;
+    }
+    document.body.innerHTML = `<div class="host"><a class="wrap" href="#" style="display:inline">${inner}</a></div>`;
+    const diagnosis = analyzeWithStats(document.querySelector('p.deep') as HTMLElement, stats());
+
+    const path = pathLine(diagnosis);
+    expect(path).toContain('a.wrap⟨断点⟩');
+    // 断点仍被报出、尾部的点击处也在；中间 17 层包裹允许被压缩。
+    expect(path).toContain('p.deep');
+    assertRealChain(path);
   });
 });

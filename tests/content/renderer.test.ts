@@ -497,6 +497,84 @@ describe('DomRenderer 仅译文模式：纯视觉节点不被藏起来', () => {
   });
 });
 
+/**
+ * 「仅译文」模式的端到端（任务书点名用例）：`<a style="display:inline">` 包整张卡片时，
+ * 卡片里的 h3 与 p 各自成段、各自有译文，而 `<a>` **本身**不许被搬进隐藏原文容器——
+ * 它是块级边界（extractor 的 `isBlockBoundary`，与渲染器 `carriesVisibleText` 同一份判据），
+ * 不承载文字；搬走它就会把段落连同它们的译文一起藏掉。
+ */
+describe('DomRenderer 仅译文模式：inline 载体包卡片（digitalocean 形状）端到端', () => {
+  it('h3 与 p 都有译文、原文各藏各的、<a> 留在原位仍可点击、还原逐字节', () => {
+    document.body.innerHTML =
+      '<div class="grid-item">' +
+      '<a id="card" href="/products/droplets" style="display:inline">' +
+      '<div class="styled"><div class="cc"><div class="content">' +
+      '<h3 id="t">Cloud Titles Here</h3><p id="d">Card description sentence here</p>' +
+      '</div></div></div></a></div>';
+    const before = document.body.outerHTML;
+    const link = document.getElementById('card') as HTMLElement;
+    const gridItem = document.querySelector('.grid-item') as HTMLElement;
+    const h3 = document.getElementById('t') as HTMLElement;
+    const p = document.getElementById('d') as HTMLElement;
+
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    expect(segments.map((s) => s.element)).toEqual([h3, p]);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.order}`);
+
+    // T 与 D 都有可见译文；原文被藏进各自段落内部的隐藏容器（不跨段落混装）。
+    expect(visibleText(h3)).toBe('【译】0');
+    expect(visibleText(p)).toBe('【译】1');
+    expect(originalsOf(h3).textContent).toBe('Cloud Titles Here');
+    expect(originalsOf(p).textContent).toBe('Card description sentence here');
+
+    // <a> 仍可点击、不破坏布局：它留在原位（没被搬进任何隐藏容器），href 与父子关系原样，
+    // 两个段落也仍在它的子树里——只是段落内部多了各自的原容器与宿主。
+    expect(link.closest('[data-jy-originals]')).toBeNull();
+    expect(link.parentElement).toBe(gridItem);
+    expect(link.getAttribute('href')).toBe('/products/droplets');
+    expect(link.contains(h3)).toBe(true);
+    expect(link.contains(p)).toBe(true);
+
+    // 逐字节还原：卡片链一个字符都不该被渲染器的搬运弄乱。
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+    expect(document.querySelectorAll(JY_MARKERS)).toHaveLength(0);
+  });
+
+  it('inline 载体自带直接文字时也只藏文字：载体本身留在原位（旧判据会整棵搬走）', () => {
+    document.body.innerHTML =
+      '<div class="host"><a id="w" href="/x">Link label <div class="card">Card body text</div></a></div>';
+    const before = document.body.outerHTML;
+    const link = document.getElementById('w') as HTMLElement;
+    const hostDiv = document.querySelector('.host') as HTMLElement;
+    const card = document.querySelector('.card') as HTMLElement;
+
+    const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
+    // "Link label" 归 <a>（松散文本段），"Card body text" 归 div.card（整元素段）。
+    expect(segments.map((s) => s.text)).toEqual(['Link label', 'Card body text']);
+
+    const renderer = new DomRenderer(document, 'translated-only');
+    for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.order}`);
+
+    // <a> 没被搬走：它的直接文字进隐藏容器，宿主插在容器后面，卡片原地不动。
+    expect(link.parentElement).toBe(hostDiv);
+    expect(link.closest('[data-jy-originals]')).toBeNull();
+    const order = Array.from(link.childNodes).map((n) =>
+      n.nodeType === Node.TEXT_NODE ? '#text' : (n as Element).nodeName,
+    );
+    expect(order).toEqual(['SPAN', 'JY-TRANSLATION', 'DIV']);
+    expect(card.parentElement).toBe(link);
+    expect(originalsOf(link).textContent).toBe('Link label ');
+    expect(visibleText(link)).toContain('【译】0');
+    expect(visibleText(link)).toContain('【译】1');
+
+    renderer.restore();
+    expect(document.body.outerHTML).toBe(before);
+  });
+});
+
 describe('DomRenderer 仅译文模式：单一链接为主的段落保留链接指引', () => {
   /** nature.com 作者署名行的形状：整段几乎就是一个链接。 */
   const BYLINE_HTML =
