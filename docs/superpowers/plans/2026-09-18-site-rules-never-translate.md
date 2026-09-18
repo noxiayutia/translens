@@ -248,10 +248,14 @@ export function isNeverTranslate(rules: readonly SiteRule[], hostname: string): 
 - [ ] **Step 4: 跑到绿**
 
 Run: `npx vitest run tests/core/site-rules.test.ts`
-Expected: PASS（12 个 `it`：`hostMatchesPattern` 6 + `matchSiteRule` 3 + `isNeverTranslate` 3。
-实现途中补了两条计划里没有的用例——尾点 FQDN `example.com.`、以及精确匹配不许退化成后缀匹配的
-`example.com.evil.io` 反例——它们分别是「光杆 `*.` 守卫」与「精确匹配」这两个变异体的见证，
-见 Step 6 变异表）
+Expected: PASS（**12 个 `it`**，实际拆解：`describe('matchSiteRule：主机名匹配语义')` **10 条**
++ `describe('isNeverTranslate')` **2 条**。
+**`hostMatchesPattern` 这个 describe 不存在**——匹配内核在实现时收成了**模块私有**
+（零消费者的公共表面不留位置），它原来的每组输入改为经 `matchSiteRule` 观察、布尔断言换成
+`not.toBeNull()` / `toBeNull()`，一条不减、不放宽，见测试文件顶部注释。
+实现途中补了三条计划里没有的用例——尾点 FQDN `example.com.`（「光杆 `*.` 守卫」的唯一见证）、
+`example.com.evil.io` 的精确匹配反例、以及「命中的是第二条就返回第二条」（Task 3 按对象身份
+解除的前提）——见 Step 6 变异表）
 
 - [ ] **Step 5: 分层守卫仍然成立**
 
@@ -368,10 +372,22 @@ import { isNeverTranslate } from '../core/site-rules';
   // 拦晚了会把一个"不该翻"的页面永久标成已处理。
   if (isNeverTranslate(settings.siteRules, location.hostname)) {
     running = false;
-    toast('此站已设为「永不翻译」，可在设置 › 站点规则里解除');
+    toast('此站已设为「永不翻译」，可在扩展弹窗里解除');
     return;
   }
 ```
+
+> **文案是承重的，别照抄"设置 › 站点规则里解除"那一版。** 计划初稿写的是
+> `可在设置 › 站点规则里解除`，那是**一句谎话**：它把用户指向单元 B 才有的入口，
+> 今天点进去是空处（`aa06806` 这个提交的唯一理由就是修掉它）。真实的解除入口是
+> **扩展弹窗**里那条站点规则提示行的「解除」按钮（Task 3 落的），所以文案必须是
+> `可在扩展弹窗里解除`；内容脚本的测试也反向钉住了这一点（读 toast 文本必须含"弹窗"、
+> **不许**含"设置"）。
+>
+> 与 Task 3 Step 4 开头那条同形的提醒：**这个代码块没有 `// src/content/index.ts` 首行标记**
+> （给的是**片段**，不是整文件），`scripts/sync-plan-code.mjs` 只认带标记的块，所以**永远不会
+> 同步它**——改 `src/content/index.ts` 时，请手工把这里的片段一起改掉。也**不要**给它加标记：
+> 那会让脚本把整个文件覆盖进计划里。
 
 - [ ] **Step 5: 跑到绿**
 
@@ -690,7 +706,11 @@ git commit -m "feat(popup): 命中站点规则时显示状态并提供一键解�
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/superpowers/plans/`（脚本重切）
+- Modify: `docs/superpowers/plans/2026-09-18-site-rules-never-translate.md`（本任务书**自身**：
+  把实现阶段暴露的偏差改成事实，再跑 `sync-plan-code.mjs` 把两个带标记的代码块刷成仓库当前内容）
+
+> **`docs/superpowers/plans/units/` 下的切片本轮一个字都没动**——不要"重切"，那份切片属于
+> `2026-09-14-immersive-translate-core.md`，`split-plan.mjs` 对本计划不适用（见 Step 3）。
 
 - [ ] **Step 1: README 补四条已知限制 + 功能表一行 + 隐私一节的权限**
 
@@ -742,10 +762,10 @@ Expected: 第二次运行报「**已同步 0 个代码块**」（幂等）。方
 脚本不碰，改源码时要手工同步（Task 3 Step 4 开头有提醒）。
 
 > **`scripts/split-plan.mjs` 对本计划不适用，不要跑。** 它的 `units` 映射是**写死**给
-> `2026-09-14-immersive-translate-core.md`（Task 1~19 / `wu1`~`wu10`）的：本计划只有
-> Task 1~5，脚本会先写掉 `units/wu1.md` 再在找 `Task 5 不存在于计划中` 时抛错退出（`wu1`
-> 被覆写成**另一个计划**的 Task 1，必须 `git checkout -- docs/superpowers/plans/units/wu1.md`
-> 还原）。`units/` 下那批切片是 2026-09-14 那份计划的产物，与本计划无关。
+> `2026-09-14-immersive-translate-core.md`（Task 1~19 / `wu1`~`wu10`）的。本轮已给该脚本补上
+> **写文件之前的预检**：Task 数不等于 19 时它只打印一句说明并以 exit 1 结束，**不碰任何文件**
+> （在此之前它会先覆写 `units/wu1.md`、再在 `wu2` 找 `Task 6` 时抛错退出）。`units/` 下那批切片
+> 是 2026-09-14 那份计划的产物，与本计划无关。
 
 - [ ] **Step 4: 提交**
 
