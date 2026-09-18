@@ -1,0 +1,120 @@
+// tests/options/store.test.ts
+/**
+ * 设置页存储层的单测。**不起 DOM**：这一层只跟存储打交道（`shared/settings` 是它的唯一依赖），
+ * 用默认的 node 环境跑，出错时不必在 jsdom 的噪音里找线索。
+ *
+ * 每个用例重新 `import` 一次模块（`vi.resetModules()`）：`store.ts` 的快照与写队列都是
+ * 模块级状态，跨用例共享会让"还没读出来就该拒绝"这类断言失去意义。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CURRENT_VERSION, SETTINGS_KEY } from '../../src/shared/settings';
+import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
+
+let chromeStub: ChromeStub;
+let store: typeof import('../../src/options/store');
+
+/** 往存储里写一份**故意不完整**的设置：`loadSettings` 是逐字段补齐的反序列化边界。 */
+async function seed(patch: Record<string, unknown> = {}): Promise<void> {
+  await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, ...patch } });
+}
+
+/** 直读存储：验证"改动真的落盘了"，而不是只改了页面里的内存副本。 */
+async function stored(): Promise<Record<string, unknown>> {
+  const raw = await chromeStub.storage.local.get([SETTINGS_KEY]);
+  return (raw[SETTINGS_KEY] ?? {}) as Record<string, unknown>;
+}
+
+beforeEach(async () => {
+  vi.resetModules();
+  chromeStub = installChromeStub();
+  store = await import('../../src/options/store');
+});
+
+describe('设置页存储层：单字段写回', () => {
+  it('改一个字段：整份写回，其余字段原样', async () => {
+    await seed({ engineId: 'p-a', targetLang: 'zh-Hans', concurrency: 5 });
+    await store.loadSnapshot();
+
+    await store.patchSettings({ targetLang: 'en' });
+
+    const saved = await stored();
+    expect(saved.targetLang).toBe('en');
+    expect(saved.engineId).toBe('p-a');
+    expect(saved.concurrency).toBe(5);
+    // 版本号由 saveSettings 统一写成当前版本，不被调用方摆布。
+    expect(saved.version).toBe(CURRENT_VERSION);
+  });
+
+  it('连着改两个字段：两次都落盘，后一次不抹掉前一次（写队列的见证用例）', async () => {
+    // 这就是"改完目标语言顺手改显示模式"的真实序列：两个 change 之间没有任何 await。
+    await seed({ targetLang: 'zh-Hans', displayMode: 'translated-only' });
+    await store.loadSnapshot();
+
+    const first = store.patchSettings({ targetLang: 'en' });
+    const second = store.patchSettings({ displayMode: 'bilingual' });
+    await Promise.all([first, second]);
+
+    const saved = await stored();
+    expect(saved.targetLang).toBe('en');
+    expect(saved.displayMode).toBe('bilingual');
+  });
+
+  it('写回前重读存储：期间在别处（弹窗）改过的字段不会被旧快照抹掉', async () => {
+    await seed({ targetLang: 'zh-Hans', concurrency: 3 });
+    await store.loadSnapshot();
+
+    // 页面已经打开，用户在弹窗里改了并发数（本页快照里还是 3）。
+    const current = await stored();
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { ...current, concurrency: 7 } });
+
+    await store.patchSettings({ targetLang: 'ja' });
+
+    const saved = await stored();
+    expect(saved.targetLang).toBe('ja');
+    expect(saved.concurrency).toBe(7);
+  });
+
+  it('设置还没读出来就写：拒绝并给出可读原因，存储一个字节都不动', async () => {
+    await seed({ targetLang: 'zh-Hans' });
+
+    await expect(store.patchSettings({ targetLang: 'en' })).rejects.toThrow('设置还没读出来');
+
+    expect((await stored()).targetLang).toBe('zh-Hans');
+    expect(store.currentSettings()).toBeNull();
+  });
+
+  it('一次写失败不阻塞下一次写：失败之后队列照样能往下走', async () => {
+    await seed({ targetLang: 'zh-Hans' });
+    await store.loadSnapshot();
+
+    // 注入一次性失败：这是"存储满了 / 版本被拒绝"这类真实失败的最小替身。
+    const realSet = chromeStub.storage.local.set.bind(chromeStub.storage.local);
+    let failNext = true;
+    chromeStub.storage.local.set = async (items: Record<string, unknown>) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error('存储写入失败');
+      }
+      await realSet(items);
+    };
+
+    await expect(store.patchSettings({ targetLang: 'en' })).rejects.toThrow('存储写入失败');
+
+    // 队列没被那次失败卡死：下一次写必须真的写进去。
+    await store.patchSettings({ targetLang: 'ja' });
+    expect((await stored()).targetLang).toBe('ja');
+  });
+
+  it('快照只在写成功后更新：写失败时快照还是上一次那份', async () => {
+    await seed({ targetLang: 'zh-Hans' });
+    await store.loadSnapshot();
+    expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
+
+    chromeStub.storage.local.set = async () => {
+      throw new Error('存储写入失败');
+    };
+    await expect(store.patchSettings({ targetLang: 'en' })).rejects.toThrow('存储写入失败');
+
+    expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
+  });
+});
