@@ -95,7 +95,7 @@
 | `src/options/sections/site-rules.ts` | 新建 | §3.5 站点规则写入侧（增删规则、只提供「永不翻译」） |
 | `src/options/sections/prompt.ts` | 新建 | §3.6 自定义提示词（多行文本、留空即内置） |
 | `src/options/sections/cache.ts` | 新建 | §3.7 缓存与请求（三个统计、上限、`<details>` 里的并发与批量） |
-| `src/options/sections/privacy.ts` | 新建 | §3.8 隐私（三条一行式 + `<details>` 里的诚实说明，**不删**） |
+| `src/options/sections/privacy.ts` | 新建 | §3.8 隐私（**四条**一行式 + `<details>` 里的诚实说明，**不删**） |
 | `src/options/options.ts` | 改写 | 只做装配：`SECTIONS` 清单、`SectionContext`、`start()`、全局错误兜底、搜索接线 |
 | `src/options/options.html` | 改写 | 8 个区块的静态骨架 + 左导航 + 搜索框（**测试的真实输入**） |
 | `src/options/options.css` | 改写 | 令牌、导航、一行一卡片、成组卡片、虚线添加、红字删除、状态行、窄窗口降级 |
@@ -1691,9 +1691,15 @@ Expected: PASS —— **2 条用例**（此时 `src/options` 下只有 `options.
 ```
 
 > **注意**：Task 2 改好的 `#target-hint` 那句话在这里**逐字保留**，并且本任务 Step 13 追加一条断言：新文案里**不许**再出现「保存语言与显示」（那个按钮在同一个提交里被删掉了，留着这句就是在指一个不存在的东西）。
-> 隐私那三条**必须保留**这些字面量（既有用例按子串断言）：`API Key 只存在本机`、`不上传、不同步`、`永远从空开始`、`除翻译请求本身外，不发起任何网络请求`、`contenteditable`。
+> **隐私那几条**里，既有用例按子串断言的字面量**必须保留**：`API Key 只存在本机`、`不上传、不同步`、`永远从空开始`、`除翻译请求本身外，不发起任何网络请求`、`contenteditable`。
 >
-> **隐私区块为什么是四条 `<li>` 而不是规格 §3.8 写的"三条"**：`src/options/options.html:79-83` 今天有**第四条**（「每个档案接口地址的访问权限只在你点该档案的「保存档案」时按需申请…」）——那是一条**已经发布、用户可见的诚实承诺**，`options.test.ts:298-306` 的五个字面量断言**测不出它的消失**。规格 §3.8 的"三条一行式"说的是**版式**（一行一条），不是"删掉一条"。所以本轮**保留全部四条**，只把版式改成一行式；`.sec-desc` 也不再声称"三条"。若将来确实要砍，必须单独确认，不许在改版里顺手删。
+> **隐私区块为什么是四条 `<li>` 而不是规格 §3.8 写的"三条"**：`src/options/options.html` 今天有四条承诺，**逐条实测行号**是——
+> `:63-71` 第 1 条「API Key 只存在本机」、`:72-74` 第 2 条「除翻译请求本身外，不发起任何网络请求」、
+> **`:75-78` 第 3 条「每个档案接口地址的访问权限只在你点该档案的「保存档案」时按需申请…」**、
+> `:79-82` 第 4 条「只有网页里可见的文本才会被送去翻译」（`:83` 是 `</ul>`）。
+> 上一版计划把这一条写成 `:79-83` 且叫它"第四条"——**行号与序数都错**（`:79-82` 是"只送可见文本"那条），现在按实测值写。
+> **它在新版里的位置**：四条按「1 API Key → 2 零网络请求 → 3 只送可见文本 → 4 授权按需申请」重排，所以那句承诺在**新版里是第 4 条**——注意它**不是"新加的第 4 条"**，而是从现状的**第 3 条**原样搬过来的。
+> **为什么要保留它**：它是一条**已经发布、用户可见的诚实承诺**，而 `options.test.ts:298-306` 的五个字面量断言**测不出它的消失**。规格 §3.8 的"三条一行式"说的是**版式**（一行一条），不是"删掉一条"。所以本轮**保留全部四条**，只把版式改成一行式；`.sec-desc` 也不再声称"三条"。若将来确实要砍，必须单独确认，不许在改版里顺手删。
 
 - [ ] **Step 11: 建共用工具、区块契约，并把 4 个区块拆出来**
 
@@ -2540,8 +2546,13 @@ export const languageSection: Section = {
 
 创建 `src/options/sections/cache.ts`：
 
+> **这一块的首行标记故意不带 `// src/options/sections/cache.ts`**：它是这个文件的**中间态**，
+> 最终版在 Task 8（那里有一份**带标记**的完整版）。`scripts/sync-plan-code.mjs` 只会把带标记的
+> 块刷成仓库当前内容——两个块都带标记时，它会把**两块都**刷成同一份最终文件，计划里就多出一份
+> 重复的 cache.ts。中间态这一块与 `options.html` / `options.css` 一样**手工维护**。
+
 ```ts
-// src/options/sections/cache.ts
+// src/options/sections/cache.ts（中间态：Task 8 换成完整版）
 //
 // §3.7 缓存与请求。本任务先落地「清除」这一半（行为与搬家前逐字相同：两层一起清、计数报两层合计），
 // 三个统计数字、缓存上限与「高级：批量与并发」折叠区在 Task 8 补齐。
@@ -2591,7 +2602,7 @@ export const cacheSection: Section = {
 ```ts
 // src/options/sections/privacy.ts
 //
-// §3.8 隐私。**纯静态区块**：三条一行式的承诺住在 options.html 里，那段「字段隔离 ≠ 内存级
+// §3.8 隐私。**纯静态区块**：四条一行式的承诺住在 options.html 里，那段「字段隔离 ≠ 内存级
 // 隔离」的诚实说明收进 `<details>`，一个字都不删（规格 §3.8、§7）。
 //
 // 这里保留一个空实现而不是"不注册这个区块"：导航、搜索索引与区块清单一律由 SECTIONS 驱动，
@@ -2615,6 +2626,9 @@ export const privacySection: Section = {
 ```
 
 创建 `src/options/options.ts`（**整体替换** 694 行的那份，只留装配）：
+
+> **注意**：Task 4~8 会各往 `SECTIONS` 里插一项（`shortcuts` 插在 `language` 之后，`glossary`/`site-rules`/`prompt` 插在 `privacy` 之前的对应位置），最终顺序是：engine、language、shortcuts、glossary、site-rules、prompt、cache、privacy。
+> **下面这一块是整份文件**（从第一行到最后一行，一次写完；不要再拆成两块——`scripts/sync-plan-code.mjs` 只认带 `// <路径>` 首行标记的那一块，拆成两块时它只会把**第一块**刷成整个文件，第二块就成了重复内容）。
 
 ```ts
 // src/options/options.ts
@@ -2646,12 +2660,7 @@ export const SECTIONS: readonly Section[] = [
   cacheSection,
   privacySection,
 ];
-```
 
-> **注意**：Task 4~8 会各往 `SECTIONS` 里插一项（`shortcuts` 插在 `language` 之后，`glossary`/`site-rules`/`prompt` 插在 `privacy` 之前的对应位置），最终顺序是：engine、language、shortcuts、glossary、site-rules、prompt、cache、privacy。
-> **下面这一段是同一个文件的后半部分**（接在上面 `SECTIONS` 那块代码之后，不是第二个文件）：全局兜底的状态行、`SectionContext` 的实现、`start()` 与 `init()`。
-
-```ts
 /** 全局兜底用的状态行：设置读不出来时，这句话必须写在用户一眼能看到的地方。 */
 const engineStatus = document.getElementById('engine-status') as HTMLElement;
 
@@ -2870,7 +2879,8 @@ git commit -m "refactor(options): 设置页骨架（左导航 + 区块契约 + �
 - [ ] **Step 2: 跑到绿（替身改动是加法，不该影响任何既有用例）**
 
 Run: `npx vitest run tests/popup/ tests/options/`
-Expected: PASS —— 与改动前**同样的条数**（popup 33 条 + options 42 条）
+Expected: PASS —— 与改动前**同样的条数**（`tests/popup/popup.test.ts` **44 条** + `tests/options/` **48 条**）。
+> 这两个数是**实测**的：popup 那 44 条由 `npx vitest run tests/popup/popup.test.ts` 报出（本任务只给替身加 `create`，不改任何既有用例，所以条数必须一模一样）；options 的 48 条 = 上一任务留下的 29（`options.test.ts`）+ 7（`options-css.test.ts`）+ 2（`no-innerhtml.test.ts`）+ 6（`store.test.ts`）+ 4（`dom.test.ts`）——**注意这里必须把 `dom.test.ts` 的 4 条算进去**，否则执行者会拿一个对不上的数字去查半天。
 
 - [ ] **Step 3: 写失败测试**
 
@@ -5191,6 +5201,9 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
       expect([query, visibleSections()]).toEqual([query, ['engine']]);
     }
     // 索引只读这两类元素：隐私区块里既没有 `.lab`，`.sec-desc` 也只有那一句别名无关的话。
+    // **这两条是"防空洞"的护栏**：它们断言的是**文案的形状**（隐私里没有 `.lab`、只有 1 个
+    // `.sec-desc`、正文里确实有那些词），不是搜索逻辑本身。将来谁改了隐私文案（加一个 `.lab`、
+    // 或者把那句承诺挪进 `.sec-desc`），红的是这里——那时该改的是**文案或索引边界**，不是搜索。
     expect(privacy.querySelectorAll('.lab')).toHaveLength(0);
     expect(privacy.querySelectorAll('.sec-desc')).toHaveLength(1);
     // 而正文里确实有那些词（否则这条用例就是空转）。
@@ -5502,7 +5515,10 @@ function init(): void {
 - [ ] **Step 4: 跑到绿**
 
 Run: `npx vitest run tests/options/search.test.ts`
-Expected: PASS —— **13 条用例**（解析与匹配 2 条、过滤 8 条、结构守卫 3 条）
+Expected: PASS —— **13 条用例**：`describe('搜索：查询解析与匹配（纯函数）')` **2 条**（`:5126`、`:5131`）
++ `describe('搜索：过滤的是区块，不是 DOM 结构')` **8 条**（占位符、密钥、词库、隐私正文不进索引、导航项可见、字段标签、零命中、清空）
++ `describe('区块清单与页面结构一一对应')` **3 条**（八个区块、别名互斥、导航分组归属）。
+（行号是这三个 `describe` 在**本计划文件里**的位置，用来对账；**总数 13 才是承重的数**。）
 
 - [ ] **Step 5: 补一条样式断言（`[hidden]` 是搜索的地基）**
 
@@ -6302,8 +6318,13 @@ Expected: 打出 zip 包并报文件数与字节数。
 node scripts/sync-plan-code.mjs docs/superpowers/plans/2026-09-18-options-page-redesign.md src/ tests/
 ```
 
-Expected: 第一次跑会同步一批带 `// <路径>` 首行标记的块（`src/options/store.ts`、`src/options/dom.ts`、`src/options/section.ts`、`src/options/search.ts`、`src/options/rule-pattern.ts`、`src/options/engine-health.ts`、`src/options/sections/*.ts`、`tests/options/harness.ts` 等）；**再跑一次必须报「已同步 0 个代码块」**（幂等）。
+Expected: 第一次跑会同步一批带 `// <路径>` 首行标记的块（`src/options/store.ts`、`src/options/dom.ts`、`src/options/section.ts`、`src/options/search.ts`、`src/options/rule-pattern.ts`、`src/options/engine-health.ts`、`src/options/sections/*.ts`、`tests/options/harness.ts` 等——**条件是那时它们已经写出来了**）；**再跑一次必须报「已同步 0 个代码块」**（幂等）。
 方向是**仓库 → 计划**：它只认带路径首行标记的块，所以 `options.html` / `options.css` 那两块（HTML/CSS 里没有 `//` 注释）不会被它碰到——那两处要**手工**与仓库保持一致。
+
+> ⚠️ **这条命令绝对不能在实现之前跑。** 计划里 **28 个**带标记的块中，**只有 `// src/options/options.ts` 一个指向已经存在的文件**——而它现在是**旧版**（694 行）。实现之前跑同步，脚本会认为"计划落后于仓库"，把这个块**整块刷成旧文件**，Task 3 的装配层设计就没了。
+> 已核对过这件事（在计划的**副本**上跑，没碰真文件）：不带前缀跑报 `同步 src/options/options.ts（72 行 -> 694 行）` + 「已同步 1 个代码块」，另外 **27 个**文件全部列进"跳过（文件尚不存在）"；只跑 `tests/` 前缀时是「已同步 0 个代码块」。
+> **所以顺序是：Task 1~10 全落地 → 跑 `npm test/typecheck/build/zip` → 再跑同步。** 那时 `src/options/options.ts` 已经是新版装配层，同步才会正确地"0 个块"或只补上实现期的偏差。
+> （另外两条同源的坑，已经在本计划里避开：`options.ts` 是**一整块**、不是"前半块带标记 + 后半块不带"；`sections/cache.ts` 的**中间态那一块没有标记**，只有 Task 8 的最终版带标记——两块都带标记时同步会刷出两份同样的文件。）
 
 - [ ] **Step 6: 提交**
 
@@ -6411,20 +6432,20 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 
 ---
 
-## 审查复核记录（第二版改了什么、以及两条没有复现的指控）
+## 审查复核记录（第二版与终版各改了什么、以及四条被撤回的指控）
 
-第二版由一次独立核查驱动。逐条处置如下（**每条都改在计划里，不是只写在报告里**）：
+第二版由一次独立核查驱动；终版由那次核查的**对账**驱动（它撤回了 B2/B3/S3/S4 四条，并把 B1 更正为"位置对、因果错"）。逐条处置如下（**每条都改在计划里，不是只写在报告里**）：
 
 | 核查项 | 结论 | 改在哪 |
 | --- | --- | --- |
-| **B1** `SectionContext` 定义出现两份（一份带 `reload`、一份不带），下游会 `Property 'reload' does not exist` | **部分成立**：真正的问题是**重复定义**本身；`section.ts` 的接口与 `options.ts` 的 `const context` **两处都已有 `reload`**（复核过行号：接口在 `settings()` 之后、`context` 里是 `reload: async () => { await loadSnapshot(); }`），所以照原文落地**不会** typecheck 红。仍然按建议删掉了那份重复的定义块，并补了一条"接口只在这一处定义"的硬话 | Task 3 Step 11（`section.ts` 之后的那段注记）、文件结构表 |
-| **B2** 隐私区块会让 `search('密钥')` 返回 `['engine','privacy']` | **没有复现**：`sectionHaystack` 用的是 `node.querySelectorAll('.lab, .sec-desc')`（**在区块内**查），隐私区块既没有 `.lab`，它唯一的 `.sec-desc` 也是"本地存储、零网络请求、只采集可见文本、授权按需申请"这类别名无关的话；正文全在 `<ul>` / `<details>` 里。我把计划里的 HTML + `search.ts` 逻辑**原样复刻跑了一遍**（jsdom + 8 个区块的真实标签）：`密钥 → ['engine']`、`API Key → ['engine']`、`档案 → ['engine']`、`词库/专有名词 → ['glossary']`，**别名互斥矩阵 51 个别名全部基线绿** | 但**接受了它背后的担忧**：新增一条专门的用例钉住"隐私正文不进索引"（并断言隐私里**确实**有「API Key」「档案」、`.lab` 为 0 条、`.sec-desc` 为 1 条——免得用例空转）+ `sectionHaystack` 的文档注释写明这个边界是承重的 + 变异表新增"把选择器放宽成 `li`"这一行。Task 9 |
-| **B3** 命中的区块，其导航项被 `navLink.hidden = !hit` 藏掉了 | **没有复现**：`hit` 为真时 `!hit` 为假，`hidden=false`，导航项是**可见**的；`search('密钥')` 推演结果就是 `engine: 区块可见/nav可见`。测试 `:4959` 的那条断言（`engine` 的 nav `hidden === false`）与代码一致 | 仍然加了更强的守卫：一条"命中的区块其导航项必须可见"的用例（覆盖 engine/cache/glossary 三个），变异表新增"`= !hit` 反写成 `= hit`"这一行。Task 9 |
-| **B4** 隐私区块第 4 条承诺被静默删掉 | **成立**（真问题）：`options.html:79-83` 的第 4 条（宿主权限按需申请）确实被我压成了 3 条，而 `options.test.ts:298-306` 的 5 个字面量断言测不出它消失 | 第 4 条 `<li>` **原样恢复**（四条一行式）；`.sec-desc` 不再声称"三条"；并在 HTML 块后面写明"§3.8 的『三条』说的是版式，不是删掉一条"。Task 3 Step 10 |
+| **B1** `SectionContext` 定义出现两份（一份带 `reload`、一份不带），下游会 `Property 'reload' does not exist` | **部分成立（核查者已更正为"位置对、因果错"）**：真正的问题是**重复定义**本身；`section.ts` 的接口与 `options.ts` 的 `const context` **两处都已有 `reload`**（复核过行号：接口在 `settings()` 之后、`context` 里是 `reload: async () => { await loadSnapshot(); }`），所以照原文落地**不会** typecheck 红。仍然按建议删掉了那份重复的定义块，并补了一条"接口只在这一处定义"的硬话 | Task 3 Step 11（`section.ts` 之后的那段注记）、文件结构表 |
+| **B2** 隐私区块会让 `search('密钥')` 返回 `['engine','privacy']` | **撤回（没有复现）**：核查者自己复刻时**给隐私区块伪造了 `.lab` 条目**。实测：`sectionHaystack` 用的是 `node.querySelectorAll('.lab, .sec-desc')`（**在区块内**查），隐私区块既没有 `.lab`，它唯一的 `.sec-desc` 也是"本地存储、零网络请求、只采集可见文本、授权按需申请"这类别名无关的话；正文全在 `<ul>` / `<details>` 里。我把计划里的 HTML + `search.ts` 逻辑**原样复刻跑了一遍**（jsdom + 8 个区块的真实标签）：`密钥 → ['engine']`、`API Key → ['engine']`、`档案 → ['engine']`、`词库/专有名词 → ['glossary']`，**别名互斥矩阵 51 个别名全部基线绿**。核查者事后也用放宽后的选择器独立复跑，确认这条加固用例**不是空转**（红在 `:5191`） | 仍然**接受了它背后的担忧**并保留加固：一条专门的用例钉住"隐私正文不进索引"（断言隐私里**确实**有「API Key」「档案」、`.lab` 为 0 条、`.sec-desc` 为 1 条——免得用例空转）+ `sectionHaystack` 的文档注释写明这个边界是承重的 + 变异表新增"把选择器放宽成 `li`"这一行。Task 9 |
+| **B3** 命中的区块，其导航项被 `navLink.hidden = !hit` 藏掉了 | **撤回（极性读反了）**：`hit` 为真时 `!hit` 为假，`hidden=false`，导航项是**可见**的；`search('密钥')` 推演结果就是 `engine: 区块可见/nav可见` | 仍然保留更硬的守卫：一条"命中的区块其导航项必须可见"的用例（覆盖 engine/cache/glossary 三个），变异表新增"`= !hit` 反写成 `= hit`"这一行。Task 9 |
+| **B4** 隐私区块的一条承诺被静默删掉 | **成立**（真问题；但**行号与序数**在第二版里写错了，终版更正）：实测 `src/options/options.html` 的隐私 `<li>` 是 `:63-71` / `:72-74` / **`:75-78`** / `:79-82`——被压掉的那条是**第 3 条**（授权按需申请，`:75-78`），不是"`:79-83` 的第 4 条" | 那条 `<li>` **原样恢复**；新版按 1/2/3/4 重排后它落在**第 4 条**；`.sec-desc` 不再声称"三条"；行号与序数已按实测更正（Task 3 Step 10 的注记 + 文件结构表 + 本表）。Task 3 Step 10 |
 | **S1** Task 2 把过时句"改完点下面的「保存语言与显示」"搬进了新文案，且没交代归宿 | **成立**：那句话在 Task 2 的提交上**是真的**（按钮还在），但在 Task 3 之后就不再成立，而两个 Task 都没交代它 | Task 2：明确"范围是整个 `<p>`、只改链接那句、末尾句逐字保留"并写明归宿；Task 2 的断言新增 `toContain('保存语言与显示')`（当下为真）；Task 3 Step 13 **整条替换**成 `not.toContain('保存语言与显示')`；Task 3 Step 10 的注记同步更新 |
 | **S2** Task 3 的删除清单漏了会变死引用的 import | **成立**：`readFileSync` / `join` / `installChromeStub`+`ChromeStub` 会悬空（`noUnusedLocals` 没开，typecheck 不会报）；`vi` 要留、`afterEach` 要留 | Task 3 Step 2 新增第 2 条"同时删掉会变成死引用的 import"，并列出**要留的**标识符 |
-| **S3** 测试总数算错（`search.test.ts` 是 9 条不是 10 条） | **不成立**：计划里的 `search.test.ts` 实际有 **10 个 `it`**（2 + 6 + 2，`grep '^  it('` 数过）。不过**第二版新增了用例**，所以数字本来就要重算：现在是**本轮新增 90 条 → 预期 957 / 52 files** | Task 11 Step 4、验收对照表第 10 行（全量重算） |
-| **S4** Task 2 的替换范围写成 4 行、实际 5 行 | **不成立**：复核 `src/options/options.html`，`<p id="target-hint">` 是 **`:41-44` 四行**（第 45 行是 `<div class="actions">`）。范围保持 `:41-44` | 同时按 S1 把这一块的边界与归宿写清楚了。Task 2 Step 3 |
+| **S3** 测试总数算错（说 `search.test.ts` 是 9 条而不是 10 条） | **撤回（算错了）**：第一版是 **9** 个 `it`（`2 + 5 + 2`），第二版是 **13** 个（`2 + 8 + 3`）——无论如何都**不影响任何结论**，因为总数已经全量重算（见 Task 11 Step 4）。这个括注不驱动任何判断，**终版把它删了** | Task 11 Step 4 的逐文件计数（以命令输出为准） |
+| **S4** Task 2 的替换范围写成 4 行、实际 5 行 | **撤回（算错了）**：复核 `src/options/options.html`，`<p id="target-hint">` 是 **`:41-44` 四行**（第 45 行是 `<div class="actions">`）。范围保持 `:41-44` | 同时按 S1 把这一块的边界与归宿写清楚了。Task 2 Step 3 |
 | **S5** Task 10 的 import 指令前后矛盾（`StatusKind` 两处各说一遍） | **成立** | Task 10 ① 改成"import 区**一次改完**（三件事）"并给出改完后**恰好**的三行；⑥ 的括注改成"已在 ① 里改好，不要再加一条" |
 | **S6** Task 10 的 `<details>` 插入点不对，且 HTML 里有 Markdown 星号 | **成立**（两处都对） | 插入点改成"`<div id="profiles"></div>` 之后、`<p class="hint">` 之前"；`**不等于**` 改成 `<strong>不等于</strong>`，并加了一条"HTML 里不许出现 Markdown 的 `**`"的提醒 |
 | **S7** 三处变异写着"杀不死/二选一"却没做决定 | **成立**（这确实是决策点，不是已决项） | ① 提示词：**决定存原样**（消费者自己 trim），新增用例「前后空白原样存进去」把它钉住；② 单标签主机名：**决定照收**（核心按精确匹配，`localhost` 本来就是有效规则），`HOSTNAME` 放宽 + 新增用例「单标签主机名照收」；③ 术语行回填那条变异：标注**「不设此变异（已核实杀不死）」**，并说明真正的守卫是哪条用例 |
@@ -6434,3 +6455,21 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | **D-2** `Esc` 取消编辑仍会写盘 | **成立**（真实缺口） | 不实现"Esc 撤销"（本机无法验证 `Esc` 在各控件上的真实语义，凭猜测写半可用的撤销更糟）——写进 README 已知限制并说明现成出路（决定 #8、Task 11 Step 2） |
 | **D2** `dom.ts` 没有自己的测试 | **成立**（共享件坏了会全线崩） | 新增 `tests/options/dom.test.ts`（4 条：`setStatus` 走 textContent、`runSafely` 两条路径、`requireWithin` 抛错带选择器、`fillSelect` 重建选项），放在 Task 3 Step 11 的**最前面**（先红后绿） |
 | **Task 10 自足性** 13 处改动是相对定位，要求执行者看到另一个 Task 的全文 | **成立** | 开头新增「执行前提」（第 0 条）：实现者从仓库 + 本 Task 小节出发；并把 Task 10 的每一处锚点引足上下文（②③④⑤⑥⑦⑧⑨⑩⑪ 逐处给出"替换前/替换后"或"插在哪两行之间"） |
+
+### 终版（第三轮）清掉的读数
+
+第二轮之后又做了一次对账，它撤回了上面四条（B2/B3/S3/S4），并给出六条低危但会让执行者**停下来对账**的读数问题。逐条处置：
+
+| 项 | 结论 | 终版怎么写的 |
+| --- | --- | --- |
+| **N1** 隐私那条第 3 条的**行号与序数**都写错了（写着 `:79-83`、叫"第四条"） | **成立**：实测 `:63-71` 第 1 条、`:72-74` 第 2 条、**`:75-78` 第 3 条**（授权按需申请）、`:79-82` 第 4 条（只送可见文本，`:83` 是 `</ul>`） | 已按实测改写，并且把话说清楚：**现状里它是第 3 条**，新版按 1/2/3/4 重排后落在**第 4 条**——"我们保住了那条被压掉的承诺"这个结论**不再建立在一个错的序数上**。Task 3 Step 10 的注记 + 文件结构表 + 本表 |
+| **N2** Task 4 的 Expected 没随 `dom.test.ts` 重算（写 popup 33 + options 42） | **成立**（两个数都旧了） | 实测：`tests/popup/popup.test.ts` = **44 条**、`tests/options/` = **48 条**（29 + 7 + 2 + 6 + **4**）。Task 4 Step 2 已改成这两个数并写明"必须把 `dom.test.ts` 的 4 条算进去" |
+| **N3** Task 9 的 Expected 组内拆分 | **总数 13 对，拆分按实测更正**：`describe` 三段是 `:5125` **2 条** + `:5141` **8 条** + `:5250` **3 条**（每一段的 `it` 行号都在计划里数过；对账方给的是 7/4，与实测不一致——**总数 13 不变**，且总数才是承重的数） | Task 9 Step 4 写成 2 / 8 / 3 并附三条 describe 的行号，末尾注明"总数 13 才是承重的数" |
+| **N4** 复盘表里"`search.test.ts` 实际有 10 个 `it`（2+6+2）"是错的 | **成立**（那个括注不驱动任何结论） | **直接删掉**该括注，S3 那一行改成"撤回（算错了）+ 不影响任何结论 + 总数已全量重算" |
+| **N5** 隐私加固用例里那两条"文案耦合"断言 | **不用改**（防空洞的必要代价，对账方也认这笔账划算） | 原位加了半句说明："这两条是**防空洞的护栏**，断言的是文案的形状不是搜索逻辑；将来改隐私文案红的是这里——那时该改的是**文案或索引边界**，不是搜索" |
+| **N6** 文件结构表里 `sections/privacy.ts` 还写着"三条一行式" | **成立** | 文件表那一行 + `privacy.ts` 模块注释里的"三条一行式"都改成**四条** |
+
+**顺带修掉两处只有跑一次同步才看得见的坑**（核查要求跑 `sync-plan-code.mjs` 验证幂等；我在计划**副本**上跑的，没碰真文件）：
+
+1. `src/options/options.ts` 原来被写成**两块**（前半块带路径标记、后半块不带）。同步脚本只认带标记的那一块，会把**前半块**刷成整个文件（实测：`同步 src/options/options.ts（72 行 -> 694 行）`——因为仓库里现在是 694 行的旧版），后半块就变成重复内容。→ 已合并成**一整块**。
+2. `src/options/sections/cache.ts` 原来有**两个**带标记的块（Task 3 的中间态 + Task 8 的最终版）→ 同步会把两块都刷成同一份最终文件。→ 中间态那一块的标记已去掉并写明理由（手工维护，和 `options.html` / `options.css` 一样）。
