@@ -25,6 +25,7 @@
 6. **`autoTranslateDelay` 零消费者**：不做 UI（规格 §1 / §8），只在 README 保留既有说明。
 7. **本机没有浏览器 / Playwright**：任何"看起来对不对"的断言都只能是 CSS 文本断言（`tests/helpers/css.ts`）与 DOM 属性断言；布局挤压、窄窗口降级、暗色对比度**一律依赖用户肉眼验收**，计划里如实标注。
 8. **pwsh 5.1 的 `Set-Content` / `Get-Content` 会破坏 UTF-8**：本计划里所有文件读写都用编辑/写入工具，命令只用来跑 `npx vitest run` / `git`。
+9. **"设置还没读出来"这句话只有一个来源**：`store.ts` 导出的 `NOT_LOADED`。四个区块（engine / glossary / site-rules / cache）一律 `import { NOT_LOADED } from '../store';`，**不许再写字面量**——导出它的唯一理由就是"同一句话不要两处各写一份"（先例：`shared/settings.ts` 的 `isAllowedBaseUrl`）。测试里仍写字符串字面量，那是**故意**的（钉住用户看到的那句话）。详见文末复盘记录第 4 条。
 
 ### 契约属性清单（grep 出来的现状，逐条都要保住）
 
@@ -295,7 +296,13 @@ describe('设置页存储层：单字段写回', () => {
 - [ ] **Step 2: 跑到红**
 
 Run: `npx vitest run tests/options/store.test.ts`
-Expected: FAIL —— `Failed to resolve import "../../src/options/store"`（文件还不存在）
+Expected: FAIL —— 模块解析失败：`Cannot find module`（跟着解析到的路径与 import 它的测试文件），因为 `src/options/store.ts` 还不存在。
+
+> **口径（只在这一处解释，后面 9 个任务照此判断，别再逐处对账）**：本仓库是 **vitest 5.0.0**，
+> 它（静态顶层 `import` 与动态 `import()` 都一样）报的是 **`Cannot find module`**；计划初稿里写的
+> `Failed to resolve import "…"` 是**旧版 Vite/Vitest 的措辞**，在本仓库**永远看不到**——Task 1 的
+> 实现者就在这里停下来对过一次账。**判断"红成立"看的是"模块解析失败"这个因**，不是那句文案：
+> 只要失败原因是"找不到被测模块"，这一步就成立（文案随工具版本变，别把它当验收条件）。
 
 - [ ] **Step 3: 写实现**
 
@@ -1780,7 +1787,7 @@ describe('dom：状态行、拒绝兜底、控件查找', () => {
 ```
 
 Run: `npx vitest run tests/options/dom.test.ts`
-Expected: FAIL —— `Failed to resolve import "../../src/options/dom"`
+Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task 1 Step 2 的说明）
 
 然后创建 `src/options/dom.ts`：
 
@@ -1942,6 +1949,8 @@ import {
   type Settings,
 } from '../../shared/settings';
 import { describe, element, fillSelect, requireWithin, runSafely, setStatus } from '../dom';
+// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+import { NOT_LOADED } from '../store';
 import type { Section, SectionContext } from '../section';
 
 const profilesList = document.getElementById('profiles') as HTMLElement;
@@ -2451,7 +2460,7 @@ export const engineSection: Section = {
 
     addProfileButton.addEventListener('click', () => {
       if (ctx.settings() === null) {
-        setStatus(engineStatus, 'err', '设置还没读出来，请稍候重试');
+        setStatus(engineStatus, 'err', NOT_LOADED);
         return;
       }
       if (expandedId !== NEW_DRAFT_ID) {
@@ -3564,6 +3573,10 @@ Expected: FAIL —— `options.html 里没有 #glossary-list`
 import type { Term } from '../../engines/types';
 import { element, setStatus } from '../dom';
 import type { Section, SectionContext } from '../section';
+// **这句话只有一个来源**：`store.ts` 导出的 `NOT_LOADED`。四个区块都要在"设置还没读出来"时
+// 说同一句话，各写一份字面量迟早会漂成四种说法——`shared/settings.ts` 的 `isAllowedBaseUrl`
+// 注释里那条纪律就是这个意思（两处各写一套判据，用户会看到永远查不出来的分歧）。
+import { NOT_LOADED } from '../store';
 
 const list = document.getElementById('glossary-list') as HTMLElement;
 const addButton = document.getElementById('add-term') as HTMLButtonElement;
@@ -3690,7 +3703,7 @@ export const glossarySection: Section = {
   bind(ctx: SectionContext): void {
     addButton.addEventListener('click', () => {
       if (ctx.settings() === null) {
-        setStatus(status, 'err', '设置还没读出来，请稍候重试');
+        setStatus(status, 'err', NOT_LOADED);
         return;
       }
       draftOpen = true;
@@ -3878,7 +3891,7 @@ describe('normalizeRulePattern：必须拒绝的写法', () => {
 - [ ] **Step 2: 跑到红**
 
 Run: `npx vitest run tests/options/rule-pattern.test.ts`
-Expected: FAIL —— `Failed to resolve import "../../src/options/rule-pattern"`
+Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task 1 Step 2 的说明）
 
 - [ ] **Step 3: 写实现**
 
@@ -4247,6 +4260,8 @@ import { element, setStatus } from '../dom';
 import { normalizeRulePattern } from '../rule-pattern';
 import type { SiteRule } from '../../shared/settings';
 import type { Section, SectionContext } from '../section';
+// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+import { NOT_LOADED } from '../store';
 
 const list = document.getElementById('site-rules-list') as HTMLElement;
 const addButton = document.getElementById('add-rule') as HTMLButtonElement;
@@ -4363,7 +4378,7 @@ export const siteRulesSection: Section = {
   bind(ctx: SectionContext): void {
     addButton.addEventListener('click', () => {
       if (ctx.settings() === null) {
-        setStatus(status, 'err', '设置还没读出来，请稍候重试');
+        setStatus(status, 'err', NOT_LOADED);
         return;
       }
       draftOpen = true;
@@ -4929,6 +4944,8 @@ import { chromeArea } from '../../shared/chrome-area';
 import type { Settings } from '../../shared/settings';
 import { describe, runSafely, setStatus } from '../dom';
 import type { Section, SectionContext } from '../section';
+// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+import { NOT_LOADED } from '../store';
 
 const statCached = document.getElementById('stat-cached') as HTMLElement;
 const statMax = document.getElementById('stat-max') as HTMLElement;
@@ -5013,7 +5030,7 @@ function commitNumber(ctx: SectionContext, input: HTMLInputElement, field: Numbe
   void (async () => {
     const current = ctx.settings();
     if (current === null) {
-      setStatus(cacheStatus, 'err', '设置还没读出来，请稍候重试');
+      setStatus(cacheStatus, 'err', NOT_LOADED);
       return;
     }
     const parsed = Number(input.value);
@@ -5339,7 +5356,7 @@ describe('区块清单与页面结构一一对应', () => {
 - [ ] **Step 2: 跑到红**
 
 Run: `npx vitest run tests/options/search.test.ts`
-Expected: FAIL —— `Failed to resolve import "../../src/options/search"`
+Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task 1 Step 2 的说明）
 
 - [ ] **Step 3: 写实现与接线**
 
@@ -5789,7 +5806,7 @@ describe('内置免费引擎那一行', () => {
 - [ ] **Step 2: 跑到红**
 
 Run: `npx vitest run tests/options/engine-health.test.ts`
-Expected: FAIL —— `Failed to resolve import "../../src/options/engine-health"`
+Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task 1 Step 2 的说明）
 
 - [ ] **Step 3: 写记录模块**
 
@@ -5872,7 +5889,7 @@ export async function forgetEngineHealth(id: string, area: StorageArea = session
 
 按下面逐处改（**其余部分一字不动**）。每一处都给足了定位上下文；`src/options/sections/engine.ts` 这个文件此刻已经在磁盘上（Task 3 写的），直接开文件改，不要重打整份：
 
-① **import 区一次改完**（三件事：加 `../engine-health` 一条、把 `Translator`/`EngineConfig` 合并进已有的 `../../engines/types` 那一行、把 `StatusKind` 合并进已有的 `../dom` 那一行）。改完这三行应当**恰好**长这样，别再多出第四条 import：
+① **import 区一次改完**（三件事：加 `../engine-health` 一条、把 `Translator`/`EngineConfig` 合并进已有的 `../../engines/types` 那一行、把 `StatusKind` 合并进已有的 `../dom` 那一行）。改完这三行应当**恰好**长这样（下面还有一条 Task 3 就加好的 `import { NOT_LOADED } from '../store';`——**保留它**，别当成多余的一行删掉）：
 
 ```ts
 import { forgetEngineHealth, loadEngineHealth, saveEngineHealth, type EngineHealth } from '../engine-health';
@@ -6293,6 +6310,7 @@ npm test
 Expected: 全绿；测试总数 = **867 + 本轮新增**。本轮新增用例的逐文件计数（**写完最后一个 Task 后按实际输出核对**）：
 `store.test.ts` 6、`dom.test.ts` 4、`options-css.test.ts` 8（Task 3 的 7 条 + Task 9 补的 `[hidden]` 那条）、`no-innerhtml.test.ts` 2、`shortcuts.test.ts` 5、`glossary.test.ts` 11、`rule-pattern.test.ts` 11、`site-rules.test.ts` 9、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8 = **90 条**，因此预期 **957 个测试 / 52 files**（40 + 12 个新测试文件；`tests/options/harness.ts` 不是测试文件，不计）。`options.test.ts` 仍是 **29 条**。
 实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
+> **实现阶段补的用例会让总数比这里的预期多几条**（单元 A 就有先例：审查或变异验证逼出来的必需用例）。多出来的是好事，不是错误——只要每一条都能说清它守的是什么、并且是**加强**而不是放宽既有断言。真正要警惕的是"数字对得上但守卫是假的"，不是"数字比预期大"。
 
 ```bash
 npm run typecheck
@@ -6473,3 +6491,21 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 
 1. `src/options/options.ts` 原来被写成**两块**（前半块带路径标记、后半块不带）。同步脚本只认带标记的那一块，会把**前半块**刷成整个文件（实测：`同步 src/options/options.ts（72 行 -> 694 行）`——因为仓库里现在是 694 行的旧版），后半块就变成重复内容。→ 已合并成**一整块**。
 2. `src/options/sections/cache.ts` 原来有**两个**带标记的块（Task 3 的中间态 + Task 8 的最终版）→ 同步会把两块都刷成同一份最终文件。→ 中间态那一块的标记已去掉并写明理由（手工维护，和 `options.html` / `options.css` 一样）。
+
+### Task 1 落地时的三条（**写在这里，是为了拦住后人"顺手修一行本来正确的东西"**）
+
+1. **Task 1 Step 6 的变异①（"不排队"）是正确的，一个字都不要改。**
+   实现者在报告里说这条变异"写错了、改完会 `TypeError`、5 条用例一起死"——**那是他自己的编辑失误被归因给了计划**：审查**按字面**执行了计划那一行（只把 `const run = queue.then(async () => {…})` 的**排队**拿掉、保留 `const run = `），结果是**恰好 1 条红、红在见证用例「连着改两个字段」、不存在 `TypeError`**（正是计划期望的读数）。他描述的病症只有在**连 `const run = ` 一起删掉**时才出现，而且报的是 **`ReferenceError: run is not defined`**（不是 `TypeError`），5 条红也不是"变异杀死了测试"，而是代码根本编译不过。
+   → 结论：**Task 1 Step 6 那一行变异保持原样**；谁再看到"这条变异写错了"的说法，先按字面执行一遍再下结论。
+
+2. **写队列的必要性已经用四种替身证明过，不要再要求补"受控延迟"的用例。**
+   审查造了**四种**替身：同步 `set` / 受控延迟 5ms / `get` 与 `set` 走同一条串行 IPC 通道 / 反向顺序——"不排队"变异在**四种下全部恰好 1 红、红在同一条用例、报错文案一模一样**。机理是：两次 `patchSettings` 背靠背调用（中间没有 `await`）使**两次读都先于任何一次写**发出，与"写有多慢"无关，所以加延迟不会改变结论。实现者曾建议补一条"受控延迟 set"的用例，**已否决**（它只会把一个已被四种替身覆盖的性质再写一遍）。
+
+3. **`currentSettings()` 交出内部引用：本轮只改注释，不冻结、不改返回类型。**
+   实测它的确是脚枪（调用方 `settings.profiles.push(...)` 这类**原地修改**会被内部重读静默吞掉），但**当前不可达**：计划里 22 处用法没有一处原地修改（都是读字段、`map`/`filter` 出新数组、或整份替换）。
+   **决定**：`store.ts` 只补一条注释说明"这是内部快照的引用，不要原地改"；**不**改返回类型为 `Readonly<Settings>`（会级联到 Task 3 已定稿的 `SectionContext.settings()` 契约，牵动 8 个区块模块），**也**不做 `Object.freeze`（会给尚未编写的 Task 3~10 引入运行期风险，收益却不覆盖"跨模块契约"那一层）。
+   **将来若要收紧**：优先考虑把 `SectionContext.settings()` 与 `currentSettings()` 一起改成 `Readonly<Settings>`（类型层，零运行期成本）；冻结对象只在"确认没有代码依赖可变引用"之后再谈。
+
+4. **`NOT_LOADED` 现在只有一个来源**（质量审查 M2 的收敛）：这句话原先在计划里被硬编了 4 处（`sections/engine.ts` 的「+ 新增档案」、`sections/glossary.ts` 与 `sections/site-rules.ts` 的「+ 添加」、`sections/cache.ts` 的数字提交）——而 `store.ts` 导出它的**唯一理由**就是"同一句话不要两处各写一份"（先例：`shared/settings.ts` 的 `isAllowedBaseUrl` 注释）。现在四处都改成 `import { NOT_LOADED } from '../store';`（`sections/*` 用 `'../store'`；`src/options/options.ts` 若要自己说这句话则用 `'./store'`——目前它不需要，那句话是随 `patchSettings` 的拒绝经 `describe(raw)` 冒上来的）。
+   **测试里仍然写字符串字面量**（`options.test.ts` 的 `toContain('设置还没读出来')`、`shortcuts.test.ts` 的同款断言）：那是**故意**的——它钉的是"用户看到的那句话"，常量文案被改动时这几条会红，正是想要的漂移探测，不是漂移。
+
