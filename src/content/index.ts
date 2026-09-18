@@ -384,15 +384,30 @@ async function translatePage(): Promise<void> {
   if (mine !== generation) return;
 
   // 站点规则：命中「永不翻译」时不采集、不发任何请求（规格 2026-09-18 §5）。
-  // 只拦这一处就够——右键菜单、Alt+T、弹窗按钮三个入口都汇到 translatePage()。
-  // 划词与悬停**故意不受约束**：那是用户主动发起的单段翻译，与"这站整页不该翻"是两件事。
-  // 位置必须在采集之前：采集有副作用（写 data-jy-id / data-jy-translated），
-  // 拦晚了会把一个"不该翻"的页面永久标成已处理（变异验证：挪到 collectSegments 之后，
-  // 本用例的 innerHTML 断言读到的就是 `<p data-jy-id="jy-1-…" data-jy-translated>`）。
-  // `running = false` **不能省**：这一轮已经认领过守卫（上面 running = true），
-  // 提前 return 不复位就是"第二次按 Alt+T 静默什么都不发生"那个 bug 的复发——
-  // 用户解除规则后再也翻不动了，而且没有任何提示（变异验证：删掉这行，只有那条用例红）。
-  // 世代号这里不用管：从上一个守卫到这里没有 await，我仍然是当前世代（只有 restorePage 能推进它）。
+  //
+  // **只拦这一处就够**：三个整页翻译入口都汇到本函数——Alt+T 与弹窗主按钮发 `TOGGLE_PAGE`、
+  // 右键菜单发 `TRANSLATE_PAGE`，前两者的未翻译分支与后者都落到 `runTranslate()` → 这里。
+  // 反过来，把闸挂到消息层那个 `if (type === MSG.TRANSLATE_PAGE)` 分支上就只盖住三分之一
+  // （另两个入口照样翻——而它们恰好占了三个入口里的两个）。这条落点之争有读数：
+  // 测试里「TOGGLE_PAGE 同样被拦」那条。划词与悬停**故意不受约束**：那是用户主动发起的
+  // 单段翻译，与"这站整页不该翻"是两件事。
+  //
+  // **位置两头都不能挪**：
+  // - 再早没有意义——`siteRules` 只来自上面那次本来就必需的 `loadUiSettings()`；而且跨过
+  //   `mine !== generation` 这道守卫去动 `running`，会让**被接管的那一轮**把新一轮的守卫清掉。
+  // - 再晚也不行——采集有副作用（写 `data-jy-id` / `data-jy-translated`），拦晚了就把一个
+  //   "不该翻"的页面**永久**标成已处理：这两类标记只由渲染器的 `restore()` 统一清除
+  //   （见 `extractor.ts` 的副作用注释），而这一轮压根没建 renderer，没有东西可 restore。
+  //   实测把闸挪到 `collectSegments` 之后：DOM 成了 `<p data-jy-id="jy-1-…" data-jy-translated="1">`，
+  //   而且**连"解除规则再翻一次"都救不回来**——下一轮采到 0 段，页面被这个判断判了死刑，
+  //   用户只剩一句提示和一堆隐形标记（"守卫已收回"那条用例在这里也是红的）。
+  //
+  // `running = false` **不能省**：这一轮已经认领过守卫（上面 running = true），提前 return
+  // 不复位就是"第二次按 Alt+T 静默什么都不发生"那个 bug 的复发——用户解除规则后再也翻不动了，
+  // 而且没有任何提示（变异验证：删掉这行，只有「守卫已收回」那条用例红）。
+  // 世代号这里不用管：从上一个守卫到这里没有 await，我仍然是当前世代。能推进它的两条路都
+  // 够不着这里——`restorePage()` 只能由消息处理触发，另一条就是本函数自己的入口
+  // `const mine = ++generation`，而它被上面那句 `running = true` 挡在门外。
   if (isNeverTranslate(settings.siteRules, location.hostname)) {
     running = false;
     toast('此站已设为「永不翻译」，可在设置 › 站点规则里解除');

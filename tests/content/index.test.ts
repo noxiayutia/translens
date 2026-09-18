@@ -1557,7 +1557,7 @@ describe('内容脚本编排：重试语言跟随页面快照', () => {
  *
  * 夹具一律沿用本文件已有的三样，不另造机制：
  * ① 写设置 = `chromeStub.storage.local.set({ [SETTINGS_KEY]: { … } })`（设置每轮翻译现读，
- *    所以同一条用例中间还能改它——第 4 条就靠这个模拟"用户去设置页解除规则"）；
+ *    所以同一条用例中间还能改它——「守卫已收回」那条就靠这个模拟"用户去设置页解除规则"）；
  * ② 派发消息 = `dispatch(contentListener, MSG.*)`；
  * ③ "零请求" = `translateRequests(worker)`（对端替身真实收到的 TRANSLATE_TEXTS 条数）。
  * toast 的读法也用文件里到处都在用的那句
@@ -1565,11 +1565,19 @@ describe('内容脚本编排：重试语言跟随页面快照', () => {
  * 只住在"页面级提示择一"那个 describe 内部，在本 describe 的作用域之外。
  *
  * 主机名由 `vi.stubGlobal('location', …)` 控制（实测本仓库 jsdom + vitest 5 下 `location`
- * 是可配置的访问器，stub 与 `unstubAllGlobals()` 都生效）。每条用例自己 stub、自己 unstub，
- * 且本 describe 住在文件末尾：即使某条在断言上失败而没走到 `unstubAllGlobals()`，
- * 也没有后续用例被污染。
+ * 是可配置的访问器，stub 与 `unstubAllGlobals()` 都生效）。清理挂在下面的 `afterEach` 上而
+ * **不是**每条用例末尾那一句：断言一失败就走不到末尾，泄漏的 `location` 会被后面的用例读到
+ * （实测：A 条失败后 B 条读到上一条的主机名）。本仓库 `vitest.config.ts` 只有
+ * `restoreMocks: true`，没有 `unstubGlobals: true`，所以 vitest 不会替谁自动 unstub——
+ * "每条自己收尾"那种写法今天不出事纯属两个隐式前提（每条都先自己 stub + 这个 describe
+ * 恰好住在文件末尾），而前提是会被人打破的：将来在文件尾部再追一个 describe，
+ * 它就会静默继承 `blocked.example.com`。
  */
 describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('站点规则命中 never：不采集、零请求、给一句能读懂的话', async () => {
     // 主机名要可控：内容脚本读的是 location.hostname。
     vi.stubGlobal('location', { hostname: 'blocked.example.com' });
@@ -1600,9 +1608,48 @@ describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译'
     expect(
       document.body.querySelector('[data-jy-id],[data-jy-translated],[data-jy-root],[data-jy-originals]'),
     ).toBeNull();
-    vi.unstubAllGlobals();
   });
 
+  /**
+   * 钉住**闸的落点**，而不是只钉"有没有闸"。
+   *
+   * 三个整页翻译入口里只有右键菜单发 `TRANSLATE_PAGE`（`background/service-worker.ts:76`）；
+   * Alt+T（同文件 `:70` 的 `toggle-translate`）与弹窗主按钮（`popup/popup.ts:278`）
+   * 发的都是 `TOGGLE_PAGE`——**两个入口走这一条**。拦在 `translatePage()` 里对两条都成立，
+   * 但这句话必须有读数：把闸挪进消息层 `if (type === MSG.TRANSLATE_PAGE)` 那个分支
+   * （最自然的错误落点）时，本 describe 其余用例派发的是 TRANSLATE_PAGE、TOGGLE_PAGE 的
+   * **还原方向**与划词消息，没有一条走"未翻译 + TOGGLE_PAGE"这条路——全仓 853 条全绿。
+   * 这条就是那一个读数。
+   *
+   * 前提是页面**还没翻译**（未翻译态才会进 `runTranslate()`；已翻译态走 restorePage()，
+   * 那是隔壁那条"还原不受约束"的用例管的方向）。
+   */
+  it('Alt+T / 弹窗主按钮那条路（TOGGLE_PAGE）同样被拦：未翻译的 never 站不新起一轮', async () => {
+    vi.stubGlobal('location', { hostname: 'blocked.example.com' });
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        siteRules: [{ pattern: '*.example.com', action: 'never' }],
+      },
+    });
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const state = await dispatch(contentListener, MSG.TOGGLE_PAGE);
+
+    // 三条读数是同一件事的三个面：没发请求、没建宿主、状态也说"这一页没在翻译"。
+    expect(translateRequests(worker).length).toBe(0);
+    expect(hosts()).toHaveLength(0);
+    expect(state.translated).toBe(false);
+    expect(document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '').toContain('永不翻译');
+  });
+
+  /**
+   * 这条是「命中就拦、不看 action」那个错误实现的**唯一**见证：其余用例都只喂 never 规则，
+   * 把判据写成"`matchSiteRule(...) !== null`（任意动作都拦）"在它们身上读数不变；
+   * 只有这条喂 translate 动作，它一红就说明 action 被忽略了。别当成冗余删掉。
+   */
   it('站点规则是 translate 动作时不拦（今天它没有可观察行为）', async () => {
     vi.stubGlobal('location', { hostname: 'other.example.com' });
     await chromeStub.storage.local.set({
@@ -1615,10 +1662,13 @@ describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译'
     const { worker, contentListener } = await loadContentScript();
     worker.mockImplementation(autoReply());
 
-    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
     expect(translateRequests(worker).length).toBeGreaterThan(0);
-    vi.unstubAllGlobals();
+    // "有请求出去过"太弱：一轮全失败的请求也有请求。要的是**真的翻好了**（与守卫收回那条同强度）。
+    expect(state.translated).toBe(true);
+    expect(hosts()).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
   });
 
   it('还原不受规则约束：已翻译的页面命中 never 也要能撤掉', async () => {
@@ -1644,7 +1694,6 @@ describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译'
     expect(hosts()).toHaveLength(0);
     // 还原也没有顺手再起一轮"被拦掉的"翻译：请求数还是翻译那一轮的那 1 条。
     expect(translateRequests(worker)).toHaveLength(1);
-    vi.unstubAllGlobals();
   });
 
   /**
@@ -1683,7 +1732,6 @@ describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译'
     expect(hosts()).toHaveLength(1);
     expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
     expect(state).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
-    vi.unstubAllGlobals();
   });
 
   /**
@@ -1713,6 +1761,5 @@ describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译'
     expect(document.querySelector('[data-jy-tooltip]')?.shadowRoot?.textContent).toContain('译:Hello world');
     // 页面一个字节都不动：划词本来就不写页面，规则也不该把它一起掐掉。
     expect(document.body.innerHTML).toBe('<p>Hello world</p>');
-    vi.unstubAllGlobals();
   });
 });
