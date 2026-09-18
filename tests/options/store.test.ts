@@ -117,4 +117,36 @@ describe('设置页存储层：单字段写回', () => {
 
     expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
   });
+
+  it('成功加载之后再加载失败：保留上一次成功的快照，写仍可用（失败原因是版本，不是还没读出来）', async () => {
+    // 这条把 `loadSnapshot` 的**失败语义**从"碰巧"变成"契约"：它的两种失败后果不同。
+    // 首次失败必须留下 null（否则拿空设置覆盖存储，见上一条用例）；**已经加载过之后**失败
+    // 则保留上一份可用数据——`reload()` 正是这条路径的调用点（Task 3 的 `sections/engine.ts`
+    // 删档案之后的 `renderFromStorage`），所以它必须有读数守着，否则把实现改成"失败就清空"
+    // 或"失败就留着旧的、却看起来像成功"都不会有人发现。
+    await seed({ targetLang: 'zh-Hans' });
+    await store.loadSnapshot();
+    expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
+
+    // 存储被换成比本代码更新的 schema：`loadSettings` 会永久拒绝，光重试没有用。
+    await seed({ targetLang: 'ja', version: CURRENT_VERSION + 1 });
+
+    await expect(store.loadSnapshot()).rejects.toThrow('高于当前支持');
+
+    // ① 保留的是"上一次成功那一份"：不是 null，也不是存储里那一份（ja）。
+    expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
+
+    // ② 写没被 null 守卫拦下：它照样读写存储，最后败在版本门禁上而不是 NOT_LOADED。
+    const error = await store.patchSettings({ targetLang: 'en' }).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain('设置还没读出来');
+    expect((error as Error).message).toContain('高于当前支持');
+
+    // ③ 失败没有污染快照，存储也一个字节没动。
+    expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
+    expect((await stored()).targetLang).toBe('ja');
+  });
 });
