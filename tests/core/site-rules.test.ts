@@ -42,22 +42,30 @@ describe('matchSiteRule：主机名匹配语义', () => {
     expect(matchSiteRule([rule('*.example.com', 'never')], ' www.example.com ')).not.toBeNull();
   });
 
-  it('空主机名 / 空模式 / 光杆 *. 一律不匹配', () => {
+  it('空主机名 / 空白模式 / 光杆 *. 一律不匹配', () => {
+    // 主机名为空是**真实可达**的：about:blank、data: 页的 location.hostname 就是 ''。
     expect(matchSiteRule([rule('example.com', 'never')], '')).toBeNull();
-    expect(matchSiteRule([rule('', 'never')], 'example.com')).toBeNull();
+    // 模式侧的输入形态要对着现实写：`pattern.length === 0` 进不来这里（`pickSiteRules`
+    // 在 src/shared/settings.ts 里就把空串条目丢掉了），能活下来的脏数据是**空白 pattern**。
+    expect(matchSiteRule([rule('   ', 'never')], 'example.com')).toBeNull();
     expect(matchSiteRule([rule('*.', 'never')], 'example.com')).toBeNull();
-    expect(matchSiteRule([rule('', 'never')], '')).toBeNull();
+    // 两者都归一化成空的那一组才是 `host === '' || p === ''` 那句判空的见证：
+    // 删掉它，trim 之后的 `'' === ''` 会命中——于是一条空白规则就能盖住 about:blank / data: 页。
+    expect(matchSiteRule([rule('   ', 'never')], '')).toBeNull();
   });
 
   it('光杆 *. 的杀伤面是尾点 FQDN——「example.com.」也不许命中（删守卫的见证用例）', () => {
+    // **顺序是这条用例的一部分**：断言失败会中止整个 `it`，把见证那条放在最前面时，
+    // 删守卫的变异体只会留下 red=1，下面两个对照读数根本不执行——而"对照仍然绿"恰恰是
+    // 复核「杀伤面不是全站」这件事需要的证据。所以对照在前、见证在后。
+    // 对照组：去掉守卫后 `*.` 能命中的也只有尾点那一种输入，**不是**旧注释误称的"全站"；
+    // 子域在有无守卫时都不命中（host.endsWith('.') 为假），这里钉住现状。
+    expect(matchSiteRule([rule('*.', 'never')], 'www.example.com')).toBeNull();
+    expect(matchSiteRule([rule('*.', 'never')], 'example.com')).toBeNull();
     // 上一条里 `rule('*.') × 'example.com'` 无论有没有 `suffix === ''` 守卫都返回不命中，
     // 它钉得住"光杆写法不匹配常规主机名"这个语义，但**杀不死删守卫的变异体**。
     // 真正能见证守卫存在的输入只有以点结尾的主机名（`new URL` 会保留尾点，是真实形态）。
     expect(matchSiteRule([rule('*.', 'never')], 'example.com.')).toBeNull();
-    // 对照组：去掉守卫后 `*.` 能命中的也只有上面那种输入，**不是**旧注释误称的"全站"；
-    // 子域在有无守卫时都不命中（host.endsWith('.') 为假），这里钉住现状。
-    expect(matchSiteRule([rule('*.', 'never')], 'www.example.com')).toBeNull();
-    expect(matchSiteRule([rule('*.', 'never')], 'example.com')).toBeNull();
   });
 
   it('自上而下首条命中即生效，顺序就是优先级', () => {
