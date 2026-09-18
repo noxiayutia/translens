@@ -1,6 +1,7 @@
 // src/content/index.ts
 import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
+import { isNeverTranslate } from '../core/site-rules';
 import { RETRYABLE_CODES } from '../engines/types';
 import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
@@ -377,10 +378,26 @@ async function translatePage(): Promise<void> {
   // 页面脚本本来就访问不到它的堆——残留风险接近 0。真正的结构性隔离要把 apiKey 拆成
   // 独立存储键（属后续工作，本版本未做，别按"密钥绝不进网页内存"来理解）。
   // 本文件用到的 targetLang / displayMode / concurrency / maxBatchChars /
-  // maxSegmentsPerBatch 全在投影里。
+  // maxSegmentsPerBatch / siteRules 全在投影里（siteRules 供下面那道「永不翻译」闸用）。
   const settings: UiSettings = await loadUiSettings();
   // 等待设置读取期间可能已经被还原/被接管：安静退出，不碰任何状态。
   if (mine !== generation) return;
+
+  // 站点规则：命中「永不翻译」时不采集、不发任何请求（规格 2026-09-18 §5）。
+  // 只拦这一处就够——右键菜单、Alt+T、弹窗按钮三个入口都汇到 translatePage()。
+  // 划词与悬停**故意不受约束**：那是用户主动发起的单段翻译，与"这站整页不该翻"是两件事。
+  // 位置必须在采集之前：采集有副作用（写 data-jy-id / data-jy-translated），
+  // 拦晚了会把一个"不该翻"的页面永久标成已处理（变异验证：挪到 collectSegments 之后，
+  // 本用例的 innerHTML 断言读到的就是 `<p data-jy-id="jy-1-…" data-jy-translated>`）。
+  // `running = false` **不能省**：这一轮已经认领过守卫（上面 running = true），
+  // 提前 return 不复位就是"第二次按 Alt+T 静默什么都不发生"那个 bug 的复发——
+  // 用户解除规则后再也翻不动了，而且没有任何提示（变异验证：删掉这行，只有那条用例红）。
+  // 世代号这里不用管：从上一个守卫到这里没有 await，我仍然是当前世代（只有 restorePage 能推进它）。
+  if (isNeverTranslate(settings.siteRules, location.hostname)) {
+    running = false;
+    toast('此站已设为「永不翻译」，可在设置 › 站点规则里解除');
+    return;
+  }
 
   // 页面级假名判定：**采集之前**对整页文本扫这一次（见 pageKanaSnapshot 的注释），
   // 本轮整页与后续增量共用这份结果。

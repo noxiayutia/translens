@@ -1551,3 +1551,168 @@ describe('内容脚本编排：重试语言跟随页面快照', () => {
     expect(requests[1]?.payload.targetLang).toBe('zh-Hans');
   });
 });
+
+/**
+ * 站点规则「永不翻译」在内容脚本里的**唯一**拦截点（规格 2026-09-18 §5 与 §11）。
+ *
+ * 夹具一律沿用本文件已有的三样，不另造机制：
+ * ① 写设置 = `chromeStub.storage.local.set({ [SETTINGS_KEY]: { … } })`（设置每轮翻译现读，
+ *    所以同一条用例中间还能改它——第 4 条就靠这个模拟"用户去设置页解除规则"）；
+ * ② 派发消息 = `dispatch(contentListener, MSG.*)`；
+ * ③ "零请求" = `translateRequests(worker)`（对端替身真实收到的 TRANSLATE_TEXTS 条数）。
+ * toast 的读法也用文件里到处都在用的那句
+ * `document.getElementById('jy-toast')?.shadowRoot?.textContent`：已有的 `toastText()`
+ * 只住在"页面级提示择一"那个 describe 内部，在本 describe 的作用域之外。
+ *
+ * 主机名由 `vi.stubGlobal('location', …)` 控制（实测本仓库 jsdom + vitest 5 下 `location`
+ * 是可配置的访问器，stub 与 `unstubAllGlobals()` 都生效）。每条用例自己 stub、自己 unstub，
+ * 且本 describe 住在文件末尾：即使某条在断言上失败而没走到 `unstubAllGlobals()`，
+ * 也没有后续用例被污染。
+ */
+describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译', () => {
+  it('站点规则命中 never：不采集、零请求、给一句能读懂的话', async () => {
+    // 主机名要可控：内容脚本读的是 location.hostname。
+    vi.stubGlobal('location', { hostname: 'blocked.example.com' });
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        siteRules: [{ pattern: '*.example.com', action: 'never' }],
+      },
+    });
+    // 页面上必须有**本来会被翻走**的内容，否则"零请求"可能只是"没东西可翻"的同义反复。
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    const before = document.body.innerHTML;
+
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(translateRequests(worker).length).toBe(0); // 一个翻译请求都不许发出去
+    expect(document.body.innerHTML).toBe(before); // 一个字节都不许多（采集的副作用也没落地）
+    const toastText = document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '';
+    expect(toastText).toContain('永不翻译');
+    // 光有"永不翻译"三个字不够：得告诉用户去哪儿解除，否则这是一句查不出原因的拒绝。
+    expect(toastText).toContain('站点规则');
+    // 采集没跑 → 连 `data-jy-id` / `data-jy-translated` 这类"已处理"标记都不该留下
+    // （innerHTML 相等已经覆盖，这里点名是因为这几处标记是"拦晚了就永久脏掉页面"的东西）。
+    // 查询限定在 body 内：toast 自己就带 `data-jy-root` 且有意挂在 documentElement 上，
+    // 从 document 往下找会把那句提示当成一个残留的译文宿主。
+    expect(
+      document.body.querySelector('[data-jy-id],[data-jy-translated],[data-jy-root],[data-jy-originals]'),
+    ).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('站点规则是 translate 动作时不拦（今天它没有可观察行为）', async () => {
+    vi.stubGlobal('location', { hostname: 'other.example.com' });
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        siteRules: [{ pattern: 'other.example.com', action: 'translate' }],
+      },
+    });
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(translateRequests(worker).length).toBeGreaterThan(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('还原不受规则约束：已翻译的页面命中 never 也要能撤掉', async () => {
+    vi.stubGlobal('location', { hostname: 'blocked.example.com' });
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+    // 先让页面处于已翻译状态（这条用例的前提是"规则落地时页面已经翻了"：
+    // never 规则在翻译完成后才写进存储，正是用户"翻完这站好烦，去设置里拉黑"的真实顺序）。
+    await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+    expect(hosts()).toHaveLength(1);
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        siteRules: [{ pattern: '*.example.com', action: 'never' }],
+      },
+    });
+
+    // TOGGLE_PAGE 在已翻译时走 restorePage()，不经过 translatePage()：撤掉翻译不需要规则许可。
+    await dispatch(contentListener, MSG.TOGGLE_PAGE);
+
+    expect(document.querySelector('[data-jy-root]')).toBeNull();
+    expect(hosts()).toHaveLength(0);
+    // 还原也没有顺手再起一轮"被拦掉的"翻译：请求数还是翻译那一轮的那 1 条。
+    expect(translateRequests(worker)).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 本 describe 最有价值的一条：**被拦下不等于把守卫卡住**。
+   *
+   * `translatePage()` 提前 return 之前必须把 `running` 收回 false，否则下一次翻译会被
+   * 它自己的入口守卫静默吞掉——用户"解除规则后再按 Alt+T"看到的就是一片安静。
+   * 这个 bug 本仓库真踩过（`restorePage()` 漏清 running，Alt+T 连按两下没反应），
+   * 一个忘了复位的早退就是它换了个入口复发。删掉实现里那行 `running = false` 必须让这条红。
+   */
+  it('命中 never 被拦下之后守卫已收回：解除规则再触发一次要真的翻译', async () => {
+    vi.stubGlobal('location', { hostname: 'blocked.example.com' });
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        siteRules: [{ pattern: '*.example.com', action: 'never' }],
+      },
+    });
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    // 第一轮：拦住，页面仍未翻译。
+    expect((await dispatch(contentListener, MSG.TRANSLATE_PAGE)).translated).toBe(false);
+    expect(translateRequests(worker)).toHaveLength(0);
+
+    // 用户去设置页把这条规则删掉（存储现读，等同真机上的"解除后再按一下"）。
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: { version: CURRENT_VERSION, siteRules: [] },
+    });
+
+    // 第二轮：必须真的跑起来，而不是被卡住的 running 悄悄吞掉。
+    const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
+
+    expect(translateRequests(worker)).toHaveLength(1);
+    expect(hosts()).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 划词**故意**不受本规则约束（规格 §11 已与用户确认：那是用户逐次主动发起的单段翻译，
+   * 与"这站整页不该翻"是两件事）。这条钉的是别把闸拦到 `TRANSLATE_SELECTION` 分支上去。
+   */
+  it('命中 never 的站上右键划词照常翻：规则只管整页', async () => {
+    vi.stubGlobal('location', { hostname: 'blocked.example.com' });
+    await chromeStub.storage.local.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        siteRules: [{ pattern: '*.example.com', action: 'never' }],
+      },
+    });
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const result = dispatchIgnored(contentListener, {
+      type: MSG.TRANSLATE_SELECTION,
+      payload: { text: 'Hello world' },
+    });
+    expect(result.responded).toBe(true);
+    await settle();
+
+    expect(sentBatches(worker).flat().map((item) => item.text)).toEqual(['Hello world']);
+    expect(document.querySelector('[data-jy-tooltip]')?.shadowRoot?.textContent).toContain('译:Hello world');
+    // 页面一个字节都不动：划词本来就不写页面，规则也不该把它一起掐掉。
+    expect(document.body.innerHTML).toBe('<p>Hello world</p>');
+    vi.unstubAllGlobals();
+  });
+});
