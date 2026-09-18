@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>浸译 · 设置页信息架构原型（A/B/C 可切换）</title>
+<style>
+/* ===== 与 src/options/options.css 逐字一致的设计令牌（亮/暗各一套） ===== */
+:root{
+  color-scheme: light dark;
+  --surface:#ffffff; --surface-2:#f6f7f9; --surface-3:#eceef2;
+  --border:rgba(0,0,0,.1); --border-strong:rgba(0,0,0,.18);
+  --text:#1a1d21; --text-2:#5b6470; --text-3:#8b93a0;
+  --accent:#2563eb; --accent-hover:#1d4ed8; --accent-weak:rgba(37,99,235,.1);
+  --ok:#16794a; --danger:#c0342b;
+  --shadow-card:0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.06);
+  --radius-sm:6px; --radius-md:10px; --radius-pill:999px;
+}
+@media (prefers-color-scheme: dark){ :root{
+  --surface:#1c1f23; --surface-2:#262a2f; --surface-3:#30353b;
+  --border:rgba(255,255,255,.12); --border-strong:rgba(255,255,255,.2);
+  --text:#e8eaed; --text-2:#a8b0bb; --text-3:#7d858f;
+  --accent:#4d8df6; --accent-hover:#6ba1ff; --accent-weak:rgba(77,141,246,.16);
+  --ok:#4ade80; --danger:#f87171;
+  --shadow-card:0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.36);
+}}
+
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:var(--surface-2)}
+code{font:12.5px/1.5 ui-monospace,Consolas,monospace;background:var(--surface-3);padding:1px 5px;border-radius:4px}
+
+/* ===== 原型切换条（纯 CSS，radio 驱动，无 JS） ===== */
+input[name=proto]{position:absolute;opacity:0;pointer-events:none}
+.switchbar{position:sticky;top:0;z-index:50;background:var(--surface);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.switchbar .cap{font-size:12px;color:var(--text-3);margin-right:6px;letter-spacing:.02em}
+.switchbar label{font-size:13px;padding:6px 13px;border-radius:var(--radius-pill);border:1px solid var(--border);color:var(--text-2);cursor:pointer;user-select:none}
+.switchbar label:hover{border-color:var(--border-strong);color:var(--text)}
+#p-a:checked ~ .switchbar label[for=p-a],
+#p-b:checked ~ .switchbar label[for=p-b],
+#p-c:checked ~ .switchbar label[for=p-c]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.verdict{margin-left:auto;font-size:12px;color:var(--text-3)}
+.stage{display:none}
+#p-a:checked ~ #stage-a,#p-b:checked ~ #stage-b,#p-c:checked ~ #stage-c{display:block}
+.note{max-width:960px;margin:16px auto 0;padding:0 24px;font-size:13px;color:var(--text-2)}
+.note b{color:var(--text)}
+
+/* ===== 共用组件 ===== */
+h1{font-size:20px;margin:0 0 2px;letter-spacing:-.01em}
+.sub{color:var(--text-2);font-size:13px;margin:0}
+h2{font-size:15px;margin:0 0 3px;letter-spacing:-.005em}
+h3{font-size:13.5px;margin:18px 0 6px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:18px 20px;margin-bottom:14px;box-shadow:var(--shadow-card)}
+.hint{color:var(--text-2);font-size:12.5px;margin:0 0 12px}
+.field{display:flex;align-items:center;gap:12px;margin:9px 0}
+.field>span:first-child{min-width:104px;color:var(--text-2);font-size:13px}
+select,input[type=text],input[type=url],input[type=number],textarea{
+  font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);padding:6px 9px;min-width:0}
+select:focus-visible,input:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+textarea{width:100%;resize:vertical}
+button{font:inherit;cursor:pointer;border-radius:var(--radius-sm);padding:6px 14px;border:1px solid transparent}
+.primary{background:var(--accent);color:#fff;font-weight:600}
+.primary:hover{background:var(--accent-hover)}
+.ghost{background:transparent;border-color:var(--border-strong);color:var(--text-2)}
+.ghost:hover{color:var(--text);border-color:var(--text-3)}
+.tiny{font-size:12px;padding:3px 9px}
+.row{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)}
+.row:first-of-type{border-top:none}
+.row .grow{flex:1;min-width:0}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+.dot.off{background:var(--text-3)}
+.pill{font-size:11px;padding:2px 8px;border-radius:var(--radius-pill);background:var(--accent-weak);color:var(--accent);font-weight:600;flex:none}
+.sw{width:34px;height:20px;border-radius:var(--radius-pill);background:var(--accent);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.sw.off{background:var(--border-strong)}
+.sw.off::after{right:auto;left:2px}
+.kv{display:flex;gap:8px;align-items:baseline;font-size:12.5px;color:var(--text-2);margin:2px 0}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--text-2)}
+.stat{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 14px}
+.stat div{font-size:12px;color:var(--text-3)}
+.stat b{display:block;font-size:19px;color:var(--text);font-weight:650;letter-spacing:-.02em}
+details{border-top:1px solid var(--border);padding-top:8px;margin-top:10px}
+summary{cursor:pointer;font-size:12.5px;color:var(--accent);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";}
+details[open] summary::before{content:"▾ "}
+details p{font-size:12.5px;color:var(--text-2);margin:8px 0 0}
+
+/* ===== A：左锚点导航 + 单列长滚动 ===== */
+.a-wrap{max-width:1080px;margin:0 auto;padding:26px 24px 80px;display:grid;grid-template-columns:196px 1fr;gap:30px;align-items:start}
+.a-nav{position:sticky;top:62px}
+.a-nav a{display:block;padding:6px 11px;border-radius:var(--radius-sm);color:var(--text-2);text-decoration:none;font-size:13px}
+.a-nav a:hover{background:var(--surface);color:var(--text)}
+.a-nav a.on{background:var(--accent-weak);color:var(--accent);font-weight:600}
+.a-nav .grp{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:16px 0 4px 11px}
+
+/* ===== B：左分组导航 + 右单组详情 ===== */
+.b-wrap{max-width:1080px;margin:0 auto;padding:26px 24px 80px;display:grid;grid-template-columns:224px 1fr;gap:0;align-items:stretch;min-height:70vh}
+.b-nav{border-right:1px solid var(--border);padding-right:18px}
+.b-nav button{display:flex;justify-content:space-between;width:100%;text-align:left;background:none;border:none;padding:8px 11px;border-radius:var(--radius-sm);color:var(--text-2);font-size:13px}
+.b-nav button:hover{background:var(--surface)}
+.b-nav button.on{background:var(--accent);color:#fff;font-weight:600}
+.b-nav button .n{font-size:11px;opacity:.7}
+.b-main{padding-left:30px}
+.b-head{margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.b-head p{margin:4px 0 0;font-size:13px;color:var(--text-2)}
+.b-foot{margin-top:22px;padding-top:14px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center}
+
+/* ===== C：单列 + 折叠面板 ===== */
+.c-wrap{max-width:780px;margin:0 auto;padding:26px 24px 80px}
+.c-head{margin-bottom:18px}
+.acc{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);margin-bottom:8px;overflow:hidden;box-shadow:var(--shadow-card)}
+.acc>button{display:flex;width:100%;align-items:center;gap:12px;background:none;border:none;padding:14px 18px;text-align:left}
+.acc>button:hover{background:var(--surface-2)}
+.acc .t{font-size:14px;font-weight:600;flex:none}
+.acc .s{font-size:12.5px;color:var(--text-3);margin-left:auto;text-align:right;flex:none}
+.acc .chev{color:var(--text-3);font-size:11px;flex:none}
+.acc.open{border-color:var(--border-strong)}
+.acc.open>button{border-bottom:1px solid var(--border)}
+.acc .body{padding:16px 18px 18px}
+.acc .ico{width:26px;height:26px;border-radius:var(--radius-sm);background:var(--surface-3);display:grid;place-items:center;font-size:13px;flex:none;color:var(--text-2)}
+</style>
+</head>
+<body>
+
+<input type="radio" name="proto" id="p-a" checked /><input type="radio" name="proto" id="p-b" /><input type="radio" name="proto" id="p-c" />
+
+<div class="switchbar">
+  <span class="cap">信息架构原型</span>
+  <label for="p-a">A · 锚点长滚动</label>
+  <label for="p-b">B · 左导航单组详情</label>
+  <label for="p-c">C · 单列折叠面板</label>
+  <span class="verdict">三套内容完全相同，只是版式不同 —— 点标签切换对比</span>
+</div>
+
+<!-- ============================ A ============================ -->
+<div class="stage" id="stage-a">
+  <p class="note"><b>A · 左锚点导航 + 单列长滚动</b>（Chrome 自带设置页的做法）：右侧一条到底，左侧导航点击跳转、滚动时高亮当前区块。<b>优点</b>：与扩展现有取向最贴（现有 CSS 注释就写着「贴近浏览器原生」）、所有设置可搜索可 Ctrl+F、不需要"保存"这个动作的心智负担。<b>代价</b>：区块变 8 个以后滚动距离长；小窗口下左侧导航会挤。</p>
+  <div class="a-wrap">
+    <nav class="a-nav">
+      <div class="grp">翻译</div>
+      <a class="on" href="#">翻译引擎</a>
+      <a href="#">语言与显示</a>
+      <a href="#">快捷翻译</a>
+      <div class="grp">内容控制</div>
+      <a href="#">术语表</a>
+      <a href="#">站点规则</a>
+      <a href="#">自定义提示词</a>
+      <div class="grp">数据</div>
+      <a href="#">缓存与请求</a>
+      <a href="#">隐私</a>
+    </nav>
+    <div>
+      <div style="margin-bottom:20px"><h1>浸译 设置</h1><p class="sub">翻译引擎、显示方式、术语与站点规则</p></div>
+
+      <section class="card">
+        <h2>翻译引擎</h2>
+        <p class="hint">一个档案 = 接口地址 + 模型名 + API Key（OpenAI 兼容协议）。<span class="pill">当前使用：我的接口</span></p>
+        <div class="row"><span class="dot"></span><div class="grow"><b>我的接口</b><div class="kv"><span class="mono">https://uaapi.pro/v1</span> · <span class="mono">gemini-3.8-flash</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+        <div class="row"><span class="dot"></span><div class="grow"><b>DeepSeek</b><div class="kv"><span class="mono">https://api.deepseek.com/v1</span> · <span class="mono">deepseek-chat</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+        <div class="row"><span class="dot off"></span><div class="grow"><b>Ollama（本机）</b><div class="kv"><span class="mono">http://127.0.0.1:11434/v1</span> · <span class="mono">qwen2.5:14b</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+        <div style="margin-top:12px"><button class="ghost tiny">+ 新增档案</button></div>
+      </section>
+
+      <section class="card">
+        <h2>语言与显示</h2>
+        <div class="field"><span>目标语言</span><select><option>简体中文</option><option>繁體中文</option><option>English</option><option>日本語</option></select></div>
+        <div class="field"><span>源语言</span><select><option>自动检测</option><option>English</option><option>日本語</option></select></div>
+        <div class="field"><span>显示模式</span><select><option>仅译文（隐藏原文）</option><option>双语对照</option></select></div>
+        <p class="hint" style="margin-top:10px">「仅译文」只显示译文，段落里的链接保留可点击与下划线；按 <code>Alt+T</code> 随时还原整页。</p>
+      </section>
+
+      <section class="card">
+        <h2>快捷翻译</h2>
+        <div class="row"><div class="grow"><b>悬停翻译</b><div class="kv">按住 <code>Shift</code> 指向段落，约 180ms 后浮层显示译文</div></div><span class="sw"></span></div>
+        <div class="row"><div class="grow"><b>划词翻译</b><div class="kv">选中 1~2000 字符后在选区下方弹气泡，可复制 / 朗读</div></div><span class="sw"></span></div>
+        <div class="row"><div class="grow"><b>快捷键与右键菜单</b><div class="kv"><code>Alt+T</code> 翻译整页 · <code>Alt+Shift+点击</code> 诊断这块为什么没翻</div></div><button class="ghost tiny">去浏览器设置</button></div>
+      </section>
+
+      <section class="card">
+        <h2>术语表</h2>
+        <p class="hint">强制按你指定的译法翻译，优先于模型自己的判断。改完即生效。</p>
+        <div class="row"><input type="text" value="serverless" style="flex:1" /><span style="color:var(--text-3)">→</span><input type="text" value="无服务器" style="flex:1" /><button class="ghost tiny">删除</button></div>
+        <div class="row"><input type="text" value="droplet" style="flex:1" /><span style="color:var(--text-3)">→</span><input type="text" value="云主机" style="flex:1" /><button class="ghost tiny">删除</button></div>
+        <div style="margin-top:12px"><button class="ghost tiny">+ 添加术语</button></div>
+      </section>
+
+      <section class="card">
+        <h2>站点规则</h2>
+        <p class="hint">按域名决定翻不翻。规则自上而下匹配，第一条命中即生效。</p>
+        <div class="row"><input type="text" value="*.bilibili.com" style="flex:1" /><select><option>永不翻译</option><option>总是翻译</option></select><button class="ghost tiny">删除</button></div>
+        <div class="row"><input type="text" value="docs.kernel.org" style="flex:1" /><select><option>总是翻译</option><option>永不翻译</option></select><button class="ghost tiny">删除</button></div>
+        <div style="margin-top:12px;display:flex;gap:10px"><button class="ghost tiny">+ 添加规则</button><button class="ghost tiny">从当前页面填入</button></div>
+      </section>
+
+      <section class="card">
+        <h2>自定义提示词</h2>
+        <p class="hint">追加到系统提示，用来固定语气与文体。留空用内置提示词。</p>
+        <textarea rows="3">IT 术语保留英文原文，不强行翻译；数字与单位不改动。</textarea>
+      </section>
+
+      <section class="card">
+        <h2>缓存与请求</h2>
+        <div class="stat"><div><b>1,284</b>已缓存段落</div><div><b>5,000</b>缓存上限</div><div><b>3</b>并发请求</div></div>
+        <div class="field"><span>缓存上限</span><input type="number" value="5000" style="width:110px" /><span class="hint" style="margin:0">条，超出后按最久未用淘汰</span></div>
+        <details>
+          <summary>高级：单次请求的批量大小与并发</summary>
+          <div class="field"><span>并发数</span><input type="number" value="3" min="1" max="8" style="width:90px" /><span class="hint" style="margin:0">1–8，接口限流严就调低</span></div>
+          <div class="field"><span>单批字符</span><input type="number" value="1000" min="200" max="8000" style="width:90px" /><span class="hint" style="margin:0">200–8000</span></div>
+          <div class="field"><span>单批段数</span><input type="number" value="12" min="1" max="50" style="width:90px" /><span class="hint" style="margin:0">1–50</span></div>
+        </details>
+        <div style="margin-top:14px"><button class="ghost tiny">清除翻译缓存</button></div>
+      </section>
+
+      <section class="card">
+        <h2>隐私</h2>
+        <div class="row"><div class="grow"><b>API Key 只存在本机</b><div class="kv">不上传、不同步、不写日志；发给内容脚本的设置里根本没有这个字段</div></div></div>
+        <div class="row"><div class="grow"><b>除翻译请求外零网络请求</b><div class="kv">不采集浏览数据，不做统计上报</div></div></div>
+        <div class="row"><div class="grow"><b>只送可见文本</b><div class="kv">隐藏区域与正在编辑的草稿一律不采集</div></div></div>
+        <details><summary>密钥隔离做到哪一步（如实说明）</summary><p>这是「字段隔离 + isolated world」，不是内存级隔离——读取设置的瞬间，密钥仍会随整份设置经过扩展自己的 isolated world 堆。彻底的结构性隔离要把密钥拆成独立存储键，属后续工作。</p></details>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ B ============================ -->
+<div class="stage" id="stage-b">
+  <p class="note"><b>B · 左分组导航 + 右侧单组详情</b>（VS Code 设置 / 路由器后台的做法）：一次只显示一组，右侧内容短、任务聚焦。<b>优点</b>：8 个区块也不嫌长，术语表/站点规则这种编辑器有整屏空间。<b>代价</b>：不能一眼扫到全部、跨组对比要来回点；「当前在哪一组」需要额外状态。</p>
+  <div class="b-wrap">
+    <nav class="b-nav">
+      <div class="grp" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:4px 0 8px 11px">翻译</div>
+      <button class="on">翻译引擎 <span class="n">3</span></button>
+      <button>语言与显示</button>
+      <button>快捷翻译 <span class="n">2</span></button>
+      <div class="grp" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:14px 0 8px 11px">内容控制</div>
+      <button>术语表 <span class="n">2</span></button>
+      <button>站点规则 <span class="n">0</span></button>
+      <button>自定义提示词</button>
+      <div class="grp" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:14px 0 8px 11px">数据</div>
+      <button>缓存与请求</button>
+      <button>隐私</button>
+    </nav>
+    <div class="b-main">
+      <div class="b-head"><h1>翻译引擎</h1><p>一个档案 = 接口地址 + 模型名 + API Key，走 OpenAI 兼容协议。配好几个后可在弹窗里按名字直接切换。</p></div>
+      <div class="row"><span class="dot"></span><div class="grow"><b>我的接口</b> <span class="pill">使用中</span><div class="kv"><span class="mono">https://uaapi.pro/v1</span> · <span class="mono">gemini-3.8-flash</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+      <div class="row"><span class="dot"></span><div class="grow"><b>DeepSeek</b><div class="kv"><span class="mono">https://api.deepseek.com/v1</span> · <span class="mono">deepseek-chat</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+      <div class="row"><span class="dot off"></span><div class="grow"><b>Ollama（本机）</b><div class="kv"><span class="mono">http://127.0.0.1:11434/v1</span> · <span class="mono">qwen2.5:14b</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+      <div class="b-foot"><button class="ghost tiny">+ 新增档案</button><button class="ghost tiny">从模板预填</button><span style="margin-left:auto;font-size:12px;color:var(--text-3)">档案的访问授权在点「保存档案」时按它自己的地址申请</span></div>
+      <div class="card" style="margin-top:26px">
+        <h3 style="margin:0 0 8px">编辑：我的接口</h3>
+        <div class="field"><span>名称</span><input type="text" value="我的接口" style="flex:1" /></div>
+        <div class="field"><span>接口地址</span><input type="url" value="https://uaapi.pro/v1" style="flex:1" /></div>
+        <div class="field"><span>模型名</span><input type="text" value="gemini-3.8-flash" style="flex:1" /></div>
+        <div class="field"><span>API Key</span><input type="password" placeholder="（留空保存 = 保留原 Key）" style="flex:1" /></div>
+        <div style="display:flex;gap:10px;margin-top:14px"><button class="primary tiny">保存档案</button><button class="ghost tiny">取消</button><button class="ghost tiny" style="margin-left:auto;color:var(--danger);border-color:var(--border)">删除此档案</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ C ============================ -->
+<div class="stage" id="stage-c">
+  <p class="note"><b>C · 单列 + 折叠面板</b>（GitHub 设置 / 系统偏好设置的做法）：每组默认收起，标题右侧直接显示摘要（「3 个档案 · 当前：我的接口」），点开才编辑。<b>优点</b>：一屏看全 8 个区块且各不占地方，窄窗口最稳，摘要本身就是状态总览。<b>代价</b>：改任何一项都要多点一次；折叠状态要记住（存 storage 否则每次回到全收）。</p>
+  <div class="c-wrap">
+    <div class="c-head"><h1>浸译 设置</h1><p class="sub">翻译引擎、显示方式、术语与站点规则</p></div>
+
+    <div class="acc open">
+      <button><span class="ico">⚙</span><span class="t">翻译引擎</span><span class="s">3 个档案 · 当前：我的接口</span><span class="chev">▾</span></button>
+      <div class="body">
+        <div class="row"><span class="dot"></span><div class="grow"><b>我的接口</b><div class="kv"><span class="mono">https://uaapi.pro/v1</span> · <span class="mono">gemini-3.8-flash</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+        <div class="row"><span class="dot"></span><div class="grow"><b>DeepSeek</b><div class="kv"><span class="mono">https://api.deepseek.com/v1</span> · <span class="mono">deepseek-chat</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+        <div class="row"><span class="dot off"></span><div class="grow"><b>Ollama（本机）</b><div class="kv"><span class="mono">http://127.0.0.1:11434/v1</span> · <span class="mono">qwen2.5:14b</span></div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button></div>
+        <div style="margin-top:12px"><button class="ghost tiny">+ 新增档案</button></div>
+      </div>
+    </div>
+
+    <div class="acc"><button><span class="ico">文</span><span class="t">语言与显示</span><span class="s">简体中文 · 仅译文</span><span class="chev">▸</span></button></div>
+    <div class="acc"><button><span class="ico">⌥</span><span class="t">快捷翻译</span><span class="s">悬停 开 · 划词 开</span><span class="chev">▸</span></button></div>
+    <div class="acc"><button><span class="ico">Aa</span><span class="t">术语表</span><span class="s">2 条 · serverless → 无服务器</span><span class="chev">▸</span></button></div>
+    <div class="acc"><button><span class="ico">@</span><span class="t">站点规则</span><span class="s">未设置</span><span class="chev">▸</span></button></div>
+    <div class="acc"><button><span class="ico">✎</span><span class="t">自定义提示词</span><span class="s">已设置（42 字）</span><span class="chev">▸</span></button></div>
+    <div class="acc"><button><span class="ico">⛁</span><span class="t">缓存与请求</span><span class="s">1,284 / 5,000 条</span><span class="chev">▸</span></button></div>
+    <div class="acc"><button><span class="ico">🛈</span><span class="t">隐私</span><span class="s">Key 仅本机 · 零遥测</span><span class="chev">▸</span></button></div>
+
+    <div class="card" style="margin-top:20px">
+      <h3 style="margin:0 0 6px">C 的关键设计：摘要行</h3>
+      <p class="hint" style="margin:0">收起状态下标题右侧那行灰字不是装饰——它是<b>状态总览</b>：不点开就知道「现在用哪个档案、术语表有没有内容、缓存涨到多少」。这是 A/B 都给不了的。代价是要为每组写一句摘要逻辑，且折叠状态得存住。</p>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

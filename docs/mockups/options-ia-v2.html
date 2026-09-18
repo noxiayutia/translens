@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>浸译 · 设置页 v2（融合 Edge 导航质感 + 一行一卡片列表语言）</title>
+<style>
+/* 与 src/options/options.css 逐字一致的令牌 */
+:root{
+  color-scheme: light dark;
+  --surface:#ffffff; --surface-2:#f6f7f9; --surface-3:#eceef2;
+  --border:rgba(0,0,0,.1); --border-strong:rgba(0,0,0,.18);
+  --text:#1a1d21; --text-2:#5b6470; --text-3:#8b93a0;
+  --accent:#2563eb; --accent-hover:#1d4ed8; --accent-weak:rgba(37,99,235,.1);
+  --ok:#16794a; --danger:#c0342b;
+  --shadow-card:0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.06);
+  --radius-sm:6px; --radius-md:10px; --radius-pill:999px;
+}
+@media (prefers-color-scheme: dark){ :root{
+  --surface:#1c1f23; --surface-2:#262a2f; --surface-3:#30353b;
+  --border:rgba(255,255,255,.12); --border-strong:rgba(255,255,255,.2);
+  --text:#e8eaed; --text-2:#a8b0bb; --text-3:#7d858f;
+  --accent:#4d8df6; --accent-hover:#6ba1ff; --accent-weak:rgba(77,141,246,.16);
+  --ok:#4ade80; --danger:#f87171;
+  --shadow-card:0 1px 2px rgba(0,0,0,.5), 0 8px 24px rgba(0,0,0,.36);
+}}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:var(--surface-2)}
+code{font:12.5px/1.5 ui-monospace,Consolas,monospace;background:var(--surface-3);padding:1px 5px;border-radius:4px}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 28px 90px;display:grid;grid-template-columns:236px 1fr;gap:36px;align-items:start}
+
+/* ---------- 左导航（Edge 质感：图标 + 圆角高亮 + 活动项左侧强调条） ---------- */
+.nav{position:sticky;top:28px}
+.nav .brand{display:flex;align-items:center;gap:9px;margin:0 0 18px;padding:0 10px}
+.nav .brand .glyph{width:24px;height:24px;border-radius:6px;background:var(--accent);display:grid;place-items:center;color:#fff;font-size:12px;font-weight:700;flex:none}
+.nav .brand b{font-size:16px;letter-spacing:-.01em}
+.nav .grp{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);margin:18px 0 5px 12px}
+.nav a{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;color:var(--text-2);text-decoration:none;font-size:13.5px;position:relative}
+.nav a:hover{background:var(--surface);color:var(--text)}
+.nav a.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.nav a.on::before{content:"";position:absolute;left:-1px;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--accent)}
+.nav a .i{width:16px;flex:none;text-align:center;opacity:.8;font-size:13px}
+.nav .foot{margin-top:24px;padding:0 4px;font-size:11.5px;color:var(--text-3);line-height:1.5}
+
+/* ---------- 主列 ---------- */
+main{min-width:0}
+.search{position:relative;margin-bottom:26px}
+.search input{width:100%;padding:10px 12px 10px 36px;font:inherit;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:var(--shadow-card)}
+.search .mag{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-3);font-size:14px}
+
+.sec{margin-bottom:30px}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.sec-head h2{font-size:15px;margin:0;letter-spacing:-.005em}
+.sec-head .act{margin-left:auto}
+.sec-desc{font-size:12.5px;color:var(--text-2);margin:0 0 14px}
+
+/* ---------- 一行一卡片（参考图 2） ---------- */
+.item{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:13px 16px;margin-bottom:9px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.item .name{font-weight:600;font-size:14px}
+.item .meta{font-size:11.5px;color:var(--text-3);font-family:ui-monospace,Consolas,monospace;margin-top:2px;word-break:break-all}
+.item .grow{flex:1;min-width:0}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;display:inline-block;vertical-align:1px;margin-left:2px}
+.dot.idle{background:var(--text-3)}
+.dot.bad{background:var(--danger)}
+.badge{font-size:11px;padding:1px 7px;border-radius:var(--radius-pill);border:1px solid var(--border-strong);color:var(--text-2);font-weight:400;vertical-align:2px;margin-left:6px}
+.link-danger{background:none;border:none;color:var(--danger);font-size:13px;padding:4px 8px}
+.link-danger:hover{text-decoration:underline}
+
+/* ---------- 分组卡片内的行（Edge 的成组设置） ---------- */
+.group{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.grow2{display:flex;align-items:center;gap:14px;padding:13px 16px;border-top:1px solid var(--border)}
+.grow2:first-child{border-top:none}
+.grow2 .lab{flex:1;min-width:0}
+.grow2 .lab b{font-weight:500;font-size:13.5px;display:block}
+.grow2 .lab span{font-size:12px;color:var(--text-3)}
+.grow2:hover{background:var(--surface-2)}
+
+button{font:inherit;cursor:pointer;border-radius:var(--radius-sm);padding:6px 13px;border:1px solid transparent}
+.ghost{background:transparent;border-color:var(--border-strong);color:var(--text-2)}
+.ghost:hover{color:var(--text);border-color:var(--text-3)}
+.primary{background:var(--accent);color:#fff;font-weight:600}
+.primary:hover{background:var(--accent-hover)}
+.tiny{font-size:12.5px;padding:4px 11px}
+.add{width:100%;background:transparent;border:1.5px dashed var(--border-strong);border-radius:var(--radius-md);color:var(--text-2);padding:11px;font-size:13.5px;margin-top:2px}
+.add:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-weak)}
+.addrow{display:flex;gap:9px}
+.addrow .add{flex:1}
+
+select,input[type=text],input[type=url],input[type=number],textarea{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:5px 8px;min-width:0}
+textarea{width:100%;resize:vertical;font-size:13px}
+.sw{width:36px;height:21px;border-radius:var(--radius-pill);background:var(--accent);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;right:2px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3)}
+.sw.off{background:var(--border-strong)}
+.sw.off::after{right:auto;left:2px}
+
+.stat{display:flex;gap:26px;flex-wrap:wrap;margin-bottom:14px}
+.stat div{font-size:11.5px;color:var(--text-3)}
+.stat b{display:block;font-size:20px;color:var(--text);font-weight:650;letter-spacing:-.02em}
+details{margin-top:10px}
+summary{cursor:pointer;font-size:12.5px;color:var(--accent);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ "}
+details[open] summary::before{content:"▾ "}
+details p{font-size:12.5px;color:var(--text-2);margin:8px 0 0}
+.field{display:flex;align-items:center;gap:10px;padding:13px 16px;border-top:1px solid var(--border)}
+.field:first-child{border-top:none}
+.field .lab{flex:1;font-size:13.5px}
+.field .lab span{display:block;font-size:12px;color:var(--text-3)}
+.note{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius-sm);padding:11px 14px;font-size:12.5px;color:var(--text-2);margin-bottom:26px}
+.note b{color:var(--text)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="nav">
+    <div class="brand"><span class="glyph">浸</span><b>浸译</b></div>
+    <div class="grp">翻译</div>
+    <a class="on" href="#"><span class="i">⚙</span>翻译引擎</a>
+    <a href="#"><span class="i">文</span>语言与显示</a>
+    <a href="#"><span class="i">⌥</span>快捷翻译</a>
+    <div class="grp">内容控制</div>
+    <a href="#"><span class="i">Aa</span>术语表</a>
+    <a href="#"><span class="i">@</span>站点规则</a>
+    <a href="#"><span class="i">✎</span>提示词</a>
+    <div class="grp">数据</div>
+    <a href="#"><span class="i">⛁</span>缓存与请求</a>
+    <a href="#"><span class="i">🛈</span>隐私</a>
+    <div class="foot">v0.1.0 · 设置改动即时保存<br>无需点「保存」</div>
+  </nav>
+
+  <main>
+    <div class="search"><span class="mag">⌕</span><input type="text" placeholder="搜索设置" /></div>
+
+    <div class="note"><b>这一版融合了两个参考</b>：左导航取 Edge 的质感（图标、圆角高亮、活动项左侧强调条、成组设置行）；列表取第二张参考的语言（<b>一行一卡片</b>、名称后跟状态点、<b>删除是红字不是按钮</b>、<b>添加是虚线大按钮</b>）。<br>刻意<b>没有</b>抄 Edge 的「搜索次数最多」快捷区——那要记录你的使用行为，与本扩展「零遥测」的承诺冲突。</div>
+
+    <!-- 翻译引擎 -->
+    <section class="sec">
+      <div class="sec-head"><h2>翻译引擎</h2><div class="act"><button class="ghost tiny">+ 新增档案</button></div></div>
+      <p class="sec-desc">一个档案 = 接口地址 + 模型名 + API Key，走 OpenAI 兼容协议。配好几个后可在弹窗里按名字直接切换。</p>
+
+      <div class="item"><div class="grow"><span class="name">我的接口</span><span class="badge">使用中</span><span class="dot" title="最近一次测试连接通过"></span><div class="meta">https://uaapi.pro/v1 · gemini-3.8-flash</div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button><button class="link-danger">删除</button></div>
+      <div class="item"><div class="grow"><span class="name">DeepSeek</span><span class="dot" title="最近一次测试连接通过"></span><div class="meta">https://api.deepseek.com/v1 · deepseek-chat</div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button><button class="link-danger">删除</button></div>
+      <div class="item"><div class="grow"><span class="name">Ollama（本机）</span><span class="dot idle" title="未测试过"></span><div class="meta">http://127.0.0.1:11434/v1 · qwen2.5:14b</div></div><button class="ghost tiny">测试连接</button><button class="ghost tiny">编辑</button><button class="link-danger">删除</button></div>
+      <div class="item"><div class="grow"><span class="name">免费引擎（谷歌）</span><span class="badge">内置</span><span class="dot bad" title="本机网络不可达：translate.googleapis.com 超时"></span><div class="meta">无需 API Key</div></div><button class="ghost tiny">测试连接</button><button class="link-danger" style="visibility:hidden">占位</button></div>
+
+      <details><summary>状态点的语义（三态，不粉饰）</summary><p><b>绿</b> = 最近一次「测试连接」通过；<b>灰</b> = 从没测过（不代表可用，也不代表不可用）；<b>红</b> = 最近一次测试失败，悬停显示失败原因。内置的免费引擎不可删除，所以那一行没有「删除」。</p></details>
+    </section>
+
+    <!-- 语言与显示 -->
+    <section class="sec">
+      <div class="sec-head"><h2>语言与显示</h2></div>
+      <p class="sec-desc">已经翻译过的页面要重新翻译才会套用新设置。</p>
+      <div class="group">
+        <div class="field"><div class="lab">目标语言<span>译文使用的语言</span></div><select><option>简体中文</option><option>繁體中文</option><option>English</option></select></div>
+        <div class="field"><div class="lab">源语言<span>「自动检测」按页面文字判断</span></div><select><option>自动检测</option><option>English</option><option>日本語</option></select></div>
+        <div class="field"><div class="lab">显示模式<span>仅译文：隐藏原文，链接仍可点击</span></div><select><option>仅译文</option><option>双语对照</option></select></div>
+      </div>
+    </section>
+
+    <!-- 快捷翻译 -->
+    <section class="sec">
+      <div class="sec-head"><h2>快捷翻译</h2></div>
+      <div class="group">
+        <div class="grow2"><div class="lab"><b>悬停翻译</b><span>按住 Shift 指向段落，约 180ms 后浮层显示译文；按住 Alt 时暂停</span></div><span class="sw"></span></div>
+        <div class="grow2"><div class="lab"><b>划词翻译</b><span>选中 1~2000 字符后在选区下方弹气泡，可复制 / 朗读</span></div><span class="sw"></span></div>
+        <div class="grow2"><div class="lab"><b>快捷键与右键菜单</b><span>Alt+T 翻译整页 · Alt+Shift+点击 诊断这块为什么没翻</span></div><button class="ghost tiny">去浏览器设置</button></div>
+      </div>
+    </section>
+
+    <!-- 术语表 -->
+    <section class="sec">
+      <div class="sec-head"><h2>术语表</h2></div>
+      <p class="sec-desc">强制按你指定的译法翻译，优先于模型自己的判断。改完即生效。</p>
+      <div class="item"><input type="text" value="serverless" style="flex:1" /><span style="color:var(--text-3)">→</span><input type="text" value="无服务器" style="flex:1" /><button class="link-danger">删除</button></div>
+      <div class="item"><input type="text" value="droplet" style="flex:1" /><span style="color:var(--text-3)">→</span><input type="text" value="云主机" style="flex:1" /><button class="link-danger">删除</button></div>
+      <button class="add">+ 添加术语</button>
+    </section>
+
+    <!-- 站点规则 -->
+    <section class="sec">
+      <div class="sec-head"><h2>站点规则</h2><div class="act"><button class="ghost tiny">从当前页面填入</button></div></div>
+      <p class="sec-desc">按域名决定翻不翻，自上而下匹配，第一条命中即生效。</p>
+      <div class="item"><input type="text" value="*.bilibili.com" style="flex:1" /><select><option>永不翻译</option><option>总是翻译</option></select><button class="link-danger">删除</button></div>
+      <div class="item"><input type="text" value="docs.kernel.org" style="flex:1" /><select><option>总是翻译</option><option>永不翻译</option></select><button class="link-danger">删除</button></div>
+      <button class="add">+ 添加规则</button>
+    </section>
+
+    <!-- 提示词 -->
+    <section class="sec">
+      <div class="sec-head"><h2>自定义提示词</h2></div>
+      <p class="sec-desc">追加到系统提示，用来固定语气与文体。留空使用内置提示词。</p>
+      <textarea rows="3">IT 术语保留英文原文，不强行翻译；数字与单位不改动。</textarea>
+    </section>
+
+    <!-- 缓存与请求 -->
+    <section class="sec">
+      <div class="sec-head"><h2>缓存与请求</h2></div>
+      <div class="stat"><div><b>1,284</b>已缓存段落</div><div><b>5,000</b>缓存上限</div><div><b>3</b>并发请求</div></div>
+      <div class="group">
+        <div class="field"><div class="lab">缓存上限<span>条，超出后按最久未用淘汰</span></div><input type="number" value="5000" style="width:110px" /></div>
+        <div class="grow2"><div class="lab"><b>清除翻译缓存</b><span>同时清掉会话层与持久层，之后所有页面都要重翻一次</span></div><button class="ghost tiny">清除</button></div>
+      </div>
+      <details><summary>高级：批量与并发</summary>
+        <div class="group" style="margin-top:10px">
+          <div class="field"><div class="lab">并发请求数<span>1–8，接口限流严就调低</span></div><input type="number" value="3" style="width:90px" /></div>
+          <div class="field"><div class="lab">单批字符上限<span>200–8000</span></div><input type="number" value="1000" style="width:90px" /></div>
+          <div class="field"><div class="lab">单批段数上限<span>1–50</span></div><input type="number" value="12" style="width:90px" /></div>
+        </div>
+        <p style="font-size:12px;color:var(--text-3);margin-top:8px">这三项默认不用动。放在折叠里而不是删掉，是因为设置里已经有这些字段，藏起来比砍掉便宜。</p>
+      </details>
+    </section>
+
+    <!-- 隐私 -->
+    <section class="sec">
+      <div class="sec-head"><h2>隐私</h2></div>
+      <div class="group">
+        <div class="grow2"><div class="lab"><b>API Key 只存在本机</b><span>不上传、不同步、不写日志；发给内容脚本的设置里根本没有这个字段</span></div></div>
+        <div class="grow2"><div class="lab"><b>除翻译请求外零网络请求</b><span>不采集浏览数据，不做统计上报</span></div></div>
+        <div class="grow2"><div class="lab"><b>只送可见文本</b><span>隐藏区域与正在编辑的草稿一律不采集</span></div></div>
+      </div>
+      <details><summary>密钥隔离做到哪一步（如实说明）</summary><p>这是「字段隔离 + isolated world」，<b>不是内存级隔离</b>——读取设置的瞬间，密钥仍会随整份设置经过扩展自己的 isolated world 堆。彻底的结构性隔离要把密钥拆成独立存储键，属后续工作。</p></details>
+    </section>
+  </main>
+</div>
+</body>
+</html>
