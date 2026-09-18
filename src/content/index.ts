@@ -410,7 +410,7 @@ async function translatePage(): Promise<void> {
   // `const mine = ++generation`，而它被上面那句 `running = true` 挡在门外。
   if (isNeverTranslate(settings.siteRules, location.hostname)) {
     running = false;
-    toast('此站已设为「永不翻译」，可在设置 › 站点规则里解除');
+    toast('此站已设为「永不翻译」，可在扩展弹窗里解除');
     return;
   }
 

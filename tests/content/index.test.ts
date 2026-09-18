@@ -1600,7 +1600,11 @@ describe('内容脚本编排：站点规则「永不翻译」只拦整页翻译'
     const toastText = document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '';
     expect(toastText).toContain('永不翻译');
     // 光有"永不翻译"三个字不够：得告诉用户去哪儿解除，否则这是一句查不出原因的拒绝。
-    expect(toastText).toContain('站点规则');
+    // 解除入口是**扩展弹窗**里那条站点规则提示行的「解除」按钮（Task 3 落的）；这里指名的
+    // 必须是那个真实存在的入口——"设置 › 站点规则"编辑器属单元 B，今天还不存在。
+    expect(toastText).toContain('弹窗');
+    // 反向也钉住：不许再指向设置页（那是把用户指进空处），也不许含糊地只说"设置里"。
+    expect(toastText).not.toContain('设置');
     // 采集没跑 → 连 `data-jy-id` / `data-jy-translated` 这类"已处理"标记都不该留下
     // （innerHTML 相等已经覆盖，这里点名是因为这几处标记是"拦晚了就永久脏掉页面"的东西）。
     // 查询限定在 body 内：toast 自己就带 `data-jy-root` 且有意挂在 documentElement 上，
