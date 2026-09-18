@@ -108,6 +108,45 @@ function stubActiveTabUrl(url: string | undefined): void {
   chromeStub.tabs.activeTabs = [{ id: 7, active: true, currentWindow: true, url }];
 }
 
+/**
+ * 让 `chrome.tabs.query` 的第 `nth` 次调用拒绝，其余照常走替身。
+ *
+ * 真机上它极少拒绝，但一旦拒绝就是一次"未处理的拒绝"——本文件与 `popup.ts` 都明文要求
+ * 这种失败必须变成用户看得见的一句话。按**次数**而不是全局失败：初始化要查两次
+ * （站点规则的主机名、页面状态的 tabId），只让其中一次失败才能观察"另一条路不受影响"。
+ */
+function rejectQueryCall(nth: number): void {
+  const real = chromeStub.tabs.query.bind(chromeStub.tabs);
+  let calls = 0;
+  chromeStub.tabs.query = (queryInfo: unknown) => {
+    calls += 1;
+    if (calls === nth) return Promise.reject(new Error('标签页查询失败'));
+    return real(queryInfo);
+  };
+}
+
+/**
+ * 跑一段代码并收走这期间产生的未处理拒绝。
+ *
+ * `expect(rejections).toEqual([])` 在这几条用例里是**承重**断言：把就地处理的 catch 删掉，
+ * 未处理的拒绝本身不会让任何断言变红（vitest 只在收尾时把它算进退出码），红的是这一条。
+ * 本文件已有一处内联写法（"设置读不出来时不是死弹窗"），这里抽出来给"拒绝必须就地处理"
+ * 那几条用例共用，不动那处既有用例。
+ */
+async function unhandledRejections(run: () => Promise<void>): Promise<unknown[]> {
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown): void => {
+    rejections.push(reason);
+  };
+  process.on('unhandledRejection', onRejection);
+  try {
+    await run();
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+  return rejections;
+}
+
 function mountPopupHtml(): void {
   const html = readFileSync(POPUP_HTML_PATH, 'utf-8');
   const parsed = new DOMParser().parseFromString(html, 'text/html');
@@ -847,6 +886,14 @@ describe('站点规则「永不翻译」：弹窗状态行与一键解除', () =
     (document.getElementById('site-rule-unblock') as HTMLButtonElement).click();
     await waitFor(async () => (await storedSiteRules()).length === 1);
     expect((await storedSiteRules())[0].pattern).toBe('keep.me');
+    // 解除成功的**界面**结果也要钉住：删掉成功分支里那句 `refreshSiteRuleHint()` 或那句
+    // 状态文案，只有这里会红（在这之前，"点完解除界面上发生了什么"是零读数的）。
+    const hint = document.getElementById('site-rule-hint') as HTMLElement;
+    // `=== true` 而不是裸 `hint.hidden`：TS 的 DOM 类型里 `hidden` 是 `boolean | 'until-found'`
+    // （`hidden="until-found"` 那个新形态），裸值不满足 `waitFor` 的 `boolean` 谓词。
+    await waitFor(() => hint.hidden === true);
+    expect(hint.hidden).toBe(true);
+    expect(ui().status.textContent).toBe('已解除，点「翻译此页」开始');
   });
 
   /**
@@ -872,11 +919,106 @@ describe('站点规则「永不翻译」：弹窗状态行与一键解除', () =
     expect((await storedSiteRules()).map((rule) => rule.pattern)).toEqual(['*.example.com', 'keep.me']);
   });
 
+  /**
+   * 「总是翻译」的站点**不许**显示"此站已设为「永不翻译」"。
+   *
+   * 判据必须是 `isNeverTranslate`（只看首条命中的 action），不是"命中了任意一条规则"：
+   * `{pattern, action: 'translate'}` 是合法的 `SiteRule`，把判据写成 `matchSiteRule(...) !== null`
+   * 会在这条夹具上亮起一行彻头彻尾的假话，而其余用例（action 全是 never）一条都不会红。
+   */
+  it('规则是「总是翻译」时不显示：判据是 never，不是"命中任意规则"', async () => {
+    stubActiveTabUrl('https://blocked.example.com/');
+    await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'translate' }] });
+    await loadPopup();
+    expect((document.getElementById('site-rule-hint') as HTMLElement).hidden).toBe(true);
+  });
+
   it('受限页面拿不到 url 时不报错、提示行隐藏', async () => {
     stubActiveTabUrl(undefined); // chrome:// 页面，tab.url 不可得
     await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'never' }] });
-    await loadPopup();
+    const rejections = await unhandledRejections(loadPopup);
+
+    const { status } = ui();
+    expect(rejections).toEqual([]);
     expect((document.getElementById('site-rule-hint') as HTMLElement).hidden).toBe(true);
+    // "拿不到 url"是**正常情况**（每个 chrome:// 页面都这样），不是错误：状态行仍是页面
+    // 状态那句。少了 `activeHostname` 里的 url 守卫，这里会变成一句地址错误——
+    // 每个浏览器内置页面都平白挨一句吓人的话。
+    expect(status.textContent).not.toContain('拿不到当前标签页');
+    expect(status.textContent).toContain('不支持翻译');
+  });
+
+  /**
+   * url 是字符串但**解析不了**：与"拿不到"同等处理。
+   *
+   * 夹具的 url 原文与规则 pattern 故意是同一个串：任何"退回用 url 原文当主机名"的实现
+   * （`catch { return tab.url }` 是最像样的那种写法）都会让这条规则命中、提示行亮起来。
+   * 用例要钉的就是"解析失败不许拿原串硬当主机名"。
+   */
+  it('url 解析不了时不拿原串当主机名：提示行隐藏、不抛错', async () => {
+    stubActiveTabUrl('MUTANT');
+    await seedSettings({ siteRules: [{ pattern: 'MUTANT', action: 'never' }] });
+    const rejections = await unhandledRejections(loadPopup);
+
+    expect(rejections).toEqual([]);
+    expect((document.getElementById('site-rule-hint') as HTMLElement).hidden).toBe(true);
+  });
+
+  /**
+   * 初始化那条链上的拒绝：`start()` 直接 await `refreshSiteRuleHint()`，
+   * **不在 `runSafely` 的保护里**（本文件那条纪律：任何没被就地处理的拒绝都要变成用户
+   * 看得见的一句话）。初始化查两次标签页：第 1 次取 tabId（页面状态），第 2 次取 url
+   * （站点规则），放第 2 次失败。
+   *
+   * 这条用例同时钉住**顺序**：那句话必须是状态行里最后写进去的。把 `refreshSiteRuleHint()`
+   * 挪回 `applySettings` 里 fire-and-forget，紧接着的页面状态渲染会把它盖掉（两处写的是
+   * 同一个 `#status`），这条就红了。
+   */
+  it('初始化时读不到标签页：状态行说出原因，主按钮不受影响、也不留未处理的拒绝', async () => {
+    stubActiveTabUrl('https://blocked.example.com/');
+    await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'never' }] });
+    rejectQueryCall(2);
+    const rejections = await unhandledRejections(loadPopup);
+
+    const { status, toggle } = ui();
+    expect(rejections).toEqual([]);
+    expect(status.textContent).toContain('拿不到当前标签页');
+    // 主按钮照旧按**页面状态**渲染（这里没有内容脚本 → 'unavailable'），不是"重新试一次"：
+    // 读不到标签页地址与"这个页面能不能翻译"是两件事。
+    expect(toggle.textContent).toBe('此页面不可用');
+    expect(toggle.disabled).toBe(true);
+    expect(status.textContent).not.toContain('重新试一次');
+    expect((document.getElementById('site-rule-hint') as HTMLElement).hidden).toBe(true);
+  });
+
+  /**
+   * 点解除那条链上的拒绝：`activeHostname()` 在 try/catch 之外的那次 `tabs.query`。
+   * 读不到标签页就不知道要删哪一条，所以**什么都不删**，但必须说出来。
+   */
+  it('点解除时读不到标签页：说出原因，规则原样留在存储里、提示行还在、主按钮不动', async () => {
+    stubActiveTabUrl('https://blocked.example.com/');
+    await seedSettings({ siteRules: [{ pattern: '*.example.com', action: 'never' }] });
+    await loadPopup();
+
+    const { status, toggle } = ui();
+    const hint = document.getElementById('site-rule-hint') as HTMLElement;
+    expect(hint.hidden).toBe(false);
+    const before = { text: toggle.textContent, disabled: toggle.disabled };
+
+    // 初始化之后（这一次点击的）第 1 次查询失败。
+    rejectQueryCall(1);
+    const rejections = await unhandledRejections(async () => {
+      (document.getElementById('site-rule-unblock') as HTMLButtonElement).click();
+      await waitFor(() => status.textContent.includes('拿不到当前标签页'));
+    });
+
+    expect(rejections).toEqual([]);
+    // 主按钮一个字节都不许变：这不是"页面不可用"，更不许说成"重新试一次"。
+    expect(toggle.textContent).toBe(before.text);
+    expect(toggle.disabled).toBe(before.disabled);
+    // 什么都没删（不知道删哪条），提示行还亮着，用户可以直接再点一次。
+    expect((await storedSiteRules()).length).toBe(1);
+    expect(hint.hidden).toBe(false);
   });
 
   it('写盘失败不静默：如实说解除失败，规则与提示行都留在原地', async () => {
@@ -897,6 +1039,8 @@ describe('站点规则「永不翻译」：弹窗状态行与一键解除', () =
     await waitFor(() => status.textContent.includes('解除失败'));
     // 没写盘就不能报"已解除"：提示行与存储都得留在原样，用户还能再点一次。
     expect(status.textContent).not.toContain('已解除');
+    // 原因照本文件既有的 `errorText` 口径带出来，不是一句没有来路的"失败了"。
+    expect(status.textContent).toContain('已跳过保存');
     expect(hint.hidden).toBe(false);
     expect((await storedSiteRules()).length).toBe(1);
   });

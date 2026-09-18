@@ -86,9 +86,6 @@ function applySettings(next: Settings): void {
   );
   fillSelect(engineSelect, engineOptions(settings), settings.engineId);
   renderEngineHint();
-  // 站点规则提示行的判据是"当前标签页的主机名 + 这一份设置"，两个输入都刚变过，
-  // 所以放在这里重算：`start()` 的首次渲染与"保存失败回滚"都走本函数，两条路都不会漏。
-  void refreshSiteRuleHint();
 }
 
 async function activeTabId(): Promise<number | null> {
@@ -112,14 +109,39 @@ async function activeHostname(): Promise<string | null> {
 }
 
 /**
- * 命中 never 才显示提示行。设置变化后必须重算（解除、切标签页）。
+ * 站点规则那条链上的失败，一律变成状态行里的一句话——`runSafely` 那条纪律的同款要求
+ * （"**任何**没被就地处理的拒绝都要变成用户看得见的一句话"）。
+ *
+ * **只写状态行**，不碰主按钮：这里失败的是"读当前标签页 / 解除规则"，与"这个页面能不能
+ * 翻译"是两件事。走 `renderToggle` 那套兜底会把主按钮重绘成"重新试一次"，那是错的形状。
+ */
+function reportSiteRuleFailure(raw: unknown): void {
+  statusText.textContent = errorText('拿不到当前标签页的地址', raw);
+}
+
+/**
+ * 命中 never 才显示提示行。判据的两个输入是"当前标签页的主机名"与"手里这份 `siteRules`"，
+ * 任何一个变了都得重算——今天有两个调用点：`start()`（初始化）与解除按钮（改完规则）。
+ * 将来若有第三处会改 `siteRules`，记得同样跟一次（"切标签页"不是调用点：真机上换标签页
+ * 弹窗就已经关了，下次打开是重新初始化）。
  *
  * 只切 `hidden`，文案是 HTML 里写死的静态文本——命中与否是唯一变量，没有第二个要改的地方。
  * 但 `hidden` 与样式之间还隔着 `popup.css` 的 `.hint[hidden]`：`.hint` 是 flex 容器，
  * 少了那条规则这里就只是"属性为真、照样占一行"（见那份 CSS 的注释）。
+ *
+ * **拒绝就地处理**（`reportSiteRuleFailure` 那条纪律）：本函数由 `start()` 直接 await，
+ * 不在 `runSafely` 的保护里，漏掉这一层就是一次未处理的拒绝——界面上什么都不会发生。
+ * 拿不到主机名时按"不显示"处理（与受限页面同一档），并把原因说出来。
  */
 async function refreshSiteRuleHint(): Promise<void> {
-  const host = await activeHostname();
+  let host: string | null;
+  try {
+    host = await activeHostname();
+  } catch (raw) {
+    siteRuleHint.hidden = true;
+    reportSiteRuleFailure(raw);
+    return;
+  }
   siteRuleHint.hidden = !(host !== null && isNeverTranslate(settings.siteRules, host));
 }
 
@@ -335,9 +357,17 @@ async function start(): Promise<void> {
   applySettings(await loadSettings());
   await refreshPageState();
   // 按钮开局的置灰是"设置还没读出来"的在飞态，这里才是它真正的收尾。
-  // 不能放进 `applySettings`：保存失败回滚也会走那里，而回滚不该动在飞标记。
+  // 不能放进 `applySettings`：那会让每次应用设置都动在飞标记，而它只属于初始化
+  // （`saveSettingsOrReport` 的回滚也不该碰它——那条路今天自己直接改 `settings`
+  // 并重算引擎提示，并不经过 `applySettings`）。
   inFlight = false;
   renderToggle(pageState);
+  // 站点规则提示行**最后**算，而且要 await：它失败时写进 `#status` 的那句话必须是最后
+  // 一句——上面那次 `renderToggle` 写的是同一个节点，fire-and-forget 的失败句会被它盖掉
+  // （实测：catch 里写的那句之后紧接着被"当前页面不支持翻译…"替换，用户什么也看不到）。
+  // 这也是本文件唯一一处在 `runSafely` 之外直接 await 的链，所以 `refreshSiteRuleHint`
+  // 必须自己就地处理拒绝（见它的注释）。
+  await refreshSiteRuleHint();
 }
 
 /**
@@ -486,7 +516,14 @@ function init(): void {
   // 的失败路径，而这里多挂一个监听器的成本是零。
   siteRuleUnblock.addEventListener('click', () => {
     void (async () => {
-      const host = await activeHostname();
+      let host: string | null;
+      try {
+        host = await activeHostname();
+      } catch (raw) {
+        // 与初始化同一条口径（`reportSiteRuleFailure`）：读不到标签页就说原因，不静默。
+        reportSiteRuleFailure(raw);
+        return;
+      }
       if (host === null) return;
       const rule = matchSiteRule(settings.siteRules, host);
       if (rule === null) return;
@@ -495,17 +532,20 @@ function init(): void {
       const next: Settings = { ...settings, siteRules: settings.siteRules.filter((item) => item !== rule) };
       try {
         await saveSettings(next);
-      } catch {
-        // 写盘失败不能静默：不报告就变成"点了没反应"，用户会反复点。
+      } catch (raw) {
+        // 写盘失败不能静默：不报告就变成"点了没反应"，用户会反复点。原因照本文件既有的
+        // `errorText` 口径带出来（见 `saveSettingsOrReport`）。
         // 这里不用 `saveSettingsOrReport`：那个辅助的契约是"回滚一个下拉控件"，
         // 它的 `control` 只收 `HTMLSelectElement`、`field` 只收三个下拉字段名，
         // 而解除按钮不是下拉、改的也不是那三个字段——硬套要么改它的签名（牵动三个既有
         // 调用点），要么传一个假控件进去。失败文案也本来就不同（这里没有"回滚"可做：
         // 规则还在存储里，提示行照旧显示，再点一次即可）。
-        statusText.textContent = '解除失败：设置没能写入，再试一次';
+        statusText.textContent = `${errorText('解除失败', raw)}，再试一次`;
         return;
       }
       settings = next;
+      // 这行失败时内部已经就地报过（写状态行 + 隐藏提示行），不会再往外抛。
+      // 紧接着那句"已解除"是**事实**：规则确实已经从存储里消失了，提示行也不该再亮着。
       await refreshSiteRuleHint();
       statusText.textContent = '已解除，点「翻译此页」开始';
     })();
