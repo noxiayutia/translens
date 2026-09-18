@@ -16,8 +16,9 @@
 
 ## 已核实的前提（不要重新发明）
 
+0. **执行前提：实现者从「仓库 + 本 Task 的小节」出发工作，不必重读整个计划。** 计划里的代码块已经落在磁盘上的（例如 Task 3 写完的 `src/options/sections/engine.ts`）应当**直接读文件**；只有**本 Task 要新建/新建后修改**的文件才需要照本 Task 的代码块写。Task 10 是唯一跨 Task 改文件的地方（`sections/engine.ts` 在 Task 3 就已存在），它给出的每一处改动都**引足了上下文**（能唯一定位到那几行），不靠"把某一段改掉"这种指代。
 1. **基线：867 个测试 / 40 files 全绿**（`npm test` 实测，2026-09-18，分支 `feat/core-translation`，工作树干净）。单元 A 已落地：`src/core/site-rules.ts` 的 `matchSiteRule` / `isNeverTranslate`、内容脚本拦截、弹窗状态与一键解除，全都有测试。
-2. **测试契约是契约属性名，不是查询细节**（逐条 grep 过 `tests/options/options.test.ts`，见下表）。`#save` 随即时保存移除，依赖它的 4 条用例改写（Task 3 Step 8）。
+2. **测试契约是契约属性名，不是查询细节**（逐条 grep 过 `tests/options/options.test.ts`，见下表）。`#save` 随即时保存移除，依赖它的 4 条用例改写（Task 3 Step 13）。
 3. **`options.html` 是测试的真实输入**：`options.test.ts` 用 `DOMParser` 加载它，然后把 `parsed.body.innerHTML` 塞进 `document.body`。所以页面骨架必须留在 HTML 里，JS 只填内容与挂行为。
 4. **被测模块在 import 时就跑 `init()`**：模块顶层按 id 取元素（DOM 必须先就位），`init()` 同步挂监听器，然后才 `await loadSettings()`。测试的顺序固定为「装替身 → 写存储 → 装 DOM → `await import(...)` → `settle()`」，且 `vi.resetModules()` 每个用例重置一次。
 5. **`siteRules` 的消费侧已经在单元 A 落地**，本单元只做**写入侧**（增删规则）。核心匹配语义（精确、`*.` 前缀通配、自上而下首条命中）**已经有用例**（`tests/core/site-rules.test.ts`），本单元不重复实现、不重复测。
@@ -42,13 +43,13 @@
 | `.profile-editor` | `editorOf()`（`:62`）、`expand()`（`:82`） | 保留（**行内按钮必须仍在编辑器里**：`actionButton(editor, …)` 是在编辑器内部查的） |
 | `.profile-provider` | `:256` `:363` | 保留（服务商模板下拉） |
 | `.profile-label` `.profile-base-url` `.profile-model-name` `.profile-api-key` `.profile-toggle-key` | `fieldOf()`（`:68`）、`:221` | 保留 |
-| `#save` | `:318` `:708` `:727` `:744` | **移除**；4 条用例改成"改下拉 → 等存储写入完成"（Task 3 Step 8） |
+| `#save` | `:318` `:708` `:727` `:744` | **移除**；4 条用例改成"改下拉 → 等存储写入完成"（Task 3 Step 13） |
 
 **新增区块一律用新的契约属性**（规格 §7）：`data-section` / `data-nav` / `data-nav-group` / `data-glossary-row` / `data-rule-row` / `data-rule-action` / `data-state`，不复用旧名。
 
 ---
 
-## 需要评审先点头的 7 个决定（规格没说清或与现状冲突的地方）
+## 需要评审先点头的 9 个决定（规格没说清或与现状冲突的地方）
 
 > 这几条都不改规格的**意图**，但必须由你确认口径。每条都给了"为什么不能照字面做"。
 
@@ -66,8 +67,14 @@
    → 每行渲染 `<span class="rule-action" data-rule-action="never">永不翻译</span>`，写入的 `action` 恒为 `'never'`。等自动翻译落地再把这里换成下拉。
 5. **状态点记在 `chrome.storage.session`（本次浏览器会话内有效），不是纯内存。**
    规格 §4.3 / §10.6 要求"灰 = **从没测过**"。若只在内存里记，刷新一次设置页就全部回到灰，那句 `title` 立刻变成假话（你明明测过）。`chrome.storage.session` 是受信上下文可读的独立键（`jinyi:engine-health`，不进 `Settings`、不动 schema 版本），代价是浏览器重启后回到灰——那一条写进 README 已知限制。
-6. **术语行的空值语义**：草稿行（`from` 或 `to` 为空）**不写存储**（§10.4）；但**已存在**的那条被清空时，要从存储里删掉它——否则输入框是空的、存储里还留着它，翻译仍被那条术语强制替换，界面与存储对不上。
+6. **术语行/规则行的空值语义**：草稿行（`from` 或 `to` / 域名为空）**不写存储**（§10.4）；**已存在**的那条被清空时，**也不写存储**，只明说"没有保存、存储里仍是原来那条、要删请点行尾「删除」"。
+   *这一条被审查改过一次*：上一版计划在这里选的是"顺手把既有条目删掉"，理由是"界面空了、存储还留着就是撒谎"。审查挡下的理由是对的——用户的真实动作可能是"清掉重打"，而在失焦那一刻删条目 + 重绘会让**正在编辑的一行当场消失**，这份界面又没有任何撤销出口；相比之下，"界面与存储暂时不一致"只要**明说**就是诚实的。两个区块（术语表、站点规则）用的是同一条口径。
 7. **搜索的匹配口径**：只对"区块标题 + 别名表 + 区块说明 `.sec-desc` + 区块里每个字段标签 `.lab`"做匹配，查询串按空白切词、**全部命中**才算命中（AND，不是 OR）；零命中显示「没找到匹配的设置」；过滤只切 `hidden`，不动 DOM 结构。别名表与区块定义放在同一个模块里（`sections/<name>.ts` 的 `aliases`），「密钥 / API Key」归翻译引擎、「词库 / 专有名词」归术语表——两条都有专门的见证用例（`tests/options/search.test.ts`）。
+   **索引边界是承重的**（审查专门查过这件事）：隐私区块的正文里到处是「API Key」「密钥」「档案」，所以 `.lab` / `.sec-desc` 之外的元素（含 `.hint`、`<li>`、`<details>`）**一律不进索引**；`tests/options/search.test.ts` 有一条用例专门钉住这个边界（还会断言隐私区块里确实有那些词，免得用例空转）。
+8. **原生 `Esc` 取消不写盘：本轮不解决，写进 README。**
+   文本控件上改动后按 `Esc` 再失焦，浏览器仍可能派发 `change`（`Esc` 不还原值也不阻止 `change`），于是那次改动照常落盘。改版前有保存按钮时可以反悔，现在没有出口。
+   → 不实现"Esc 撤销"：本机没有任何浏览器可以验证 `Esc` 在各控件上的真实语义（规格 §11 的第一条限制），凭猜测写一个"半可用"的撤销比不写更糟。Task 11 在 README 已知限制里如实写上这条，并说明现成的出路（重新改回原值 / 列表行用行尾「删除」）。
+9. **`dom.ts` 要有自己的测试**（审查要求）：它是每个区块都依赖的共享件，`runSafely` 的拒绝兜底与 `requireWithin` 的抛错路径必须先有直连用例（`tests/options/dom.test.ts`，4 条），否则它坏了会全线崩而没有任何一条用例指着它。
 
 ---
 
@@ -77,7 +84,7 @@
 | --- | --- | --- |
 | `src/options/store.ts` | 新建 | 内存快照 + 写队列 + 重读后单字段写回（`loadSnapshot` / `currentSettings` / `patchSettings`） |
 | `src/options/dom.ts` | 新建 | 各区块共用的最小 DOM 工具：`setStatus` / `describe` / `element` / `fillSelect` / `requireWithin` / `runSafely` |
-| `src/options/section.ts` | 新建 | 区块契约：`SectionId` / `Section` / `SectionContext`（`settings()` + `save()`） |
+| `src/options/section.ts` | 新建 | 区块契约：`SectionId` / `Section` / `SectionContext`（`settings()` + `reload()` + `save()`）——**接口只在这一处定义** |
 | `src/options/search.ts` | 新建 | 搜索索引与过滤（`parseQuery` / `matchesTerms` / `sectionHaystack` / `createSearch`） |
 | `src/options/rule-pattern.ts` | 新建 | 站点规则域名的规范化与形状校验（纯函数，无 DOM） |
 | `src/options/engine-health.ts` | 新建 | 状态点的三态记录（`chrome.storage.session`，独立键 `jinyi:engine-health`） |
@@ -96,10 +103,11 @@
 | `tests/options/harness.ts` | 新建 | 设置页测试的共享夹具（从 `options.test.ts` 原样搬出，断言一条不动） |
 | `tests/options/options.test.ts` | 修改 | 4 条 `#save` 用例改成即时保存 + 夹具改为 import |
 | `tests/options/store.test.ts` | 新建 | 串行写、重读、失败不卡队列 |
+| `tests/options/dom.test.ts` | 新建 | `setStatus` / `runSafely` 的拒绝兜底 / `requireWithin` 抛错 / `fillSelect`（共享件的直连用例，审查要求） |
 | `tests/options/options-css.test.ts` | 新建 | 令牌逐字一致、无硬编码颜色、无 `opacity`、焦点环、暗色块、窄窗口降级 |
 | `tests/options/no-innerhtml.test.ts` | 新建 | 源码守卫：`src/options/**/*.ts` 里不得出现 `innerHTML` |
 | `tests/options/shortcuts.test.ts` | 新建 | 两个开关的即时保存、失败回滚、通知已打开的页面 |
-| `tests/options/glossary.test.ts` | 新建 | 增删改、空行不写、清空即删、用户输入不进 HTML |
+| `tests/options/glossary.test.ts` | 新建 | 增删改、空行不写、Tab 逐个填的两段式保存、清空不静默删、用户输入不进 HTML |
 | `tests/options/rule-pattern.test.ts` | 新建 | 域名规范化的全部形状（纯函数） |
 | `tests/options/site-rules.test.ts` | 新建 | 规则写入侧（增删、非法形状拒绝、只写 `never`） |
 | `tests/options/prompt.test.ts` | 新建 | 提示词的失焦保存与回填 |
@@ -115,8 +123,8 @@
 
 | 原型里的东西 | 计划里的 DOM | 备注 |
 | --- | --- | --- |
-| `.wrap` 两列网格 | `.wrap`（`grid-template-columns: 236px minmax(0,1fr)`） | 窄窗口降级见 Task 3 Step 3 |
-| `.nav` + `.grp` + `a.on` | `.nav` + `.nav-grp[data-nav-group]` + `.grp` + `a.nav-link[data-nav]` | 活动项用 `:target` + `:has()`（无 JS 滚动联动，见 Task 3 Step 3 注释） |
+| `.wrap` 两列网格 | `.wrap`（`grid-template-columns: 236px minmax(0,1fr)`） | 窄窗口降级见 Task 3 Step 6 |
+| `.nav` + `.grp` + `a.on` | `.nav` + `.nav-grp[data-nav-group]` + `.grp` + `a.nav-link[data-nav]` | 活动项用 `:target` + `:has()`（无 JS 滚动联动，见 Task 3 Step 6 的 CSS 注释） |
 | `.search input[placeholder="搜索设置"]` | `#search` + `#search-empty` | Task 9 |
 | `.sec` / `.sec-head` / `.sec-desc` | 同名 class + `[data-section]` / `id="sec-<id>"` | 搜索与导航的锚点 |
 | `.item`（一行一卡片） | `.item`（档案行是 `.item.profile-row`） | 档案行内是 `.profile-summary` 按钮 + `.profile-editor` |
@@ -137,7 +145,7 @@
 | --- | --- | --- | --- |
 | 1 | `store.ts`：快照 + 写队列 + 重读后单字段写回 | — | `src/options/store.ts`、`tests/options/store.test.ts` |
 | 2 | §6 文案修正（独立小刀） | — | `options.html` 的 `#target-hint`、`options.test.ts:295` 的断言改强 |
-| 3 | 页面骨架：HTML + CSS + 区块契约 + 4 区块搬家（引擎 / 语言 / 缓存 / 隐私）+ 去掉 `#save` | 1、2 | `options.html` `options.css` `section.ts` `dom.ts` `sections/{engine,language,cache,privacy}.ts` `options.ts`、`harness.ts`、`options-css.test.ts`、`no-innerhtml.test.ts`、4 条用例改写 |
+| 3 | 页面骨架：HTML + CSS + 区块契约 + 4 区块搬家（引擎 / 语言 / 缓存 / 隐私）+ 去掉 `#save` | 1、2 | `options.html` `options.css` `section.ts` `dom.ts` `sections/{engine,language,cache,privacy}.ts` `options.ts`、`harness.ts`、`dom.test.ts`、`options-css.test.ts`、`no-innerhtml.test.ts`、4 条用例改写 |
 | 4 | 快捷翻译区块（§3.3） | 3 | `sections/shortcuts.ts`、`shortcuts.test.ts`、`chrome-stub` 加 `tabs.create` |
 | 5 | 术语表区块（§3.4） | 3 | `sections/glossary.ts`、`glossary.test.ts` |
 | 6 | 站点规则写入侧（§3.5 + §5） | 3 | `rule-pattern.ts`、`sections/site-rules.ts`、两个测试文件 |
@@ -412,6 +420,11 @@ git commit -m "feat(options): 设置页存储层（快照 + 串行写队列 + �
     expect(hint).toContain('链接仍可点击');
     expect(hint).toContain('仍可能失去下划线与可点击');
     expect(hint).not.toContain('链接点不了');
+    // ④ 结尾那句「改完点下面的『保存语言与显示』」本任务**故意保留**：此刻那个按钮还在
+    //    （`#save` 到 Task 3 才随即时保存一起删掉），这句话在这个提交上是**真的**，
+    //    现在删它反而会让文案与界面不符。它的收尾写在 Task 3 Step 13：那里删按钮，
+    //    并把这条断言改成 `not.toContain('保存语言与显示')`——一句话只在一个地方改。
+    expect(hint).toContain('保存语言与显示');
 ```
 
 - [ ] **Step 2: 跑到红**
@@ -433,7 +446,8 @@ Expected: FAIL —— `expected '「仅译文」只显示译文（原文被隐�
         </p>
 ```
 
-（最后那一句「改完点下面的『保存语言与显示』」在 Task 3 里会随按钮一起改掉；本任务只动链接那句与断言。）
+> **这一块的边界要说清（上一版计划在这里含糊过）**：替换的范围是**整个 `<p>`（4 行，`:41-44`）**，但**只改链接那句**——末尾那句「改完点下面的「保存语言与显示」；已经翻译过的页面要重新翻译才会换过来。」**逐字保留**，因为**此刻那个按钮还在**（`#save` 是 Task 3 才删的），删了它这个提交就自相矛盾。
+> **它的最终归宿在 Task 3 Step 13**：那里删掉 `#save`、把 `#target-hint` 重写成「改动即时保存；已经翻译过的页面要重新翻译才会换过来。」，并把本任务加的 `expect(hint).toContain('保存语言与显示')` **改成** `expect(hint).not.toContain('保存语言与显示')`。一句话只在一个提交里改一次，两个提交各自都是真话。
 
 - [ ] **Step 4: 跑到绿**
 
@@ -646,7 +660,9 @@ export function chatResponse(content: string): Response {
 `tests/options/options.test.ts` 的改动**只有两类**，逐条列出（不要顺手改别的）：
 
 1. 删掉文件里这些**本地定义**（它们现在住在 `harness.ts`）：`OPTIONS_HTML_PATH`、`CUSTOM_BASE_URL`、`CUSTOM_ORIGIN_PATTERN`、`let chromeStub: ChromeStub;`、`profileSeed`、`pick`、`profileRows`、`rowOf`、`editorOf`、`fieldOf`、`actionButton`、`expand`、`bubble`、`seedSettings`、`storedSettings`、`storedProfiles`、`mountOptionsHtml`、`settle`、`waitFor`、`loadOptions`、`engineStatus`、`jsonResponse`、`chatResponse`。
-2. import 区改成：
+2. **同时删掉会变成死引用的 import**（`tsconfig` 没开 `noUnusedLocals`，`typecheck` **不会**帮你发现，留着就是悬空引用）：`import { readFileSync } from 'node:fs';`（`:19`）、`import { join } from 'node:path';`（`:20`）、`installChromeStub` 与 `type ChromeStub`（`:25` 那个 import 整行删掉——替身现在由 harness 装）。
+   **要留的**：`afterEach, beforeEach, describe, expect, it, vi`（`vi` 还在 `:632/:633/:664/:679` 一带用着，`vi.unstubAllGlobals()` 在 `afterEach` 里）；`LANGUAGES`、`DEFAULT_ENGINE_ID`/`getEngine`、`CURRENT_VERSION`/`DISPLAY_MODES`/`PROVIDER_PRESETS`/`SETTINGS_KEY` 也全部保留（它们仍被断言直接引用）。
+3. import 区改成：
 
 ```ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1636,7 +1652,7 @@ Expected: PASS —— **2 条用例**（此时 `src/options` 下只有 `options.
         <!-- 隐私 -->
         <section class="sec" id="sec-privacy" data-section="privacy" aria-labelledby="sec-privacy-title">
           <div class="sec-head"><h2 id="sec-privacy-title">隐私</h2></div>
-          <p class="sec-desc">三条承诺：本地存储、零网络请求、只采集可见文本。</p>
+          <p class="sec-desc">逐条写清边界：本地存储、零网络请求、只采集可见文本、授权按需申请。</p>
           <ul class="privacy">
             <li>
               <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：
@@ -1651,6 +1667,10 @@ Expected: PASS —— **2 条用例**（此时 `src/options` 下只有 `options.
             <li>
               只有网页里<strong>可见</strong>的文本才会被送去翻译；不可见区域与
               <code>contenteditable</code> 可编辑区域（你正在写、还没保存的草稿）一律不采集。
+            </li>
+            <li>
+              每个档案接口地址的访问权限<strong>只在你点该档案的「保存档案」时</strong>按需申请，
+              授权范围限定为那个地址的域名；免费引擎不需要额外授权。
             </li>
           </ul>
           <details>
@@ -1670,12 +1690,93 @@ Expected: PASS —— **2 条用例**（此时 `src/options` 下只有 `options.
 </html>
 ```
 
-> **注意**：Task 2 改好的 `#target-hint` 那句话在这里**逐字保留**；`tests/options/options.test.ts:295` 一带的新断言（含「链接仍可点击」「仍可能失去下划线与可点击」以及反向的 `not.toContain('链接点不了')`）继续守着它。
+> **注意**：Task 2 改好的 `#target-hint` 那句话在这里**逐字保留**，并且本任务 Step 13 追加一条断言：新文案里**不许**再出现「保存语言与显示」（那个按钮在同一个提交里被删掉了，留着这句就是在指一个不存在的东西）。
 > 隐私那三条**必须保留**这些字面量（既有用例按子串断言）：`API Key 只存在本机`、`不上传、不同步`、`永远从空开始`、`除翻译请求本身外，不发起任何网络请求`、`contenteditable`。
+>
+> **隐私区块为什么是四条 `<li>` 而不是规格 §3.8 写的"三条"**：`src/options/options.html:79-83` 今天有**第四条**（「每个档案接口地址的访问权限只在你点该档案的「保存档案」时按需申请…」）——那是一条**已经发布、用户可见的诚实承诺**，`options.test.ts:298-306` 的五个字面量断言**测不出它的消失**。规格 §3.8 的"三条一行式"说的是**版式**（一行一条），不是"删掉一条"。所以本轮**保留全部四条**，只把版式改成一行式；`.sec-desc` 也不再声称"三条"。若将来确实要砍，必须单独确认，不许在改版里顺手删。
 
 - [ ] **Step 11: 建共用工具、区块契约，并把 4 个区块拆出来**
 
-创建 `src/options/dom.ts`：
+**先写 `dom.ts` 自己的测试**（它是每个区块都依赖的共享件：状态行、拒绝兜底、控件查找。没有直连用例时，它的两条错误路径只能靠调用方间接覆盖，坏了会全线崩）。创建 `tests/options/dom.test.ts`：
+
+```ts
+// tests/options/dom.test.ts
+/**
+ * @vitest-environment jsdom
+ *
+ * `dom.ts` 是**每个区块都依赖**的共享件。这里给它的错误路径直连用例：
+ * - `runSafely` 的拒绝必须变成状态行里的一句话（否则就是一次未处理拒绝）；
+ * - `requireWithin` 找不到控件时必须当场抛错（选择器写错要立刻炸，不能静默返回空）。
+ */
+import { beforeEach, describe, expect, it } from 'vitest';
+import { element, fillSelect, requireWithin, runSafely, setStatus } from '../../src/options/dom';
+
+/** 造一条状态行挂进 body（`setStatus` / `runSafely` 都只认这个元素）。 */
+function statusLine(): HTMLElement {
+  const line = document.createElement('p');
+  document.body.append(line);
+  return line;
+}
+
+/** 让已经排队的微任务跑完。 */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+beforeEach(() => {
+  document.body.innerHTML = '';
+});
+
+describe('dom：状态行、拒绝兜底、控件查找', () => {
+  it('setStatus 写 data-kind 与文本，且一律走 textContent（尖括号只是字符）', () => {
+    const line = statusLine();
+    setStatus(line, 'err', '<b>不是 HTML</b>');
+    expect(line.dataset.kind).toBe('err');
+    expect(line.textContent).toBe('<b>不是 HTML</b>');
+    expect(line.children).toHaveLength(0);
+  });
+
+  it('runSafely 把拒绝格式化成「前缀：原因」，兑现的 promise 一个字节都不写', async () => {
+    const line = statusLine();
+    runSafely(line, '保存失败', async () => {
+      throw new Error('存储写入失败');
+    });
+    await settle();
+    expect(line.dataset.kind).toBe('err');
+    expect(line.textContent).toBe('保存失败：存储写入失败');
+
+    // 成功路径不该碰状态行：先自己写一句，跑一个成功的 runSafely，那句必须原样留着。
+    setStatus(line, 'ok', '已保存');
+    runSafely(line, '保存失败', async () => undefined);
+    await settle();
+    expect(line.textContent).toBe('已保存');
+    expect(line.dataset.kind).toBe('ok');
+  });
+
+  it('requireWithin 找不到元素时抛错，并把选择器写进消息', () => {
+    const root = element('div', 'profile-editor');
+    root.append(element('span', 'profile-label', '名字'));
+    expect(requireWithin(root, '.profile-label').textContent).toBe('名字');
+    expect(() => requireWithin(root, '.missing')).toThrow('.missing');
+  });
+
+  it('fillSelect 重建选项并选中匹配的那一项（选项清单不手抄）', () => {
+    const select = document.createElement('select');
+    select.append(new Option('旧的', 'old'));
+    fillSelect(select, [{ value: 'a', label: '甲' }, { value: 'b', label: '乙' }], 'b');
+    expect(Array.from(select.options).map((option) => [option.value, option.textContent])).toEqual([
+      ['a', '甲'],
+      ['b', '乙'],
+    ]);
+    expect(select.value).toBe('b');
+  });
+});
+```
+
+Run: `npx vitest run tests/options/dom.test.ts`
+Expected: FAIL —— `Failed to resolve import "../../src/options/dom"`
+
+然后创建 `src/options/dom.ts`：
 
 ```ts
 // src/options/dom.ts
@@ -1737,6 +1838,9 @@ export function runSafely(status: HTMLElement, prefix: string, run: () => Promis
   });
 }
 ```
+
+Run: `npx vitest run tests/options/dom.test.ts`
+Expected: PASS —— **4 条用例**
 
 创建 `src/options/section.ts`：
 
@@ -2363,23 +2467,7 @@ export const engineSection: Section = {
 > ② 编辑器的行内按钮 class 从 `ghost profile-delete` 改成 `link-danger`（规格 §2：删除是红色文字按钮）——测试按 `[data-action="delete-profile"]` 找它，不看 class；
 > ③ `renderFromStorage` 走 `ctx.reload()`，**不是** `loadSettings()` + 自己改快照：读的入口只有存储层一处，两处各改一份就多一条漂移路径。
 
-> **`SectionContext` 的最终形态（`section.ts` 与 `options.ts` 两处逐字一致，别各写一份）**：
-
-```ts
-export interface SectionContext {
-  /** 当前内存快照；`start()` 读出设置之前是 null。 */
-  settings(): Settings | null;
-  /** 重读存储并把快照对齐（并发窗口下刷新界面用）。失败原样抛给调用方。 */
-  reload(): Promise<void>;
-  /**
-   * 单字段即时保存（规格 §4.1）。**不抛**：成功/失败都写进这一区块的状态行
-   * （`.status` + `data-kind` 契约），返回是否成功。
-   */
-  save(status: HTMLElement, prefix: string, patch: Partial<Settings>, okMessage?: string): Promise<boolean>;
-}
-```
-
-上面 `section.ts` 的完整代码块里已经包含 `reload()`（在 `settings()` 之后、`save` 之前）——**以那一份为准**。
+> **`SectionContext` 的定义只出现一次**，就在上面 `section.ts` 那一块里（含 `settings()` / `reload()` / `save()` 三个成员）。**不要在这份计划或代码里再抄第二份**——审查发现过一份重复定义（一份带 `reload`、一份不带），那种重复迟早会让某个调用点拿到没有 `reload` 的那一份，而 `npm run typecheck` 只会在下游炸（`Property 'reload' does not exist`），排查成本远高于删掉几行。`options.ts` 里的 `const context: SectionContext` **必须**把三个成员都实现（见 Task 3 Step 11 的 `options.ts` 全文，`reload: async () => { await loadSnapshot(); }` 就在里面）。
 
 创建 `src/options/sections/language.ts`：
 
@@ -2664,6 +2752,10 @@ describe('设置页：语言与显示（change 即存，没有保存按钮）', 
     expect(stored.engineId).toBe('p-a');
     expect((stored.profiles as Array<Record<string, unknown>>)[0].apiKey).toBe('sk-keep');
     expect(pick<HTMLElement>('language-status').dataset.kind).toBe('ok');
+    // Task 2 那条「文案里还有『保存语言与显示』」的断言在**这里反过来**：按钮已经随即时保存
+    // 删掉了，文案里不许再指着一个不存在的东西。Task 2 的 `toContain` 请**整条替换**成这一条
+    // （不要两处都留，也不要只删不换）。
+    expect(pick<HTMLElement>('target-hint').textContent ?? '').not.toContain('保存语言与显示');
   });
 
   it('免费引擎下改设置：一个宿主权限申请都不发（google 的地址已在 host_permissions 里）', async () => {
@@ -2702,7 +2794,7 @@ describe('设置页：语言与显示（change 即存，没有保存按钮）', 
 - [ ] **Step 14: 跑到绿（两种测试一起）**
 
 Run: `npx vitest run tests/options/`
-Expected: PASS —— `options.test.ts` **29 条** + `options-css.test.ts` **7 条** + `no-innerhtml.test.ts` **2 条** + `store.test.ts` **6 条**
+Expected: PASS —— `options.test.ts` **29 条** + `options-css.test.ts` **7 条** + `no-innerhtml.test.ts` **2 条** + `store.test.ts` **6 条** + `dom.test.ts` **4 条**
 
 - [ ] **Step 15: 变异验证**
 
@@ -3262,7 +3354,37 @@ describe('设置页：术语表', () => {
     expect(status().textContent ?? '').not.toContain('已保存');
   });
 
-  it('把既有行清空 = 删掉那一条：存储里不许留着界面上已经没有的术语', async () => {
+  it('真实用户路径：先填 from、Tab 到 to（两次 change），第二次才落盘——中途不许写坏存储', async () => {
+    // 这是**最常见的输入顺序**，也是上一版计划里唯一没被测到的路径：点添加 → 在 from 里打字 →
+    // 按 Tab 移到 to（from 失焦 → change 立刻触发，此刻 to 还是空的）。
+    // 若实现把"一框为空"当成"忽略整行"，这一行会在用户还没填完时就被丢掉——所以这里钉住：
+    // 第一次 change 什么都不做（存储不变、行还在、输入框的值不动），第二次 change 才写入。
+    await seedSettings({ glossary: [] });
+    await loadOptions();
+    pick<HTMLButtonElement>('add-term').click();
+
+    const from = inputOf(rowAt(0), '.glossary-from');
+    const to = inputOf(rowAt(0), '.glossary-to');
+
+    from.value = 'serverless';
+    from.dispatchEvent(bubble('change')); // = 用户按 Tab 离开 from
+    expect(await storedGlossary()).toEqual([]);
+    expect(rows()).toHaveLength(1);
+    expect(inputOf(rowAt(0), '.glossary-from').value).toBe('serverless');
+    // 中途不许说"已保存"（那会让人以为半个词也生效了）。
+    expect(status().textContent ?? '').not.toContain('已保存');
+
+    to.value = '无服务器';
+    to.dispatchEvent(bubble('change')); // = 用户离开 to
+    await waitFor(async () => (await storedGlossary()).length === 1);
+    expect(await storedGlossary()).toEqual([{ from: 'serverless', to: '无服务器' }]);
+  });
+
+  it('把既有行清空：**不写存储**、给一句能读懂的话，要删得点行尾「删除」', async () => {
+    // **已决**（上一版计划在这里选错了）：既有行被清空时**不**顺手删掉那条术语。
+    // 用户的真实动作可能是"清掉重打"——若在失焦那一刻就把条目删了并重绘，用户正在编辑的一行
+    // 会当场消失，而且没有任何撤销出口。所以这里只**如实说明**存储里还是原来那条、要删请点删除，
+    // 让"界面与存储不一致"变成一句明说的状态，而不是一次静默的破坏。
     await seedSettings({
       glossary: [
         { from: 'one', to: '一' },
@@ -3274,9 +3396,20 @@ describe('设置页：术语表', () => {
     inputOf(rowAt(0), '.glossary-to').value = '';
     inputOf(rowAt(0), '.glossary-to').dispatchEvent(bubble('change'));
 
+    await waitFor(() => (status().textContent ?? '').includes('没有保存'));
+    expect(status().dataset.kind).toBe('err');
+    // 存储一个字节都没动，两条都还在。
+    expect(await storedGlossary()).toEqual([
+      { from: 'one', to: '一' },
+      { from: 'two', to: '二' },
+    ]);
+    // 行也没消失（用户还能接着把它填回去）。
+    expect(rows()).toHaveLength(2);
+
+    // 真的要删，走行尾那个红字按钮：那是一次明确的用户动作。
+    rowAt(0).querySelector<HTMLButtonElement>('[data-action="delete-term"]')!.click();
     await waitFor(async () => (await storedGlossary()).length === 1);
     expect(await storedGlossary()).toEqual([{ from: 'two', to: '二' }]);
-    expect(rows()).toHaveLength(1);
   });
 
   it('行尾红字删除只删那一条，其余顺序原样', async () => {
@@ -3491,10 +3624,16 @@ async function writeTerms(ctx: SectionContext, terms: Term[], prefix: string, ok
 }
 
 /**
- * 一行的 `change`（＝失焦且值变了）。三种结局：
- * - 两边都填了：既有行就地更新，草稿行追加成新条目；
- * - 既有行被清空：**从存储里删掉它**（界面空了、存储还留着，等于界面撒谎）；
- * - 草稿行只填了一半：什么都不做（§10.4）。
+ * 一行的 `change`（＝失焦且值变了）。三种结局，逐条写清楚，因为它们是**决策**不是实现细节：
+ *
+ * 1. **两边都填了**：既有行就地更新（按下标），草稿行追加成新条目，然后把草稿位收起来。
+ * 2. **只填了一半、且是草稿行**：什么都不做（§10.4）。这条路径是**真实用户路径**：用户点「添加
+ *    术语」→ 在 from 里打字 → **按 Tab 移到 to**（from 失焦 → change 立刻触发，此刻 to 还是空）。
+ *    这里绝不能"当作整行作废"，否则用户敲进去的半行就白填了；等 to 也失焦时第二次 change 才写入。
+ * 3. **只填了一半、且是既有行**：**不写存储**，只给一句能读懂的话（存储里仍是原来那条，要删请点
+ *    行尾「删除」）。上一版计划在这里选的是"顺手删掉那一条"，被审查挡下了，理由是对的：用户的
+ *    真实动作可能是"清掉重打"，在失焦那一刻删条目 + 重绘会让**正在编辑的一行当场消失**，而这份
+ *    界面没有任何撤销出口。相比之下，"界面与存储暂时不一致"只要**明说**就是诚实的。
  */
 async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
   const current = ctx.settings();
@@ -3513,8 +3652,10 @@ async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
     return;
   }
 
-  if (index >= terms.length) return; // 草稿行半填：不写存储，也不报"已保存"
-  await writeTerms(ctx, terms.filter((_, at) => at !== index), '删除术语失败', '已删除');
+  if (index >= terms.length) return; // 草稿行半填：等另一个框（见上面第 2 条）
+
+  // 既有行被清空：不写存储，也不假装成功；把"存储里还是原来那条"如实说出来。
+  setStatus(status, 'err', '这一行没有填完，没有保存；存储里仍是原来那条术语（要删掉请点行尾「删除」）');
 }
 
 function deleteRow(ctx: SectionContext, row: HTMLElement): void {
@@ -3594,18 +3735,18 @@ export const SECTIONS: readonly Section[] = [
 - [ ] **Step 5: 跑到绿**
 
 Run: `npx vitest run tests/options/glossary.test.ts`
-Expected: PASS —— **10 条用例**
+Expected: PASS —— **11 条用例**
 
 - [ ] **Step 6: 变异验证**
 
 | 变异 | 期望红在哪一条 |
 | --- | --- |
 | `commitRow` 的两边都填那一支里，`index < terms.length ? … : […terms, {from,to}]` 改成永远 `[…terms, {from,to}]` | 「把一行填满就落盘…」（既有行更新会变成追加，条数与内容都变） |
-| 既有行被清空那一支 `await writeTerms(… filter …)` 改成 `return` | 「把既有行清空 = 删掉那一条」 |
-| 草稿行半填那一支的 `if (index >= terms.length) return;` 删掉 | 「只填一半的行不写存储」（会写进一条空的 `to`） |
+| 既有行清空那一支的 `setStatus(status,'err', …没有填完…)` 改成 `await writeTerms(… filter …)`（＝上一版计划的"顺手删掉"） | 「把既有行清空：**不写存储**、给一句能读懂的话」 |
+| 草稿行半填那一支的 `if (index >= terms.length) return;` 删掉 | 「只填一半的行不写存储」与「真实用户路径：先填 from、Tab 到 to」（第一次 change 就会写进一条空的 `to`） |
 | `draftOpen` 那两行（渲染草稿 + `addButton.disabled`）删掉 | 「虚线按钮加一条空行…」 |
 | `list.addEventListener('change', …)` 改成 `'input'` | 「打字过程中存储一个字节都不变」（改成 input 后打字即写） |
-| `from.value = term?.from ?? ''` 改成 `from.setAttribute('value', …)` | 回填断言的读数是 `.value`，`setAttribute` 在 jsdom 里**也**会反映到 `.value`（属性反射），所以这条**杀不死**——真正的守卫是「`<img onerror>` 原样进存储」那条（走 `textContent` 家族而非 HTML 解析）。记下来，别以为回填有守卫。 |
+| `from.value = term?.from ?? ''` 改成 `from.setAttribute('value', …)` | **不设此变异（已核实杀不死）**：回填断言的读数是 `.value`，而 `setAttribute('value', …)` 在 jsdom 里**也会**反映到 `.value`（属性反射），两种写法行为一致。真正的守卫是「`<img onerror>` 原样进存储」那条（走 `textContent` 家族而非 HTML 解析）。这一行留在这里是记录"查过、杀不死"，不是待办。 |
 
 - [ ] **Step 7: 提交**
 
@@ -3672,6 +3813,13 @@ describe('normalizeRulePattern：能接受的写法', () => {
     expect(normalizeRulePattern('https://example.com')).toEqual({ ok: true, pattern: 'example.com' });
     expect(normalizeRulePattern('https://www.example.com/')).toEqual({ ok: true, pattern: 'www.example.com' });
     expect(normalizeRulePattern('http://localhost:11434/')).toEqual({ ok: false, reason: expect.any(String) });
+  });
+
+  it('单标签主机名照收（localhost / 内网短名）：核心按精确匹配，它本来就是有效规则', () => {
+    // **已决**：不因为"没有点"就拒绝。核心的 `hostMatchesPattern` 对任何非空 pattern 都做
+    // 精确匹配，UI 凭空加这条限制只会让人配不了内网页面；真正该拒的是下面的端口/路径/垃圾输入。
+    expect(normalizeRulePattern('localhost')).toEqual({ ok: true, pattern: 'localhost' });
+    expect(normalizeRulePattern('*.wiki')).toEqual({ ok: true, pattern: '*.wiki' });
   });
 
   it('中文域名按 punycode 落地（核心按 ASCII 比对，填中文会静默失效——这里把它接住）', () => {
@@ -3741,8 +3889,16 @@ import type { SiteRule } from '../shared/settings';
 
 export type RulePatternResult = { ok: true; pattern: string } | { ok: false; reason: string };
 
-/** 主机名的最小形状：由点分标签组成，至少一个点（`localhost` 这种单标签域名不作为规则推荐）。 */
-const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+/**
+ * 主机名的形状：点分标签，每段由字母数字与连字符组成、不以连字符开头或结尾。
+ *
+ * **允许单标签**（`localhost`、`wiki` 这种内网短名）——**已决**：核心匹配器
+ * （`src/core/site-rules.ts` 的 `hostMatchesPattern`）对任何非空 pattern 都做精确匹配，
+ * `localhost` 在那边是**有效规则**；UI 这一侧凭"看起来不像域名"把它拒掉，就是凭空发明一条
+ * 核心没有的限制（而且内网页面确实有人想加规则）。真正该拒的是 URL 解析都过不去的输入
+ * （`???`、带空格的串）与带端口/路径/凭据的写法，那几类下面各有一条。
+ */
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
 
 /** 把一串"可能带 scheme、可能带路径"的输入解析成主机名；解析不出来返回 null。 */
 function hostFrom(input: string): { host: string; hadPath: boolean; hadPort: boolean; hadUserInfo: boolean } | null {
@@ -3802,7 +3958,7 @@ export type StoredRule = SiteRule;
 - [ ] **Step 4: 跑到绿（纯函数）**
 
 Run: `npx vitest run tests/options/rule-pattern.test.ts`
-Expected: PASS —— **10 条用例**
+Expected: PASS —— **11 条用例**
 
 - [ ] **Step 5: 写页面测试（第二个失败测试）**
 
@@ -3924,6 +4080,31 @@ describe('设置页：站点规则（写入侧）', () => {
     input.value = 'exa';
     input.dispatchEvent(bubble('input'));
     expect(await storedRules()).toEqual([]);
+  });
+
+  it('既有行的域名被清空：**不写存储**、给一句能读懂的话，要删得点行尾「删除」', async () => {
+    // 与术语表同一条口径（见 `sections/glossary.ts` 的注释）：用户可能只是"清掉重打"，
+    // 在失焦那一刻顺手删条目 + 重绘会让他正在编辑的一行当场消失，且没有撤销出口。
+    await seedSettings({
+      siteRules: [
+        { pattern: 'a.com', action: 'never' },
+        { pattern: 'b.com', action: 'never' },
+      ],
+    });
+    await loadOptions();
+
+    patternOf(rowAt(0)).value = '';
+    patternOf(rowAt(0)).dispatchEvent(bubble('change'));
+
+    await waitFor(() => (status().textContent ?? '').includes('没有保存'));
+    expect(status().dataset.kind).toBe('err');
+    expect((await storedRules()).map((rule) => rule.pattern)).toEqual(['a.com', 'b.com']);
+    expect(rows()).toHaveLength(2);
+
+    // 明确的删除动作才真的删。
+    rowAt(0).querySelector<HTMLButtonElement>('[data-action="delete-rule"]')!.click();
+    await waitFor(async () => (await storedRules()).length === 1);
+    expect((await storedRules()).map((rule) => rule.pattern)).toEqual(['b.com']);
   });
 
   it('行尾红字删除只删那一条，其余顺序原样；草稿行的删除不碰存储', async () => {
@@ -4118,9 +4299,11 @@ async function writeRules(ctx: SectionContext, rules: SiteRule[], prefix: string
 
 /**
  * 一行的 `change`（＝失焦且值变了）：
- * - 空：既有行 → 删掉它（界面上空了，存储里不该还留着）；草稿行 → 什么都不做；
  * - 规范化成功：既有行就地更新，草稿行追加成新条目，并把**规范化后的值写回输入框**；
- * - 规范化失败：**不写存储**，把原因说给用户听（输入框保留原文，让他能改）。
+ * - 规范化失败：**不写存储**，把原因说给用户听（输入框保留原文，让他能改）；
+ * - 空：草稿行 → 什么都不做（等用户接着填）；**既有行 → 不写存储**，只说明"存储里仍是原来
+ *   那条，要删请点行尾「删除」"。与术语表同一条口径（见 `sections/glossary.ts` 的注释）：
+ *   在失焦那一刻顺手删条目 + 重绘，会让**用户正在编辑的一行当场消失**，而这份界面没有撤销出口。
  */
 async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
   const current = ctx.settings();
@@ -4131,8 +4314,8 @@ async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
   const rules = current.siteRules;
 
   if (raw.length === 0) {
-    if (index >= rules.length) return;
-    await writeRules(ctx, rules.filter((_, at) => at !== index), '删除规则失败', '已删除');
+    if (index >= rules.length) return; // 草稿行空着：等他填，不写存储
+    setStatus(status, 'err', '这一条规则没有域名，没有保存；存储里仍是原来那条（要删掉请点行尾「删除」）');
     return;
   }
 
@@ -4223,17 +4406,19 @@ export const SECTIONS: readonly Section[] = [
 - [ ] **Step 9: 跑到绿**
 
 Run: `npx vitest run tests/options/site-rules.test.ts tests/options/rule-pattern.test.ts`
-Expected: PASS —— **8 条 + 10 条**
+Expected: PASS —— **9 条 + 11 条**
 
 - [ ] **Step 10: 变异验证**
 
 | 变异 | 期望红在哪一条 |
 | --- | --- |
 | `if (!normalized.ok) { setStatus(...); return; }` 删掉（非法也写） | 「非法形状不写存储并说清为什么」 |
+| 空域名那一支的 `setStatus(status,'err', …)` 改成 `await writeRules(… filter …)`（＝上一版计划的"顺手删掉"） | 「既有行的域名被清空：**不写存储**、给一句能读懂的话」 |
 | `input.value = normalized.pattern` 删掉 | 「整条网址被规范化成主机名」的第二个断言 |
 | `{ pattern: normalized.pattern, action: 'never' }` 改成 `action: 'translate'` | 「加一条规则…动作写的是 never」 |
 | `rule-pattern.ts` 里 `hadPort` 那条判断删掉（`example.com:8080` 会走 `https://example.com:8080` → hostname 是 `example.com`） | 「带端口的写法」与页面上的「端口」用例 |
-| `HOSTNAME` 的 `(?:\.…)+` 改成 `*`（允许单标签） | 「不是域名的东西」里的 `???` 不一定红——**单标签域名**那条要用 `normalizeRulePattern('localhost')` 才杀得死；测试里已含 `???`，若要更硬可补一条 `localhost` 的用例（推荐补） |
+| `HOSTNAME` 的 `(?:\.…)*` 改回 `(?:\.…)+`（要求至少一个点） | 「单标签主机名照收（localhost / 内网短名）」——**已决**：单标签是合法的核心规则，不拒 |
+| `hadPath` 那条判断删掉（`https://example.com/docs` 会被静默截成 `example.com`） | 「带路径的网址」 |
 
 - [ ] **Step 11: 提交**
 
@@ -4313,6 +4498,21 @@ describe('设置页：自定义提示词', () => {
 
     await waitFor(async () => (await storedSettings()).systemPrompt === '');
     expect((await storedSettings()).systemPrompt).toBe('');
+  });
+
+  it('前后空白原样存进去（存的是用户敲的那一份，判断"空不空"是消费者的事）', async () => {
+    // 这条是**决策**不是装饰：存 `value` 还是存 `value.trim()` 只能选一个。
+    // 选"原样"的理由：消费者（`openai-compat.ts` 的 buildMessages）本来就 `trim()` 之后再判断
+    // 追加与否，所以两边都 trim 只会让"界面里看到的"与"存储里的"不一致；而界面上显示的
+    // 永远是 textarea 里的原文。这条用例把选择钉住——谁把实现改成 `.trim()`，这里当场红。
+    await seedSettings({ systemPrompt: '' });
+    await loadOptions();
+
+    textarea().value = '  语气正式一点  ';
+    textarea().dispatchEvent(bubble('change'));
+
+    await waitFor(async () => (await storedSettings()).systemPrompt === '  语气正式一点  ');
+    expect((await storedSettings()).systemPrompt).toBe('  语气正式一点  ');
   });
 
   it('写入被拒时如实报错，界面不假装成功', async () => {
@@ -4428,14 +4628,14 @@ export const SECTIONS: readonly Section[] = [
 - [ ] **Step 5: 跑到绿**
 
 Run: `npx vitest run tests/options/prompt.test.ts`
-Expected: PASS —— **4 条用例**
+Expected: PASS —— **5 条用例**
 
 - [ ] **Step 6: 变异验证**
 
 | 变异 | 期望红在哪一条 |
 | --- | --- |
 | `'change'` 改成 `'input'` | 「打字过程中存储不变…」 |
-| `{ systemPrompt: promptArea.value }` 改成 `{ systemPrompt: promptArea.value.trim() }` | 目前**杀不死**（用例里没有前后空白的输入）。要么补一条 `'  语气  '` → 存储原样含空格的用例（推荐），要么接受"实现选择了 trim"这一版语义——**二选一，别留着不管** |
+| `{ systemPrompt: promptArea.value }` 改成 `{ systemPrompt: promptArea.value.trim() }` | 「前后空白原样存进去」——**已决**：存原样（消费者自己 trim），这条用例就是那个决定的见证 |
 | `mount` 里的 `promptArea.value = current.systemPrompt` 删掉 | 「按存储回填（多行原样）」 |
 
 - [ ] **Step 7: 提交**
@@ -4976,6 +5176,41 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
     expect(visibleSections()).toEqual(['engine']);
   });
 
+  it('隐私区块那一大段正文**不进索引**：搜「密钥」「API Key」「档案」都不点亮隐私', async () => {
+    // 这条钉住的是**索引边界本身**，不是某个别名：隐私区块的 `<li>` 与 `<details>` 里到处是
+    // 「API Key」「密钥」「档案」这些词（`API Key 只存在本机`、`每个档案都没有这个字段`……）。
+    // 一旦有人把 `sectionHaystack` 的选择器放宽（比如顺手加上 `, li` 或整段 `textContent`），
+    // 搜「密钥」就会同时点亮隐私与翻译引擎——规格 §4.2 点名要防的正是这个（"搜『密钥』跳出
+    // 术语表比搜不到更糟"，跳出隐私同样糟），而**别名互斥守卫抓不到它**（碰撞发生在非别名文本里）。
+    await seedSettings();
+    await loadOptions();
+
+    const privacy = document.querySelector<HTMLElement>('[data-section="privacy"]')!;
+    for (const query of ['密钥', 'API Key', '档案', 'key']) {
+      search(query);
+      expect([query, visibleSections()]).toEqual([query, ['engine']]);
+    }
+    // 索引只读这两类元素：隐私区块里既没有 `.lab`，`.sec-desc` 也只有那一句别名无关的话。
+    expect(privacy.querySelectorAll('.lab')).toHaveLength(0);
+    expect(privacy.querySelectorAll('.sec-desc')).toHaveLength(1);
+    // 而正文里确实有那些词（否则这条用例就是空转）。
+    expect(privacy.textContent ?? '').toContain('API Key');
+    expect(privacy.textContent ?? '').toContain('档案');
+  });
+
+  it('命中的区块，它的导航项必须可见（看得见结果却点不到它，是比搜不到更糟的失败）', async () => {
+    await seedSettings();
+    await loadOptions();
+
+    for (const [query, id] of [['密钥', 'engine'], ['并发', 'cache'], ['词库', 'glossary']] as const) {
+      search(query);
+      expect([query, visibleSections()]).toEqual([query, [id]]);
+      // `navLink.hidden = !hit`：命中时必须是 false——写反成 `= hit` 就会把结果本身藏掉，
+      // 而只断言"区块可见"的用例发现不了（它们不看导航项）。
+      expect([query, document.querySelector<HTMLElement>(`[data-nav="${id}"]`)?.hidden]).toEqual([query, false]);
+    }
+  });
+
   it('按字段标签找区块：搜「源语言」找到语言与显示，搜「并发」找到缓存与请求', async () => {
     await seedSettings();
     await loadOptions();
@@ -5053,6 +5288,38 @@ describe('区块清单与页面结构一一对应', () => {
     }
     search('');
   });
+
+  it('导航分组归属与三段信息架构一致（插错组要当场红）', async () => {
+    // 只断言"导航项存在"是不够的：Task 5/6/7 每加一个区块都要往「内容控制」组里插一行，
+    // 插到「翻译」或「数据」组里不会让任何用例变红，却会让导航的分段语义悄悄错位。
+    // 这里把规格 §3 的三段结构（翻译 / 内容控制 / 数据）钉死在分组标题上。
+    await seedSettings();
+    await loadOptions();
+    const expected: Record<string, string> = {
+      engine: '翻译',
+      language: '翻译',
+      shortcuts: '翻译',
+      glossary: '内容控制',
+      'site-rules': '内容控制',
+      prompt: '内容控制',
+      cache: '数据',
+      privacy: '数据',
+    };
+
+    for (const [id, group] of Object.entries(expected)) {
+      const link = document.querySelector<HTMLElement>(`[data-nav="${id}"]`);
+      expect([id, link?.closest('[data-nav-group]')?.querySelector('.grp')?.textContent]).toEqual([id, group]);
+    }
+    // 页面顺序、导航顺序、分组顺序三者一致：`<main>` 里的区块顺序就是上面 SECTIONS 的顺序。
+    expect(Array.from(document.querySelectorAll('[data-section]')).map((node) => (node as HTMLElement).dataset.section)).toEqual(
+      Object.keys(expected),
+    );
+    expect(Array.from(document.querySelectorAll('[data-nav-group] .grp')).map((node) => node.textContent)).toEqual([
+      '翻译',
+      '内容控制',
+      '数据',
+    ]);
+  });
 });
 ```
 
@@ -5097,7 +5364,19 @@ export function matchesTerms(haystack: readonly string[], terms: readonly string
   return terms.every((term) => text.includes(term));
 }
 
-/** 一个区块参与搜索的全部文本。 */
+/**
+ * 一个区块参与搜索的全部文本：**区块标题 + 别名表 + `.sec-desc` + 每个字段标签 `.lab`**。
+ *
+ * **这个边界是承重的，别放宽它**：隐私区块的正文（`<li>` 与 `<details>` 里）到处是
+ * 「API Key」「密钥」「档案」——那正是翻译引擎的别名。选择器一旦多收一类元素（比如顺手加上
+ * `li`，或者干脆用整段的文本），搜「密钥」就会同时点亮隐私与翻译引擎，而规格 §4.2 点名要防的
+ * 就是这件事（"搜『密钥』跳出术语表比搜不到更糟"，跳出隐私同样糟）。
+ * `tests/options/search.test.ts` 有一条专门的用例钉住这个边界（搜「密钥」「API Key」「档案」
+ * 都只能剩翻译引擎，并且断言隐私区块里确实有这些词——否则那条用例就是空转）。
+ *
+ * 另一条同源的纪律：`.hint`（大段解释文字）**故意不进索引**。引擎区块与缓存区块的说明里
+ * 都写着「API Key」，收进来就会把这两块一起点亮。
+ */
 export function sectionHaystack(root: ParentNode, section: Section): string[] {
   const node = root.querySelector(`[data-section="${section.id}"]`);
   const labels =
@@ -5223,7 +5502,7 @@ function init(): void {
 - [ ] **Step 4: 跑到绿**
 
 Run: `npx vitest run tests/options/search.test.ts`
-Expected: PASS —— **10 条用例**
+Expected: PASS —— **13 条用例**（解析与匹配 2 条、过滤 8 条、结构守卫 3 条）
 
 - [ ] **Step 5: 补一条样式断言（`[hidden]` 是搜索的地基）**
 
@@ -5249,8 +5528,11 @@ Expected: PASS —— **8 条用例**（新增的 `[hidden]` 那条是第 8 条�
 | `empty.hidden = hits > 0` 改成 `empty.hidden = true` | 「零命中…」 |
 | `parseQuery` 里不 `.toLowerCase()` | 「全部命中才算命中」的 `'KEY'` |
 | 把 `sections/glossary.ts` 的别名里加一个 `'密钥'` | 「命中「密钥」只留下翻译引擎」（同时也会红在别名互斥守卫上） |
+| **`sectionHaystack` 的选择器放宽成 `'.lab, .sec-desc, li'`**（或整段 `textContent`） | 「隐私区块那一大段正文**不进索引**」——这是那条用例存在的唯一理由 |
 | `sectionHaystack` 把 `.hint` 也收进索引 | 「每个别名只命中它自己那个区块」（`API Key` 会同时点亮 cache 与 engine） |
+| **`navLink.hidden = !hit` 改成 `= hit`**（命中的反而藏掉） | 「命中的区块，它的导航项必须可见」——只断言区块可见的用例抓不到这个反写 |
 | `options.html` 的 `data-nav="privacy"` 删掉 | 「八个区块：顺序一致、每个都有区块元素与导航项」 |
+| **把 `data-nav="prompt"` 那一行挪进「数据」组** | 「导航分组归属与三段信息架构一致」 |
 
 - [ ] **Step 7: 提交**
 
@@ -5572,16 +5854,17 @@ export async function forgetEngineHealth(id: string, area: StorageArea = session
 
 - [ ] **Step 4: 改 `sections/engine.ts`（状态点 + 免费引擎那一行 + 测试连接重构）**
 
-按下面逐处改（**其余部分一字不动**）：
+按下面逐处改（**其余部分一字不动**）。每一处都给足了定位上下文；`src/options/sections/engine.ts` 这个文件此刻已经在磁盘上（Task 3 写的），直接开文件改，不要重打整份：
 
-① import 区加一条，并把 `Translator` / `EngineConfig` **合并进已有的那一行**（不要为它们新开一条 import）：
+① **import 区一次改完**（三件事：加 `../engine-health` 一条、把 `Translator`/`EngineConfig` 合并进已有的 `../../engines/types` 那一行、把 `StatusKind` 合并进已有的 `../dom` 那一行）。改完这三行应当**恰好**长这样，别再多出第四条 import：
 
 ```ts
 import { forgetEngineHealth, loadEngineHealth, saveEngineHealth, type EngineHealth } from '../engine-health';
 import { toEngineError, type EngineConfig, type Translator } from '../../engines/types';
+import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';
 ```
 
-（`runConnectionTest` 的签名要用 `Translator` 与 `EngineConfig`；其余 import 一字不动。）
+（`StatusKind` 只在这里 import 一次，⑥ 的 `recordHealth` 直接用；`../../shared/settings`、`../../shared/host-permission`、`../../engines/registry` 那几行一字不动。）
 
 ② 模块状态区（`let expandedId` 之后）加：
 
@@ -5593,7 +5876,7 @@ import { toEngineError, type EngineConfig, type Translator } from '../../engines
 let health: Record<string, EngineHealth> = {};
 ```
 
-③ 渲染区加两个纯函数：
+③ 渲染区加两个纯函数：**紧跟 `/* ------------------------------------------------------------------ 渲染 */` 这一行分隔注释之后、`function buildEditor(` 之前**插入（这两个函数与 `buildEditor` 同属渲染区，`rowById` 之类还够不到它们，所以顺序上只能在这儿）：
 
 ```ts
 /**
@@ -5643,9 +5926,18 @@ function buildFreeEngineRow(ctx: SectionContext): HTMLElement {
 }
 ```
 
-④ `buildProfileRow` 里，把徽章那一段改成"徽章之后跟状态点"：
+④ `buildProfileRow` 里，把**这 6 行**（Task 3 写完时的样子）整段替换成右边那 11 行：
 
 ```ts
+// 替换前
+  const line = element('span', 'line');
+  line.append(element('span', 'name', isNew ? '新档案（未保存）' : profile?.label ?? ''));
+  if (!isNew && snapshot.engineId === id) {
+    line.append(element('span', 'badge', '使用中'));
+  }
+  const grow = element('span', 'grow');
+
+// 替换后
   const line = element('span', 'line');
   line.append(element('span', 'name', isNew ? '新档案（未保存）' : profile?.label ?? ''));
   if (!isNew && snapshot.engineId === id) {
@@ -5657,15 +5949,18 @@ function buildFreeEngineRow(ctx: SectionContext): HTMLElement {
     applyDot(dot, health[id]);
     line.append(dot);
   }
+  const grow = element('span', 'grow');
 ```
 
-⑤ `renderProfiles` 的末尾（草稿行之后）加：
+（`const grow = …` 那一行是**保留**的锚点，替换的只有它前面那几行；别把 `grow` 也一起换掉。）
+
+⑤ `renderProfiles` 的末尾加一行：**在 `if (expandedId === NEW_DRAFT_ID) { profilesList.append(buildProfileRow(ctx, NEW_DRAFT_ID)); }` 这个 `if` 块之后、函数收尾的 `}` 之前**。免费引擎那一行永远排在最后，且每次重绘都跟着列表一起画：
 
 ```ts
   profilesList.append(buildFreeEngineRow(ctx));
 ```
 
-⑥ 测试连接那一段抽成共用函数（放在 `handleTestProfile` 之前）：
+⑥ 测试连接那一段抽成共用函数：**插在 `handleTestProfile` 那一整段（含它的文档注释）之前**，也就是紧跟在 `renderEngineHint` 之后、`/* ---…--- 行为 */` 分隔注释之后的位置：
 
 ```ts
 /**
@@ -5728,15 +6023,33 @@ async function recordHealth(
 }
 ```
 
-（`StatusKind` 从 `../dom` 一起 import：`import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';`）
+（`StatusKind` 的 import 已在 ① 里一次改好，这里直接用；不要再加一条 `../dom` 的 import。）
 
-⑦ `handleTestProfile` 里，把 `setStatus(…pending…)` 到 `finally` 那一整段替换成一句调用：
+⑦ `handleTestProfile` 里，把**从 `setStatus(engineStatus, 'pending', …)` 那一行到 `} finally { clearTimeout(timer); }` 那一行**（含 `const controller` / `const timer` / `try` / `catch` / `finally` 整块，共 6 个语句块）整段替换成一句调用。替换前那一块长这样，替换后只有一行：
 
 ```ts
+// 替换前（Task 3 写完时的样子）
+  setStatus(engineStatus, 'pending', `正在用档案「${values.label}」翻译一次「${TEST_TEXT}」…`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
+  try {
+    const [translation] = await engine.translate(…);
+    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${translation ?? ''}`);
+  } catch (raw) {
+    const error = toEngineError(raw);
+    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${error.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+
+// 替换后（整块就这一行）
   await runConnectionTest(ctx, id, engine, config, `档案「${values.label}」`);
 ```
 
-⑧ `handleTestProfile` 之后加免费引擎的入口：
+（上面"替换前"里的 `engine.translate(…)` 是省略写法——照原文照搬那一整块即可，`from` / `to` / `signal` 三个字段都不要漏；它们现在归 `runConnectionTest` 管。）
+
+⑧ **紧接 `handleTestProfile` 之后、`handleDeleteProfile` 的文档注释之前**插入免费引擎的入口（两个函数挨着放，读的人一眼能看到"两条入口走同一条 `runConnectionTest`"）：
 
 ```ts
 /** 内置免费引擎的测试连接：没有表单值可读，配置就是空的（免费接口零配置）。 */
@@ -5756,9 +6069,20 @@ async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
       }
 ```
 
-⑩ `handleDeleteProfile` 的成功分支末尾（`setStatus(engineStatus, 'ok', …)` 之后）加：
+⑩ `handleDeleteProfile` 的成功分支：**整段替换**下面这 11 行（Task 3 写完时的样子，从 `if (expandedId === id)` 到函数结束的 `}`），改动只有末尾追加的那一段。`setStatus(engineStatus, 'ok', …)` 是**函数最后一条语句**，所以"插在它之后"就是"插在函数的收尾大括号之前"——下面把整段贴出来，避免插错层级：
 
 ```ts
+  if (expandedId === id) expandedId = null;
+  renderProfiles(ctx);
+  renderEngineHint(ctx);
+  setStatus(
+    engineStatus,
+    'ok',
+    wasCurrent
+      ? `已删除当前在用的档案「${target.label}」，引擎已回落到「${getEngine(DEFAULT_ENGINE_ID).name}」，请在弹窗里重新选择。`
+      : `已删除档案「${target.label}」。`,
+  );
+  // ↓↓↓ 本任务新增（仍然在函数体内，收尾大括号之前）↓↓↓
   delete health[id];
   try {
     await forgetEngineHealth(id);
@@ -5769,11 +6093,21 @@ async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
       `${engineStatus.textContent ?? ''}（它的测试记录没清掉：${describe(raw)}）`,
     );
   }
+}
 ```
 
-⑪ `mount` 换成读记录 + 渲染：
+（`delete health[id]` 放在 `try` **之前**：内存里的那份必须立刻扔掉，否则界面下一次重绘还可能画出它的点；存储里那份删不掉只影响下次打开设置页，如实说一句就够。）
+
+⑪ `mount` 整段替换（Task 3 写完时它是同步的两行渲染，现在要先读记录）。替换前 / 替换后：
 
 ```ts
+// 替换前
+  mount(ctx: SectionContext): void {
+    renderProfiles(ctx);
+    renderEngineHint(ctx);
+  },
+
+// 替换后
   async mount(ctx: SectionContext): Promise<void> {
     try {
       health = await loadEngineHealth();
@@ -5787,7 +6121,9 @@ async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
   },
 ```
 
-⑫ `src/options/options.html` 的引擎区块里，在 `#engine-status` 之前插入：
+（`Section.mount` 的签名是 `void | Promise<void>`，这里返回 Promise 是允许的——`options.ts` 的 `start()` 用 `await section.mount(context)` 等着它。）
+
+⑫ `src/options/options.html` 的引擎区块里，**在 `<div id="profiles"></div>` 之后、`<p class="hint">`（那段"一个档案 = 一份接口地址 + 模型名 + API Key…"）之前**插入下面这一段。放在这里是因为它解释的正是上面那个列表里的点；插在 `#engine-status` 前面会夹在说明段落与状态行之间，读起来是断的：
 
 ```html
           <details>
@@ -5795,7 +6131,7 @@ async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
             <p>
               <strong>绿</strong> = 最近一次「测试连接」通过；<strong>灰</strong> = 从没测过
               （不代表可用，也不代表不可用）；<strong>红</strong> = 最近一次测试失败，悬停显示失败原因。
-              填了 API Key **不等于**能用，所以这里不按"填没填"点灯。
+              填了 API Key <strong>不等于</strong>能用，所以这里不按"填没填"点灯。
             </p>
             <p>
               记录保存在 <code>chrome.storage.session</code> 里（只有引擎名与成败原因，不含 Key），
@@ -5803,6 +6139,8 @@ async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
             </p>
           </details>
 ```
+
+（**HTML 里不许出现 Markdown 的 `**`**：上面那处"不等于"用的是 `<strong>`。上一版计划在这里写了字面星号，浏览器会把它们原样画出来。）
 
 ⑬ `src/options/options.css` 的 `.badge` 规则之后加：
 
@@ -5911,8 +6249,13 @@ git commit -m "feat(options): 状态点三态（会话内记录）+ 内置免费
   （"从没测过"）——重新测一次即可。
 - **窄窗口（< 900px）下左导航降级为顶部一行可横滚的胶囊链接**（不再吸顶，分组标题隐藏）。
   **这条降级策略没有在任何真实渲染里验证过**（本机没有浏览器），布局挤压与暗色对比度同样依赖肉眼验收。
-- 术语表的空行（原文或译文为空）不会写进存储；既有的一行被清空时，它会从存储里一并删掉
-  （界面与存储必须一致）。
+- 术语表的空行（原文或译文为空）不会写进存储；**把已经有的一行清空也不会静默删掉它**——界面会明说
+  「没有保存，存储里仍是原来那条」，要删请点行尾的「删除」。站点规则的域名同理。
+  （理由：清空多半是"清掉重打"，在失焦那一刻删条目会让正在编辑的一行当场消失，而这份界面没有撤销出口。）
+- **在文本类控件里按 `Esc` 不会撤销这次改动**：多数浏览器在改动后仍然会派发 `change`，于是那次改动
+  照常落盘。改版前有「保存」按钮时可以反悔，现在没有这个出口——要改回去就再改一次，列表行则用行尾
+  「删除」。本轮不实现"Esc 撤销"：本机没有浏览器可以验证 `Esc` 在各控件上的真实语义，凭猜测写一个
+  半可用的撤销比不写更糟。
 ```
 
 - [ ] **Step 3: 「隐私」一节补一句存储**
@@ -5931,7 +6274,9 @@ git commit -m "feat(options): 状态点三态（会话内记录）+ 内置免费
 npm test
 ```
 
-Expected: 全绿；测试总数 = **867 + 本轮新增**（本轮新增用例的逐文件计数：`store.test.ts` 6、`options-css.test.ts` 8（含 Task 9 补的第 8 条）、`no-innerhtml.test.ts` 2、`shortcuts.test.ts` 5、`glossary.test.ts` 10、`rule-pattern.test.ts` 10、`site-rules.test.ts` 8、`prompt.test.ts` 4、`cache-section.test.ts` 8、`search.test.ts` 10、`engine-health.test.ts` 8 = **79 条**，因此预期 **946 个测试 / 51 files**；`options.test.ts` 仍是 29 条）。实际数字以命令输出为准，**与预期不符先查原因，别改断言凑数**。
+Expected: 全绿；测试总数 = **867 + 本轮新增**。本轮新增用例的逐文件计数（**写完最后一个 Task 后按实际输出核对**）：
+`store.test.ts` 6、`dom.test.ts` 4、`options-css.test.ts` 8（Task 3 的 7 条 + Task 9 补的 `[hidden]` 那条）、`no-innerhtml.test.ts` 2、`shortcuts.test.ts` 5、`glossary.test.ts` 11、`rule-pattern.test.ts` 11、`site-rules.test.ts` 9、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8 = **90 条**，因此预期 **957 个测试 / 52 files**（40 + 12 个新测试文件；`tests/options/harness.ts` 不是测试文件，不计）。`options.test.ts` 仍是 **29 条**。
+实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
 
 ```bash
 npm run typecheck
@@ -5974,7 +6319,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | # | 规格 §10 的验收标准 | 由谁覆盖 | 具体证据 |
 | --- | --- | --- | --- |
 | 1 | 8 个区块全部可操作，每个能改的字段都有真实消费者，无占位控件 | Task 3（engine/language/cache/privacy）+ Task 4（shortcuts）+ Task 5（glossary）+ Task 6（site-rules）+ Task 7（prompt）+ Task 8（cache 统计与高级） | 每个区块的用例都在真实 HTML 上操作并直读存储；`privacySection` 是**空实现**（没有可改字段，因此没有任何控件）；`autoTranslateDelay` 全程不出现（§1 表 + §8） |
-| 2 | 即时保存：改字段后重新读取存储确认落盘，不点任何保存按钮 | Task 3 Step 13（语言/显示）、Task 4 Step 3（开关）、Task 5 Step 1（术语）、Task 6 Step 5（规则）、Task 7 Step 1（提示词）、Task 8 Step 1（四个数字） | 所有新用例走 `waitFor(async () => (await storedSettings())… )` 直读存储；唯一保留的显式保存按钮是档案的「保存档案」，理由见「需要评审先点头的 7 个决定」第 2 条 |
+| 2 | 即时保存：改字段后重新读取存储确认落盘，不点任何保存按钮 | Task 3 Step 13（语言/显示）、Task 4 Step 3（开关）、Task 5 Step 1（术语）、Task 6 Step 5（规则）、Task 7 Step 1（提示词）、Task 8 Step 1（四个数字） | 所有新用例走 `waitFor(async () => (await storedSettings())… )` 直读存储；唯一保留的显式保存按钮是档案的「保存档案」，理由见「需要评审先点头的 9 个决定」第 2 条 |
 | 3 | 文本字段 `blur` 才写存储：打字过程中存储不变 | Task 5（术语）、Task 6（规则）、Task 7（提示词）各自的「打字过程中存储不变」用例 | 落成原生 `change`（= 失焦且值变了，且**冒泡**，能配合动态行的委托监听）；`input` 事件一律不写 |
 | 4 | 术语表空行（`from` 或 `to` 为空）不写入存储 | Task 5 Step 1「只填一半的行不写存储，也不凭空长出第二行」（§10.4） | 另有「清空既有行 = 删掉那一条」，防止界面与存储对不上 |
 | 5 | 搜索：命中时只显示匹配区块；零命中出现「没找到」 | Task 9 全部用例 | `visibleSections()` 断言"只剩哪一个"；零命中时所有区块与导航项 hidden 且 `#search-empty` 不 hidden |
@@ -5982,7 +6327,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 7 | 站点规则：`never` 命中时三个入口都不翻译；`*.x.com` 通配与精确匹配各有用例；首条命中生效 | **单元 A 已交付**（`tests/core/site-rules.test.ts` 12 条、`tests/content/index.test.ts` 的拦截用例、`tests/popup/popup.test.ts` 的解除用例）；本单元 Task 6 补**写入侧**（界面里能增删的规则就是那三条语义的输入） | 本单元不重复实现、不重复测匹配语义；Task 6 的规则行只写 `action: 'never'` |
 | 8 | §6 的文案已改对，且断言更新在提交信息里写明理由 | Task 2 全部（含提交信息模板） | 改后的断言多了一条"仍存在的限制"，并反向钉住旧说法不许回来；Task 3 Step 10 的 HTML 里逐字保留该句 |
 | 9 | 亮/暗两套下无硬编码颜色（用 `tests/helpers/css.ts` 的解析器断言声明块） | Task 3 Step 4（`options-css.test.ts` 7 条）+ Task 9 Step 5（`[hidden]` 那条，第 8 条） | 令牌逐字一致、正文无 `#`/`rgb()`/`hsl()` 字面量、无 `opacity`；`--on-accent` 同时加进 `popup.css` 以保持共用组一致 |
-| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数预期 **946 / 51 files**（867 + 本轮 79 条） |
+| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数预期 **957 / 52 files**（867 + 本轮 90 条） |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -5997,7 +6342,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | §3.5 站点规则（域名 + 动作） | Task 6 全部（动作是静态「永不翻译」，见决定 #4） |
 | §3.6 自定义提示词 | Task 7 全部 |
 | §3.7 缓存与请求（三个统计、上限、清除、`<details>` 三项高级） | Task 3（清除按钮搬家）+ Task 8（统计、上限、高级折叠） |
-| §3.8 隐私（三条一行式 + `<details>` 里的诚实说明，**不删**） | Task 3 Step 10 的 HTML（那段 `<details>` 一字不删；三条承诺保留既有用例断言的五个字面量） |
+| §3.8 隐私（**四条一行式** + `<details>` 里的诚实说明，**不删**） | Task 3 Step 10 的 HTML（那段 `<details>` 一字不删；四条承诺里保留既有用例断言的五个字面量；第 4 条宿主权限承诺是**从现状原样搬过来的**，见该步的注记） |
 | §4.1 即时保存（change/blur 语义、单字段整份写回、失败可见、已知代价） | Task 1（内核）+ Task 3~8（每个区块的写路径）+ Task 11 Step 2（README 写明代价） |
 | §4.2 搜索（轻量、别名随区块定义、别名落点、占位符、只切 hidden） | Task 9 全部（别名互斥守卫 + 零命中 + 占位符断言） |
 | §4.3 状态点三态 | Task 10 全部 |
@@ -6033,7 +6378,8 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 
 **② 占位符扫描。** 写完后对本文档做了这几种模式的检查：`TBD` / `TODO` / `待补` / `类似 Task` / `为上述写测试` / `适当处理` / `等等`。
 结果：**0 处**。所有代码步骤都给的是完整代码；唯一"不给完整代码"的地方是 Task 3 Step 11 的 `sections/engine.ts`——它是**搬家**，全文都在那里逐字给出（含原有注释），`options.ts` 的装配、`dom.ts`、`section.ts`、四个区块模块、`harness.ts`、CSS、HTML 也全都是全文。
-**另有两处是"改写指引"而不是全文**，都给了精确的定位与替换内容：Task 3 Step 2（`options.test.ts` 删本地夹具 + 换成 import）、Task 10 Step 4（`sections/engine.ts` 的 ⑪ 处逐处改）。
+**另有两处是"改写指引"而不是全文**，都给了精确的定位与替换内容：Task 3 Step 2（`options.test.ts` 删本地夹具 + 换成 import）、Task 10 Step 4（`sections/engine.ts` 的 ⑬ 处逐处改，每处都引足了上下文）。
+**补充（审查后）**：第一版里有三处写成"二选一，别留着不管"的**决策点**（提示词要不要 `trim()`、单标签主机名收不收、术语行回填的那条变异杀不杀得死）——那不算占位符，但也不算已决项。现在三处都定下来了（分别见 Task 7 的「前后空白原样存进去」用例、`rule-pattern.ts` 的 `HOSTNAME` 注释 + 「单标签主机名照收」用例、Task 5 变异表里标注「不设此变异（已核实杀不死）」的那一行），**文档里不再有任何"你选一个"的句子**。
 
 **③ 类型与命名一致性。** 逐对过了一遍（前面的定义 ↔ 后面引用）：
 
@@ -6062,3 +6408,29 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 - 每个 Task 结束时跑一次 `npx vitest run tests/options/`，**再提交**；全量 `npm test` 只在 Task 11 跑一次（它要 18 秒，且 `extractor-scale` 那条基准测试吃 CPU）。
 - 本机是 pwsh 5.1：**不要**用 `Set-Content` / `Get-Content -Raw` 之类的命令改这些文件（会破坏 UTF-8 中文），一律用编辑/写入工具。跑 `npm test` 时不要用 `Select-Object -First N` 截断管道。
 - Task 3 之后的每个 Task 都只**新增**一个区块：HTML 里的插入点统一是 `<!-- 缓存与请求 -->` 那一行**之前**（保证页面顺序与导航顺序一致），导航项的插入点在各自 group 内——Task 9 的结构守卫会在顺序错位时当场红。
+
+---
+
+## 审查复核记录（第二版改了什么、以及两条没有复现的指控）
+
+第二版由一次独立核查驱动。逐条处置如下（**每条都改在计划里，不是只写在报告里**）：
+
+| 核查项 | 结论 | 改在哪 |
+| --- | --- | --- |
+| **B1** `SectionContext` 定义出现两份（一份带 `reload`、一份不带），下游会 `Property 'reload' does not exist` | **部分成立**：真正的问题是**重复定义**本身；`section.ts` 的接口与 `options.ts` 的 `const context` **两处都已有 `reload`**（复核过行号：接口在 `settings()` 之后、`context` 里是 `reload: async () => { await loadSnapshot(); }`），所以照原文落地**不会** typecheck 红。仍然按建议删掉了那份重复的定义块，并补了一条"接口只在这一处定义"的硬话 | Task 3 Step 11（`section.ts` 之后的那段注记）、文件结构表 |
+| **B2** 隐私区块会让 `search('密钥')` 返回 `['engine','privacy']` | **没有复现**：`sectionHaystack` 用的是 `node.querySelectorAll('.lab, .sec-desc')`（**在区块内**查），隐私区块既没有 `.lab`，它唯一的 `.sec-desc` 也是"本地存储、零网络请求、只采集可见文本、授权按需申请"这类别名无关的话；正文全在 `<ul>` / `<details>` 里。我把计划里的 HTML + `search.ts` 逻辑**原样复刻跑了一遍**（jsdom + 8 个区块的真实标签）：`密钥 → ['engine']`、`API Key → ['engine']`、`档案 → ['engine']`、`词库/专有名词 → ['glossary']`，**别名互斥矩阵 51 个别名全部基线绿** | 但**接受了它背后的担忧**：新增一条专门的用例钉住"隐私正文不进索引"（并断言隐私里**确实**有「API Key」「档案」、`.lab` 为 0 条、`.sec-desc` 为 1 条——免得用例空转）+ `sectionHaystack` 的文档注释写明这个边界是承重的 + 变异表新增"把选择器放宽成 `li`"这一行。Task 9 |
+| **B3** 命中的区块，其导航项被 `navLink.hidden = !hit` 藏掉了 | **没有复现**：`hit` 为真时 `!hit` 为假，`hidden=false`，导航项是**可见**的；`search('密钥')` 推演结果就是 `engine: 区块可见/nav可见`。测试 `:4959` 的那条断言（`engine` 的 nav `hidden === false`）与代码一致 | 仍然加了更强的守卫：一条"命中的区块其导航项必须可见"的用例（覆盖 engine/cache/glossary 三个），变异表新增"`= !hit` 反写成 `= hit`"这一行。Task 9 |
+| **B4** 隐私区块第 4 条承诺被静默删掉 | **成立**（真问题）：`options.html:79-83` 的第 4 条（宿主权限按需申请）确实被我压成了 3 条，而 `options.test.ts:298-306` 的 5 个字面量断言测不出它消失 | 第 4 条 `<li>` **原样恢复**（四条一行式）；`.sec-desc` 不再声称"三条"；并在 HTML 块后面写明"§3.8 的『三条』说的是版式，不是删掉一条"。Task 3 Step 10 |
+| **S1** Task 2 把过时句"改完点下面的「保存语言与显示」"搬进了新文案，且没交代归宿 | **成立**：那句话在 Task 2 的提交上**是真的**（按钮还在），但在 Task 3 之后就不再成立，而两个 Task 都没交代它 | Task 2：明确"范围是整个 `<p>`、只改链接那句、末尾句逐字保留"并写明归宿；Task 2 的断言新增 `toContain('保存语言与显示')`（当下为真）；Task 3 Step 13 **整条替换**成 `not.toContain('保存语言与显示')`；Task 3 Step 10 的注记同步更新 |
+| **S2** Task 3 的删除清单漏了会变死引用的 import | **成立**：`readFileSync` / `join` / `installChromeStub`+`ChromeStub` 会悬空（`noUnusedLocals` 没开，typecheck 不会报）；`vi` 要留、`afterEach` 要留 | Task 3 Step 2 新增第 2 条"同时删掉会变成死引用的 import"，并列出**要留的**标识符 |
+| **S3** 测试总数算错（`search.test.ts` 是 9 条不是 10 条） | **不成立**：计划里的 `search.test.ts` 实际有 **10 个 `it`**（2 + 6 + 2，`grep '^  it('` 数过）。不过**第二版新增了用例**，所以数字本来就要重算：现在是**本轮新增 90 条 → 预期 957 / 52 files** | Task 11 Step 4、验收对照表第 10 行（全量重算） |
+| **S4** Task 2 的替换范围写成 4 行、实际 5 行 | **不成立**：复核 `src/options/options.html`，`<p id="target-hint">` 是 **`:41-44` 四行**（第 45 行是 `<div class="actions">`）。范围保持 `:41-44` | 同时按 S1 把这一块的边界与归宿写清楚了。Task 2 Step 3 |
+| **S5** Task 10 的 import 指令前后矛盾（`StatusKind` 两处各说一遍） | **成立** | Task 10 ① 改成"import 区**一次改完**（三件事）"并给出改完后**恰好**的三行；⑥ 的括注改成"已在 ① 里改好，不要再加一条" |
+| **S6** Task 10 的 `<details>` 插入点不对，且 HTML 里有 Markdown 星号 | **成立**（两处都对） | 插入点改成"`<div id="profiles"></div>` 之后、`<p class="hint">` 之前"；`**不等于**` 改成 `<strong>不等于</strong>`，并加了一条"HTML 里不许出现 Markdown 的 `**`"的提醒 |
+| **S7** 三处变异写着"杀不死/二选一"却没做决定 | **成立**（这确实是决策点，不是已决项） | ① 提示词：**决定存原样**（消费者自己 trim），新增用例「前后空白原样存进去」把它钉住；② 单标签主机名：**决定照收**（核心按精确匹配，`localhost` 本来就是有效规则），`HOSTNAME` 放宽 + 新增用例「单标签主机名照收」；③ 术语行回填那条变异：标注**「不设此变异（已核实杀不死）」**，并说明真正的守卫是哪条用例 |
+| **S8** 导航分组归属没有守卫 | **成立**：Task 5/6/7 往「内容控制」组插行，插错组不会红 | Task 9 新增用例「导航分组归属与三段信息架构一致」（8 个 id → 分组标题的映射 + 区块顺序 + 分组顺序三者一起断言），变异表新增"把 `data-nav="prompt"` 挪进「数据」组" |
+| **P3** Task 10 ⑩ 的插入点上下文不够（`setStatus` 就是函数最后一句） | **成立** | ⑩ 改成"整段替换"，把成功分支**到函数收尾 `}`** 的 11 行全文贴出来，用 `// ↓↓↓ 本任务新增` 标出插入位置 |
+| **D-1** 术语行 `commitRow` 在 `from` 失焦时读两个框，会把没填完的一行"白填" | **部分成立，已按更稳的一版落地**：`from` 失焦→change 时 `to` 还空，代码走"草稿行半填→什么都不做"，**不是**丢掉整行——等 `to` 也失焦时第二次 change 才写入，所以数据不会白填。但上一版**测不到这条真实路径**（测试是先写好两个值、只派发一次 change），而且"既有行被清空"那一支选错了：顺手删条目 + 重绘会让**正在编辑的一行当场消失** | 新增用例「真实用户路径：先填 from、Tab 到 to（两次 change）」，并把三个分支逐条写进 `commitRow` 的注释；术语表**与站点规则**的"既有行被清空"改成**不写存储 + 明说"没有保存，存储里仍是原来那条，要删请点行尾「删除」"**（决定 #6 重写、两处测试与变异表同步） |
+| **D-2** `Esc` 取消编辑仍会写盘 | **成立**（真实缺口） | 不实现"Esc 撤销"（本机无法验证 `Esc` 在各控件上的真实语义，凭猜测写半可用的撤销更糟）——写进 README 已知限制并说明现成出路（决定 #8、Task 11 Step 2） |
+| **D2** `dom.ts` 没有自己的测试 | **成立**（共享件坏了会全线崩） | 新增 `tests/options/dom.test.ts`（4 条：`setStatus` 走 textContent、`runSafely` 两条路径、`requireWithin` 抛错带选择器、`fillSelect` 重建选项），放在 Task 3 Step 11 的**最前面**（先红后绿） |
+| **Task 10 自足性** 13 处改动是相对定位，要求执行者看到另一个 Task 的全文 | **成立** | 开头新增「执行前提」（第 0 条）：实现者从仓库 + 本 Task 小节出发；并把 Task 10 的每一处锚点引足上下文（②③④⑤⑥⑦⑧⑨⑩⑪ 逐处给出"替换前/替换后"或"插在哪两行之间"） |
