@@ -90,6 +90,26 @@ function click(
 }
 
 /**
+ * 一个**会让分析内核抛错**的元素：注入故障但不 mock 模块，走真实接线、真实点击。
+ *
+ * `classify()` 的第一句就是 `element.closest('[data-jy-root]')`，把它换成"第一次调用就抛"
+ * 即可——异常原样穿出 `diagnoseElement`，落到 `installDiagnose` 的 onClick 那个 catch 上。
+ * 只抛第一次：之后恢复原样，免得注入的故障溢出到别的环节（交互重扫会在同一个元素上问
+ * 同样的判据）。
+ */
+function brittleElement(): HTMLElement {
+  const target = document.createElement('p');
+  target.textContent = '这次分析会炸';
+  const original = target.closest;
+  target.closest = function brittle() {
+    target.closest = original;
+    throw new Error('分析内核炸了');
+  } as unknown as typeof target.closest;
+  document.body.append(target);
+  return target;
+}
+
+/**
  * 加载内容脚本并把页面翻译好；返回监听器、对端替身与"翻译后新插入的未翻译段落"。
  *
  * 新段落**故意不推动定时器**：它模拟的正是"翻译完成后页面新增了内容、增量那一轮
@@ -363,6 +383,59 @@ describe('诊断模式：不改变页面', () => {
 
     expect(seen).toHaveLength(1);
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('诊断模式：提示留得住（用户的视线在被点的元素上）', () => {
+  /**
+   * 实测出来的问题：提示只有 3.2 秒、还在屏幕底部，而用户的视线在屏幕中上部被点的元素上
+   * ——低头看一眼再抬头，提示已经没了。诊断是**显式动作**（Alt+Shift+点击）触发的排查工具，
+   * 不是状态反馈：留久一点没有代价（`toast` 是"删旧建新"，再点一次就替换），
+   * 却决定了用户到底看没看见结论。
+   *
+   * 这条走**真实链路**（内容脚本 + 真实点击）钉住"诊断那一次调用传了更长的时长"，
+   * 而不是只测 `toast()` 参数本身。
+   */
+  it('诊断那条提示比默认久：默认的 3.2 秒过去了它还在，到自己的点才消失', async () => {
+    const { translated } = await translatedPage();
+
+    click(translated);
+    expect(toastText()).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(toastText()).not.toBeNull(); // 默认时长下这里已经是一条空页面
+
+    await vi.advanceTimersByTimeAsync(15000 - 3200);
+    expect(toastText()).toBeNull();
+  });
+
+  /**
+   * 诊断**自己出错**时那条提示也是诊断的提示：它只在这个 catch 里出现（`diagnose.ts`），
+   * 用户的视线同样在被点的元素上，"低头 → 读懂 → 截图"这串动作 3.2 秒一样不够。
+   * 所以它与成功那条**同一个时长**，这里按同一条正负成对的口径钉住。
+   */
+  it('诊断自己出错时那条提示也留 15 秒（不是默认的 3.2 秒）', async () => {
+    // 逐节点建，不用 innerHTML（与"页面一个字节都不许被我们改写"同一条纪律）。
+    const page = document.createElement('p');
+    page.textContent = 'Ready to deploy';
+    document.body.replaceChildren(page);
+    await import('../../src/content/index');
+    const target = brittleElement();
+
+    click(target);
+
+    expect(toastText()).toContain('诊断失败');
+    // 分析没跑出结论：除了这条提示，什么通道都不该有输出。
+    expect(clipboardWrites).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(3200);
+    expect(toastText()).not.toBeNull(); // 默认时长下这里已经是一条空页面
+
+    await vi.advanceTimersByTimeAsync(15000 - 3200 - 1);
+    expect(toastText()).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(toastText()).toBeNull();
   });
 });
 

@@ -8909,10 +8909,17 @@ git commit -m "feat(content): 译文注入渲染器与还原"
 // src/content/toast.ts
 
 const TOAST_ID = 'jy-toast';
+/** 默认显示时长：一眼扫过的状态反馈（翻译失败、限流、页面级提示）。 */
 const VISIBLE_MS = 3200;
 
-/** 页面内轻提示。固定挂在 documentElement 上，不受页面布局影响。 */
-export function toast(message: string): void {
+/**
+ * 页面内轻提示。固定挂在 documentElement 上，不受页面布局影响。
+ *
+ * `visibleMs` 是**可选**的显示时长，不传就是既有行为（3200ms）——翻译失败、限流这些状态
+ * 反馈照旧一闪而过，既有调用方一个字都不用改。要留久一点的调用方（诊断模式）自己传值：
+ * **默认之外该留多久是调用方的策略**，理由写在那边的 `DIAGNOSE_VISIBLE_MS` 上。
+ */
+export function toast(message: string, visibleMs: number = VISIBLE_MS): void {
   const existing = document.getElementById(TOAST_ID);
   if (existing) existing.remove();
 
@@ -8950,7 +8957,7 @@ export function toast(message: string): void {
   shadow.append(span);
 
   document.documentElement.append(host);
-  setTimeout(() => host.remove(), VISIBLE_MS);
+  setTimeout(() => host.remove(), visibleMs);
 }
 ```
 

@@ -7,6 +7,9 @@ import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './i
 /**
  * Shift + 悬停翻译当前段。
  *
+ * 按住 Alt 时整条链路暂停：诊断模式的手势是 `Alt+Shift+点击`，按住它移向目标的路上会扫过
+ * 沿途每一个段落。判据取 **mouseover 事件自己的 `altKey`**，理由见 `onMouseover`。
+ *
  * 与整页翻译共用 `findLeafTextAncestor` 的段落判据（"什么算一段"只有一份实现）；
  * 结果只进 {@link tooltip} 的 fixed 浮层，**不往页面里插任何东西**。
  * 高亮是挂在 documentElement 上的 overlay 框，描边只用 `outline`——
@@ -135,6 +138,11 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
   const cache = new Map<string, string>();
 
   let enabled = false;
+  /**
+   * Shift 是否按着。这是**唯一**需要靠配对 keyup 维护的状态（Alt 不是，见 onMouseover：
+   * 抑制判据直接读事件自己的 `altKey`）。凡是要靠 keyup 维护的状态都有幽灵态风险
+   * ——窗口失焦时那个 keyup 收不到——所以它必须由 `onBlur` 兜底复位。
+   */
   let shiftDown = false;
   let current: HTMLElement | null = null;
   /** 最后一个发起了请求（或展示了结果）的段落；结果回来时只有它还有效才展示。 */
@@ -215,7 +223,7 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
     }, delayMs);
   }
 
-  function onMouseover(event: Event): void {
+  function onMouseover(event: MouseEvent): void {
     /**
      * **只响应真实用户手势**（与 `selection.ts` 的 onMouseup 同一个闸门、同一套理由）：
      * 页面脚本合成 keydown(Shift) + mouseover 就能指定段落、让扩展带着用户的 API Key 去
@@ -226,6 +234,24 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
      * 安全方向，被伪造最坏也只是让悬停提前失效，不会送任何文本出网络。
      */
     if (!event.isTrusted) return;
+    /**
+     * **按住 Alt 时整条悬停链路停摆**，`shiftDown` 都不必再看。
+     *
+     * 诊断模式的手势是 `Alt+Shift+点击`（`content/diagnose.ts`），里面含 Shift：用户按住它
+     * 移向目标元素的路上会**扫过沿途每一个段落**，每一段都描边、弹气泡，并且真的发一次引擎
+     * 请求——用户自己付费的额度。实测出来的就是这么一串与本次诊断毫无关系的请求。
+     *
+     * 判据取**这个 mouseover 事件自己的 `altKey`**——浏览器在事件发生那一刻填好的物理修饰键
+     * 状态，**每个 mouseover 都是新的**，不可能过期。这里刻意**不**维护"Alt 按着没有"的缓存
+     * 变量：缓存要靠配对的 keyup 维护，而 Windows 的 `Alt+Shift` 切换输入法在部分环境会
+     * **吞掉 keyup、窗口又不失焦**——丢一次 keyup，缓存就永远卡在"按着"，悬停功能**永久失效**
+     * 且没有任何可见症状指向原因（`blur` 兜底救不了这条路径）。只读事件就没有这个幽灵态。
+     *
+     * 排在这里（isTrusted 之后、shiftDown 之前）是有意的：闸门的顺序与理由一个字都没动，
+     * 而 `altKey` 被页面脚本伪造最坏也只是**提前关掉用户自己的悬停**（fail 的方向是安全方向，
+     * 与 keyup/blur 不 gating 同一个判断），所以它自己不另外设闸门。
+     */
+    if (event.altKey) return;
     if (!shiftDown) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -245,12 +271,35 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
 
   function onKeyDown(event: KeyboardEvent): void {
     // Shift 状态只认真键盘（isTrusted）：合成 keydown 能骗开的闸门等于整条悬停链路
-    // 都没有闸门——见 onMouseover 的注释。
+    // 都没有闸门——见 onMouseover 的注释。Alt 走**同一道门**：伪造它只能关掉用户自己的
+    // 悬停（方向是安全的），但"哪几个键受这道门管"必须只有一套答案，否则迟早漂移。
     if (!event.isTrusted) return;
     if (event.key === 'Shift') shiftDown = true;
+    if (event.key === 'Alt') {
+      /**
+       * **按下 Alt 的那一刻就撤销已有状态**，不能等 mouseover：按下去之后一个 mouseover
+       * 都不会再进来（上面那条早退），等它就等于永远不清。三件事各有理由：
+       * - 描边必须撤掉：它是"上一次悬停过的段落"，留着会被误认成这次诊断的目标；
+       * - 未到点的请求必须取消（`cancelPending`）：按住 Alt 路过时最贵的就是它；
+       * - `current` 必须清空：不清的话，松开 Alt 后**指针没离开原段落**时再次进入会被当成
+       *   "重复进入"而什么都不做——那一段的悬停就此失灵（光标不动就永远不恢复）。
+       *
+       * 这三件事与"抑制"是**两件独立的事**，各管各的：抑制的判据是 mouseover 事件自己的
+       * `altKey`（见 onMouseover），这里管的是"按下去的那一刻，页面上**已经存在**的状态"。
+       * 所以抑制判据不再读状态变量之后，这一支仍然必须留着。
+       *
+       * **已展示的译文气泡保留**（设计文档 §4.2「移出保留译文」）：Alt 只影响"新的进入"，
+       * 在飞的那次请求也不作废，结论照常落进那个气泡里。`generation` 因此不动。
+       */
+      highlight.clear();
+      cancelPending();
+      current = null;
+    }
   }
 
   function onKeyUp(event: KeyboardEvent): void {
+    // Alt 的 keyup 在这里没有对应分支：抑制判据读的是 mouseover 事件自己的 `altKey`，
+    // 松开 Alt 没有任何需要复位的状态——"keyup 被输入法吞掉也不会坏"正是这么来的。
     if (event.key !== 'Shift') return;
     shiftDown = false;
     // 松开 Shift 撤掉描边与未触发的请求；已经出来的译文气泡保留。
@@ -260,6 +309,8 @@ export function createHoverTranslator(deps: HoverDeps): HoverController {
 
   function onBlur(): void {
     // 焦点离开窗口时 keyup 可能收不到：不纠就会留下一个"自认为按着 Shift"的幽灵状态。
+    // 只有 Shift 需要这条兜底：Alt 的抑制判据读事件本身（见 onMouseover），连
+    // "Alt+Shift 切换输入法吞掉 keyup 且窗口不失焦"那条路径都不必靠它救。
     shiftDown = false;
     highlight.clear();
     cancelPending();

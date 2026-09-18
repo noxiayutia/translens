@@ -600,11 +600,29 @@ function registry(): InstalledHandle[] {
   return (holder[INSTALLED] ??= []);
 }
 
+/**
+ * 诊断提示的显示时长：**15 秒**（默认的 3.2 秒是给状态反馈的，诊断是另一码事）。
+ *
+ * 实测出来的问题：提示在**屏幕底部**、只有 3.2 秒，而用户的视线在屏幕中上部**被点的那个
+ * 元素**上——移视线、读两行（结论 + 观察者读数）、掏手机截图，这一串下来提示早没了。
+ * 用户看到的不是"结论写错了"，而是"什么都没弹"。
+ *
+ * 为什么是 15 秒：
+ * - 诊断由**显式动作**触发（Alt+Shift+点击），不是状态反馈，不会连着弹；长驻留不挡路——
+ *   `pointer-events:none` 不吃点击，`toast()` 又是"删旧建新"，再诊断一次直接替换。
+ * - 15 秒 ≈ 移回视线 + 读完两行 + 拍照的余量；再长就开始变成"这条怎么还不走"，
+ *   而它固定在底部 32px，盖久了会压住页面底部的内容。
+ * - 也考虑过"点别处就消失"和"常驻到下一次诊断"：前者要给诊断加一个全局监听，破掉
+ *   "只在 Alt+Shift+点击时跑一个回调"那条纪律（见 installDiagnose）；后者会在用户
+ *   早就离开这块区域之后还挂着一条过期结论。两者都比"定一个更大的数"更重、更容易出新 bug。
+ */
+const DIAGNOSE_VISIBLE_MS = 15_000;
+
 /** 把一次诊断的结果送到三个地方。任何一个失败都只影响它自己，绝不抛给页面。 */
 function report(diagnosis: Diagnosis): void {
   // 1. 页面内一行结论：用户要截图发给开发者，这是主通道。
   try {
-    toast(formatToast(diagnosis));
+    toast(formatToast(diagnosis), DIAGNOSE_VISIBLE_MS);
   } catch {
     // 连提示都弹不出来（页面把 documentElement 玩坏了）：下面两个通道照走。
   }
@@ -656,7 +674,9 @@ export function installDiagnose(deps: DiagnoseDeps): void {
       diagnosis = diagnoseElement(event.target ?? document.body, deps);
     } catch {
       // 诊断自己炸了也不许影响页面：给一句能读懂的话，别把异常抛进页面的事件流。
-      toast('诊断失败：分析这个元素时出错了');
+      // 时长与成功那条**同一个**：这条提示同样只在诊断里出现，用户的视线同样在被点的元素上
+      // ——3.2 秒走完"低头、读懂、截图"和成功那条一样不可能。
+      toast('诊断失败：分析这个元素时出错了', DIAGNOSE_VISIBLE_MS);
       return;
     }
     report(diagnosis);

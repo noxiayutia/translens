@@ -69,8 +69,33 @@ function enter(id: string): void {
   dispatchTrusted(byId(id), new MouseEvent('mouseover', { bubbles: true }));
 }
 
+/**
+ * 按住 Alt 时进入段落。
+ *
+ * `Alt` 在这条链路里是**事件自己的物理修饰键状态**：抑制判据读的就是这个 mouseover 带的
+ * `altKey`，不读任何"Alt 按着没有"的缓存变量——所以每个事件都要把它如实带上，
+ * 这也是"keyup 丢了也不会坏"的根源（见下面「吞 keyup」那条用例）。
+ */
+function enterWithAlt(id: string): void {
+  dispatchTrusted(byId(id), new MouseEvent('mouseover', { bubbles: true, altKey: true }));
+}
+
 function syntheticPressShift(): void {
   dispatchSynthetic(window, new KeyboardEvent('keydown', { key: 'Shift' }));
+}
+
+/** 按住 Alt：诊断模式（Alt+Shift+点击）的修饰键，与 Shift 同一套 isTrusted 闸门。 */
+function pressAlt(): void {
+  dispatchTrusted(window, new KeyboardEvent('keydown', { key: 'Alt' }));
+}
+
+/** keyup 不是请求入口（只做状态清理），不受闸门管辖：普通派发即可。 */
+function releaseAlt(): void {
+  window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt' }));
+}
+
+function syntheticPressAlt(): void {
+  dispatchSynthetic(window, new KeyboardEvent('keydown', { key: 'Alt' }));
 }
 
 function syntheticEnter(id: string): void {
@@ -185,6 +210,189 @@ describe('Shift 状态跟踪', () => {
     enter('two');
     await settle();
     expect(translate).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Alt 按住时整条悬停链路停摆。
+ *
+ * 起因是实测出来的冲突：诊断模式的手势是 **Alt+Shift+点击**，里面含 Shift——用户按住它
+ * 移向目标元素的路上会**扫过沿途每一个段落**，每一段都描边、弹气泡、并且真的发一次引擎
+ * 请求（用户自己付费的额度）。这里每一条都钉住其中一面。
+ *
+ * 判据取 **mouseover 事件自己的 `altKey`**（事件发生那一刻的物理修饰键状态），不是
+ * "Alt 按着没有"的缓存变量——每个事件都带着当下的真相，而缓存要靠配对的 keyup 维护：
+ * Windows 的 `Alt+Shift` 切换输入法会**吞掉 keyup 且窗口不失焦**，丢一次就永久卡死。
+ * 所以下面每条都按"这个 mouseover 有没有带 Alt"派发，而不是靠先按一次 Alt 顶状态。
+ */
+describe('按住 Alt 抑制悬停（与诊断模式 Alt+Shift 手势冲突）', () => {
+  it('按住 Alt，真实鼠标进入段落：零请求、无描边、无气泡', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    pressAlt();
+    enterWithAlt('one');
+    await settle();
+
+    expect(translate).not.toHaveBeenCalled();
+    expect(bubble()).toBeNull();
+    expect(highlightHost()).toBeNull();
+  });
+
+  it('先悬停出描边 → 按下 Alt：描边立刻撤掉，未到点的请求被取消', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    enter('one');
+    await vi.advanceTimersByTimeAsync(170); // 180ms 还没到：请求仍在延时里
+    expect(highlightHost()).not.toBeNull();
+    expect(translate).not.toHaveBeenCalled();
+
+    pressAlt();
+
+    // 描边必须当场消失：留着它，用户下一步点击时看到的"目标"是上一次悬停的段落。
+    expect(highlightHost()).toBeNull();
+    await settle();
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('按 Alt 保留已展示的译文气泡（与「移出保留译文」同一约定）', async () => {
+    const translate = autoTranslate();
+    givenHover(translate, 0);
+    pressShift();
+    enter('one');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(bubbleText()).toBe('译文:First paragraph');
+    expect(highlightHost()).not.toBeNull();
+
+    pressAlt();
+
+    expect(highlightHost()).toBeNull();
+    expect(bubbleText()).toBe('译文:First paragraph');
+
+    // 按住 Alt 期间掠过别的段落：这次 mouseover 自己带着 altKey，气泡换成新段就是
+    // "又发了一次请求"，一个字都不许变。
+    enterWithAlt('two');
+    await settle();
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(bubbleText()).toBe('译文:First paragraph');
+  });
+
+  it('松开 Alt 后悬停恢复：指针没离开原段落也照常重新进入', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    enter('one');
+    await settle();
+    expect(highlightHost()).not.toBeNull();
+
+    releaseShift(); // 撤描边，但"当前段落"仍是 #one（既有行为）
+    pressAlt(); // 按 Alt 必须把"当前段落"一起撤销，否则下面这次进入会被当成重复进入
+    enterWithAlt('one'); // 按住 Alt 路过同一段：被抑制，且一个状态都不该被它改动
+    releaseAlt();
+    pressShift();
+    enter('one');
+
+    expect(highlightHost()).not.toBeNull();
+    await settle();
+    expect(bubbleText()).toBe('译文:First paragraph');
+    expect(translate).toHaveBeenCalledTimes(1); // 同段走会话缓存，零往返
+  });
+
+  /**
+   * 幽灵 Alt 会让悬停功能**永久失效**，这条钉的就是那个现场——而且是最毒的一种：
+   * **keyup 被吞掉、窗口还不失焦**，`blur` 兜底根本不会触发。
+   *
+   * Windows 的 `Alt+Shift` 切换输入法在部分环境就是这么干的：键按下去了（keydown 到），
+   * 松开时那个 keyup 被输入法吃掉，焦点一直在页面上。旧设计把"Alt 按着"记在状态变量里，
+   * 于是它永远卡在 true，之后每一个 Shift 悬停都被早退——用户只会觉得"悬停翻译坏了"，
+   * 没有任何可见症状指向原因（`Alt+Tab` 那条路径至少有 blur 兜底，这条没有）。
+   *
+   * 新设计的判据是 mouseover 事件自己的 `altKey`：**下一次鼠标进入段落时就自带真相**，
+   * 不需要 keyup、也不需要 blur。所以这条用例**故意什么都不派发**——没有 keyup(Alt)，
+   * 也没有 blur——直接把指针移到段落上，悬停必须照常工作。
+   */
+  it('Alt 的 keyup 被输入法吞掉且窗口不失焦（无 keyup、无 blur）：悬停照常恢复', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    pressAlt(); // 只派发 keydown(Alt)：keyup 被吞掉
+    enterWithAlt('one'); // 按住 Alt 移向诊断目标：沿途段落被抑制
+    await settle();
+    expect(translate).not.toHaveBeenCalled();
+    expect(highlightHost()).toBeNull();
+
+    // Alt 在物理上已经松开了（keyup 被输入法吞了、窗口一直有焦点、blur 一次都没来）：
+    // 下一个 mouseover 自己就带着真相，悬停必须立即恢复。
+    enter('one');
+    await settle();
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(bubbleText()).toBe('译文:First paragraph');
+    expect(highlightHost()).not.toBeNull();
+  });
+
+  /**
+   * `Alt+Tab` 切走窗口：keyup(Alt) 与 keyup(Shift) 都收不到，这一次是 `blur` 该救的路径
+   * （Shift 那个状态仍然需要配对 keyup 维护，所以兜底必须留着）。
+   */
+  it('Alt 的 keyup 丢失 + blur（Alt+Tab 切走）：悬停必须能恢复', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    pressAlt();
+    enterWithAlt('one');
+    await settle();
+    expect(translate).not.toHaveBeenCalled(); // 按住 Alt：被抑制
+
+    // Alt+Tab 切走窗口：keyup(Alt) 与 keyup(Shift) 都不会到。
+    window.dispatchEvent(new Event('blur'));
+
+    // 回来重新按住 Shift 悬停同一段：必须照常描边、发请求、出气泡。
+    pressShift();
+    enter('one');
+    await settle();
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(bubbleText()).toBe('译文:First paragraph');
+    expect(highlightHost()).not.toBeNull();
+  });
+
+  /**
+   * `isTrusted` 与 Shift 同一套：伪造 Alt **只能关掉自己的功能**（fail 的方向是安全方向），
+   * 但闸门只有一套——页面脚本合成一个 keydown(Alt) 就把悬停静音，是白送的拒绝服务。
+   */
+  it('合成 keydown(Alt)：不改变行为（真实 Shift+悬停照常出结果）', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    syntheticPressAlt();
+    pressShift();
+    enter('one');
+    await settle();
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(bubbleText()).toBe('译文:First paragraph');
+    expect(highlightHost()).not.toBeNull();
+
+    // 按下 Alt 那一刻清描边/取消请求是**真实 keydown 的职权**：合成的那一个必须被闸门挡在
+    // 外面，否则页面脚本能让用户当前这次悬停凭空消失（白送的拒绝服务）。
+    syntheticPressAlt();
+    expect(highlightHost()).not.toBeNull();
+  });
+
+  it('不按 Alt 时悬停与从前逐字相同（成对断言：抑制只由真实 Alt 触发）', async () => {
+    const translate = autoTranslate();
+    givenHover(translate);
+    pressShift();
+    enter('one');
+    await settle();
+    expect(translate).toHaveBeenCalledTimes(1);
+
+    releaseAlt(); // 没按下过也松一下：不该影响任何状态
+    enter('two');
+    await settle();
+    expect(translate).toHaveBeenCalledTimes(2);
+    expect(bubbleText()).toBe('译文:Second paragraph');
   });
 });
 

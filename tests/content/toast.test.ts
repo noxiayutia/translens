@@ -54,6 +54,37 @@ describe('页面内轻提示', () => {
     expect(toastHost()).toBeNull();
   });
 
+  /**
+   * 默认时长是**既有调用方的契约**（翻译失败提示、限流提示），不许被新参数带跑：
+   * 这里正负成对地钉住 3200ms 这个数——3199ms 还在、3200ms 消失。
+   */
+  it('不传时长：仍然是 3.2 秒（既有调用方行为逐字不变）', () => {
+    toast('翻译失败');
+
+    vi.advanceTimersByTime(3199);
+    expect(toastHost()).not.toBeNull();
+
+    vi.advanceTimersByTime(1);
+    expect(toastHost()).toBeNull();
+  });
+
+  /**
+   * 诊断模式那条提示要比默认那条留得久（用户的视线在被点的元素上，不在屏幕底部；
+   * 3.2 秒多半直接错过）。这条钉住"传了时长就按时长走"，而不是"参数被忽略、仍按默认"。
+   */
+  it('显式传时长：寿命就是那个值，不再受默认的 3.2 秒摆布', () => {
+    toast('诊断结论', 15000);
+
+    vi.advanceTimersByTime(3200);
+    expect(toastHost()).not.toBeNull(); // 默认那 3.2 秒已经不是它的寿命
+
+    vi.advanceTimersByTime(15000 - 3200 - 1);
+    expect(toastHost()).not.toBeNull();
+
+    vi.advanceTimersByTime(1);
+    expect(toastHost()).toBeNull();
+  });
+
   it('不会污染页面结构：除了自己那一个节点，body 一个字节都不动', () => {
     document.body.innerHTML = '<p>Hello world</p>';
     const before = document.body.innerHTML;
