@@ -329,6 +329,17 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   color: var(--text-3);
 }
 
+/* 规则的动作展示：**静态文字**，不是下拉（本扩展只有「永不翻译」一个动作，见规格 §5）。 */
+.rule-action {
+  flex: none;
+  padding: 1px 9px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
 /* 添加：**虚线大按钮**（规格 §2）。它永远出现在列表末尾，一眼能看出"这里还能加"。 */
 .add {
   width: 100%;

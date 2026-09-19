@@ -22,6 +22,7 @@
         <div class="nav-grp" data-nav-group>
           <p class="grp">内容控制</p>
           <a class="nav-link" href="#sec-glossary" data-nav="glossary"><span class="i" aria-hidden="true">Aa</span>术语表</a>
+          <a class="nav-link" href="#sec-site-rules" data-nav="site-rules"><span class="i" aria-hidden="true">@</span>站点规则</a>
         </div>
 
         <div class="nav-grp" data-nav-group>
@@ -121,6 +122,36 @@
           <button id="add-term" class="add" type="button">+ 添加术语</button>
           <p class="hint">只填一半的行不会保存——一行里原文与译文都填上，它才会写进存储。</p>
           <p id="glossary-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 站点规则 -->
+        <section class="sec" id="sec-site-rules" data-section="site-rules" aria-labelledby="sec-site-rules-title">
+          <div class="sec-head">
+            <h2 id="sec-site-rules-title">站点规则</h2>
+            <div class="act"><button id="add-rule" class="ghost tiny" type="button">+ 添加规则</button></div>
+          </div>
+          <p class="sec-desc">按域名决定整页翻不翻，自上而下匹配，<strong>第一条命中即生效</strong>。</p>
+          <div id="site-rules-list"></div>
+          <p class="hint">
+            规则只认两种写法：<code>example.com</code>（精确，不含子域）与 <code>*.example.com</code>
+            （含裸域与任意层子域）。填整条网址也行——失焦时会规范化成域名；带端口、带路径、光杆
+            <code>*</code> 这类写法会被当场拒绝并说明原因，不会静默失效。
+          </p>
+          <details>
+            <summary>这个区块的边界（如实说明）</summary>
+            <p>
+              只提供「永不翻译」这一个动作：本扩展还没有自动翻译，「总是翻译」今天不产生任何可观察行为，
+              所以不给它入口，等自动翻译落地再补。
+            </p>
+            <p>
+              <strong>划词与悬停翻译不受约束</strong>——那是你主动发起的单段翻译，与"这个站整页不该翻"是两件事。
+            </p>
+            <p>
+              还有一处缝：规则的闸只装在<strong>整页翻译的入口</strong>上，所以<strong>已经翻译过的页面</strong>
+              再加规则时，已经翻好的内容与之后新出现的内容都不会被撤掉——要立刻生效请先按 Alt+T 还原再重新翻译。
+            </p>
+          </details>
+          <p id="site-rules-status" class="status" role="status" aria-live="polite"></p>
         </section>
 
         <!-- 缓存与请求 -->
