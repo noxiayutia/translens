@@ -25,8 +25,8 @@ import type { Settings } from '../shared/settings';
  * 区块清单，**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
  * `tests/options/search.test.ts` 有一条结构守卫钉住这件事）。导出是给测试用的。
  *
- * **这里刻意不写死数量**：本轮（Task 3）先落地 4 个（引擎/语言/缓存/隐私），Task 4~8 各插一项，
- * 最终 8 个，顺序是 engine、language、shortcuts、glossary、site-rules、prompt、cache、privacy。
+ * 顺序就是下面这个数组的顺序，**刻意不在这里复述一份**（复述出来的那份清单必然有一次会漂）；
+ * 也**刻意不写死数量**：尚未落地的区块由各自的 Task 追加进来，写死的数字每加一项就过期一次。
  */
 export const SECTIONS: readonly Section[] = [
   engineSection,

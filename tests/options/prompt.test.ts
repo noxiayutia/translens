@@ -86,4 +86,13 @@ describe('设置页：自定义提示词', () => {
     expect(status().textContent).toContain('保存提示词失败');
     expect((await storedSettings()).systemPrompt).toBe('');
   });
+
+  it('界面上如实说明「留空即使用内置提示词」——用户可见的承诺，不只是装饰', async () => {
+    // 独立成例而不是并进上面某条：这句话住在静态 HTML 里，**没有前置条件**，
+    // 并进别的用例只会让它的读数被那一条的前置挡在前面（本单元反复踩过的坑）。
+    await seedSettings({ systemPrompt: '' });
+    await loadOptions();
+
+    expect(pick<HTMLElement>('sec-prompt').textContent ?? '').toContain('留空即使用内置提示词');
+  });
 });
