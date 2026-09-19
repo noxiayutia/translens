@@ -14,6 +14,7 @@ import { languageSection } from './sections/language';
 import { shortcutsSection } from './sections/shortcuts';
 import { glossarySection } from './sections/glossary';
 import { siteRulesSection } from './sections/site-rules';
+import { promptSection } from './sections/prompt';
 import { cacheSection } from './sections/cache';
 import { privacySection } from './sections/privacy';
 import type { Section, SectionContext } from './section';
@@ -33,6 +34,7 @@ export const SECTIONS: readonly Section[] = [
   shortcutsSection,
   glossarySection,
   siteRulesSection,
+  promptSection,
   cacheSection,
   privacySection,
 ];

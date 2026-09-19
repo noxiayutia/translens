@@ -23,6 +23,7 @@
           <p class="grp">内容控制</p>
           <a class="nav-link" href="#sec-glossary" data-nav="glossary"><span class="i" aria-hidden="true">Aa</span>术语表</a>
           <a class="nav-link" href="#sec-site-rules" data-nav="site-rules"><span class="i" aria-hidden="true">@</span>站点规则</a>
+          <a class="nav-link" href="#sec-prompt" data-nav="prompt"><span class="i" aria-hidden="true">✎</span>提示词</a>
         </div>
 
         <div class="nav-grp" data-nav-group>
@@ -152,6 +153,22 @@
             </p>
           </details>
           <p id="site-rules-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 自定义提示词 -->
+        <section class="sec" id="sec-prompt" data-section="prompt" aria-labelledby="sec-prompt-title">
+          <div class="sec-head"><h2 id="sec-prompt-title">自定义提示词</h2></div>
+          <p class="sec-desc">追加到系统提示，用来固定语气与文体。<strong>留空即使用内置提示词。</strong></p>
+          <div class="group">
+            <div class="field">
+              <label class="lab" for="system-prompt">系统提示词<small>只会追加在内置提示之后，不会覆盖它</small></label>
+            </div>
+            <div class="field">
+              <textarea id="system-prompt" rows="4" placeholder="例如：IT 术语保留英文原文，不强行翻译；数字与单位不改动。"></textarea>
+            </div>
+          </div>
+          <p class="hint">改动在失焦时保存；下一次翻译生效（提示词是缓存键的一部分，改过之后同样的段落会重新翻译一次）。</p>
+          <p id="prompt-status" class="status" role="status" aria-live="polite"></p>
         </section>
 
         <!-- 缓存与请求 -->
