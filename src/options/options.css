@@ -323,6 +323,29 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   border-top: 1px solid var(--border);
 }
 
+/* 列表分隔符（术语行的 `→`）。 */
+.arrow {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* 添加：**虚线大按钮**（规格 §2）。它永远出现在列表末尾，一眼能看出"这里还能加"。 */
+.add {
+  width: 100%;
+  padding: 11px;
+  font-size: 13.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.add:hover {
+  color: var(--accent);
+  background: var(--accent-weak);
+  border-color: var(--accent);
+}
+
 /* ------------------------------------------------------------------ 成组设置（一块卡片 + 行间细线） */
 
 .group {

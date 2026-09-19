@@ -44,7 +44,7 @@ import {
   type Settings,
 } from '../../shared/settings';
 import { describe, element, fillSelect, requireWithin, runSafely, setStatus } from '../dom';
-// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+// 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 import type { Section, SectionContext } from '../section';
 

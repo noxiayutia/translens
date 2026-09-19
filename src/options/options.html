@@ -20,6 +20,11 @@
         </div>
 
         <div class="nav-grp" data-nav-group>
+          <p class="grp">内容控制</p>
+          <a class="nav-link" href="#sec-glossary" data-nav="glossary"><span class="i" aria-hidden="true">Aa</span>术语表</a>
+        </div>
+
+        <div class="nav-grp" data-nav-group>
           <p class="grp">数据</p>
           <a class="nav-link" href="#sec-cache" data-nav="cache"><span class="i" aria-hidden="true">⛁</span>缓存与请求</a>
           <a class="nav-link" href="#sec-privacy" data-nav="privacy"><span class="i" aria-hidden="true">🛈</span>隐私</a>
@@ -106,6 +111,16 @@
             两个开关改动即时保存；已经打开的页面会当场重挂监听器，页面没回应时重新加载一次即可。
           </p>
           <p id="shortcuts-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 术语表 -->
+        <section class="sec" id="sec-glossary" data-section="glossary" aria-labelledby="sec-glossary-title">
+          <div class="sec-head"><h2 id="sec-glossary-title">术语表</h2></div>
+          <p class="sec-desc">强制按你指定的译法翻译，优先于自动判断。一行一条：左边原文、右边译文；改完即生效。</p>
+          <div id="glossary-list"></div>
+          <button id="add-term" class="add" type="button">+ 添加术语</button>
+          <p class="hint">只填一半的行不会保存——一行里原文与译文都填上，它才会写进存储。</p>
+          <p id="glossary-status" class="status" role="status" aria-live="polite"></p>
         </section>
 
         <!-- 缓存与请求 -->
