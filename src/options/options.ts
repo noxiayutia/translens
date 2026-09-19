@@ -11,6 +11,7 @@
 import { describe, runSafely, setStatus } from './dom';
 import { engineSection } from './sections/engine';
 import { languageSection } from './sections/language';
+import { shortcutsSection } from './sections/shortcuts';
 import { cacheSection } from './sections/cache';
 import { privacySection } from './sections/privacy';
 import type { Section, SectionContext } from './section';
@@ -27,6 +28,7 @@ import type { Settings } from '../shared/settings';
 export const SECTIONS: readonly Section[] = [
   engineSection,
   languageSection,
+  shortcutsSection,
   cacheSection,
   privacySection,
 ];

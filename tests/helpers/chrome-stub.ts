@@ -138,8 +138,15 @@ export interface StubTabs {
    * 弹窗要**按响应**渲染（`PageState`），由 `tests/popup` 决定回什么。
    */
   responder: ((tabId: number, message: unknown) => unknown) | null;
+  /**
+   * 每次 `create` 的参数，按调用顺序。设置页的「去浏览器设置」用它打开
+   * `chrome://extensions/shortcuts`——真机上 `tabs.create` 不需要任何权限，
+   * 替身同样只记录、不真开页面。
+   */
+  created: Array<{ url?: string }>;
   query(queryInfo: unknown): Promise<StubTab[]>;
   sendMessage(tabId: number, message: unknown): Promise<unknown>;
+  create(props: { url?: string }): Promise<StubTab>;
 }
 
 export interface StubMenuCreateProps {
@@ -404,9 +411,14 @@ function createTabs(): StubTabs {
     sent: [],
     rejectSendMessage: false,
     responder: null,
+    created: [],
     async query(queryInfo) {
       tabs.queries.push(queryInfo);
       return tabs.activeTabs.map((tab) => ({ ...tab }));
+    },
+    async create(props) {
+      tabs.created.push({ ...props });
+      return { id: 99 };
     },
     async sendMessage(tabId, message) {
       tabs.sent.push({ tabId, message });
@@ -446,6 +458,7 @@ export function createChromeStub(): ChromeStub {
       tabs.activeTabs = [{ ...DEFAULT_ACTIVE_TAB }];
       tabs.queries = [];
       tabs.sent = [];
+      tabs.created = [];
       tabs.rejectSendMessage = false;
       tabs.responder = null;
       stub.runtime.failSendResponse = false;

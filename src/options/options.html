@@ -16,6 +16,7 @@
           <p class="grp">翻译</p>
           <a class="nav-link" href="#sec-engine" data-nav="engine"><span class="i" aria-hidden="true">⚙</span>翻译引擎</a>
           <a class="nav-link" href="#sec-language" data-nav="language"><span class="i" aria-hidden="true">文</span>语言与显示</a>
+          <a class="nav-link" href="#sec-shortcuts" data-nav="shortcuts"><span class="i" aria-hidden="true">⌥</span>快捷翻译</a>
         </div>
 
         <div class="nav-grp" data-nav-group>
@@ -75,6 +76,36 @@
             改动即时保存；已经翻译过的页面要重新翻译才会换过来。
           </p>
           <p id="language-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 快捷翻译 -->
+        <section class="sec" id="sec-shortcuts" data-section="shortcuts" aria-labelledby="sec-shortcuts-title">
+          <div class="sec-head"><h2 id="sec-shortcuts-title">快捷翻译</h2></div>
+          <div class="group">
+            <div class="grow2">
+              <label class="lab" for="hover-translate">悬停翻译
+                <span>按住 Shift 指向段落，约 180ms 后浮层显示译文；按住 Alt 时暂停</span>
+              </label>
+              <input id="hover-translate" class="switch" type="checkbox" />
+            </div>
+            <div class="grow2">
+              <label class="lab" for="selection-translate">划词翻译
+                <span>选中 1~2000 字符后在选区下方弹气泡，可复制 / 朗读</span>
+              </label>
+              <input id="selection-translate" class="switch" type="checkbox" />
+            </div>
+            <div class="grow2">
+              <div class="lab">快捷键与右键菜单
+                <span>Alt+T 翻译整页 · Alt+Shift+点击 诊断这块为什么没翻</span>
+              </div>
+              <button id="open-shortcuts" class="ghost tiny" type="button">去浏览器设置</button>
+            </div>
+          </div>
+          <p class="hint">
+            快捷键由浏览器管理，扩展改不了它——「去浏览器设置」打开的是 Chrome 自己的快捷键页。
+            两个开关改动即时保存；已经打开的页面会当场重挂监听器，页面没回应时重新加载一次即可。
+          </p>
+          <p id="shortcuts-status" class="status" role="status" aria-live="polite"></p>
         </section>
 
         <!-- 缓存与请求 -->
