@@ -7,7 +7,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CURRENT_VERSION } from '../../src/shared/settings';
-import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, storedSettings, waitFor } from './harness';
+import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, settle, storedSettings, waitFor } from './harness';
 
 interface StoredRule {
   pattern: string;
@@ -113,6 +113,9 @@ describe('设置页：站点规则（写入侧）', () => {
 
     input.value = 'exa';
     input.dispatchEvent(bubble('input'));
+    // 先给写队列一次排空的机会再读数：写是"排队 + 好几次 await"才落盘的，不 flush 就等于在
+    // 写落地之前抢跑——那样下面这句"存储没被动过"恒真，谁把这条路径改成会写它都照样绿。
+    await settle();
     expect(await storedRules()).toEqual([]);
   });
 
@@ -272,6 +275,10 @@ describe('设置页：站点规则（写入侧）', () => {
     // 再加一个草稿行、派发一次 change（域名为空）——这一支必须静默。
     pick<HTMLButtonElement>('add-rule').click();
     commit(rowAt(1), '');
+
+    // 先排空写队列再读数（状态行与存储两处都要）：这一支必须**完全静默**，而"什么都没发生"
+    // 只有在队列排空之后才读得准——抢跑时读到的是"还没来得及写"，不是"没写"。
+    await settle();
 
     expect(status().textContent).toBe(textBefore);
     expect(status().dataset.kind).toBe(kindBefore);
