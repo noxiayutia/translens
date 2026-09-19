@@ -15,6 +15,7 @@ import {
   bubble,
   chromeStub,
   loadOptions,
+  mountOptionsHtml,
   pick,
   resetOptionsPage,
   seedSettings,
@@ -183,6 +184,38 @@ describe('设置页：缓存与请求', () => {
 
     commitNumber(inputOf('max-segments-per-batch'), '20');
     await waitFor(async () => (await storedSettings()).maxSegmentsPerBatch === 20);
+  });
+
+  it('数不出缓存条数时显示占位符并报错，绝不显示成 0（「读不出来」不是「缓存是空的」）', async () => {
+    await seedSettings();
+    await chromeStub.storage.local.set({ 'jt:a': { v: '一', t: 1 } });
+    // DOM 先在位：区块模块在 import 时就按 id 取元素（与页面同一条路径）。
+    mountOptionsHtml();
+    const { cacheSection } = await import('../../src/options/sections/cache');
+    const { currentSettings, loadSnapshot } = await import('../../src/options/store');
+    await loadSnapshot();
+
+    // 只让**接下来第一次**按 key 取值失败：数条数先枚举键、再按 key 取值，枚举照旧可用，
+    // 所以这一支只需要挂在取值上；再往后恢复，免得下面的直读断言自己也撞在同一处。
+    const realGet = chromeStub.storage.local.get.bind(chromeStub.storage.local);
+    let failed = false;
+    chromeStub.storage.local.get = async (keys) => {
+      if (Array.isArray(keys) && !failed) {
+        failed = true;
+        throw new Error('存储读取失败');
+      }
+      return realGet(keys);
+    };
+
+    // 跑这一区块的挂载：`refreshStats` 是挂载与清除共用的那一个，这就是分支的入口。
+    await cacheSection.mount({ settings: currentSettings } as never);
+    await settle();
+
+    expect(pick<HTMLElement>('stat-cached').textContent).toBe('—');
+    // 0 是"缓存是空的"，`—` 才是"没数出来"：两者的区别正是这条用例守的东西。
+    expect(status().textContent).toContain('读取缓存条数失败');
+    // 数不出来没有副作用：条目还在（不能被顺手删掉）。
+    expect((await chromeStub.storage.local.keys()).filter((key) => key.startsWith('jt:'))).toEqual(['jt:a']);
   });
 
   it('写入被拒时把输入框拨回真正生效的值并报错', async () => {

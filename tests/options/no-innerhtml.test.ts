@@ -34,16 +34,17 @@ const sources = collect('src/options');
 const FORBIDDEN = /\b(?:innerHTML|outerHTML|insertAdjacentHTML)\b/;
 
 /**
- * 今天（Task 3 落地后）`src/options` 下**必须**被扫到的模块。断言"集合**包含**这几个"，
+ * 顶层（`src/options/*.ts`）里必须被扫到的模块。断言"集合**包含**这几个"，
  * 而不是"恰好 N 个"或"至少 N 个"：
  *
- * - 写成 `toBe(8)` 会在 Task 4~8 每加一个 `sections/*.ts` 时变红（那是正常增长，不是回归）；
- * - 写成 `toBeGreaterThanOrEqual(8)` 在**今天**等价于 `>= 1`：它只在"扫到 0 个"时才红，
- *   而"遍历器坏掉、只扫到顶层"（`sections/` 那 4 个文件被漏掉）这种最可能的坏法它抓不住
+ * - 写成 `toBe(N)` 会在每加一个模块时变红（那是正常增长，不是回归）；
+ * - 写成 `toBeGreaterThanOrEqual(N)` 在**今天**等价于 `>= 1`：它只在"扫到 0 个"时才红，
+ *   而"遍历器坏掉、只扫到几个文件"这种最可能的坏法它抓不住
  *   ——实测把下界改成 `>= 0` 仍然全绿。
  *
  * 列路径是"对增长稳健、又抓得住遍历器坏掉"的形态：下面每一条钉住一个具体模块，
- * 少扫到任何一个就红；将来新增文件不影响它。
+ * 少扫到任何一个就红；将来新增文件不影响它——**所以这份清单是下限、不是穷举**，
+ * 与下面 `REQUIRED_SECTION_PATHS` 同一条口径。
  */
 const REQUIRED_PATHS = [
   'src/options/options.ts',
@@ -53,15 +54,31 @@ const REQUIRED_PATHS = [
 ];
 
 /**
- * 递归那一层（`sections/`）今天**必须**被扫到的模块。四个区块一个都不能少：它们全是渲染
+ * 递归那一层（`sections/`）里**今天存在的每一个区块模块都必须在清单上**。它们全是渲染
  * 用户输入的代码（档案名、语言标签、缓存计数），漏扫任何一个都等于守卫在那一块上是瞎的。
- * 与上面同一条口径——只说"必须有哪些"，**不说"总共几个"**，所以 Task 4~8 往这里加文件不会红。
+ *
+ * **这份清单是下限，不是穷举**：断言只说"必须包含这些"，将来新增文件不影响它；反过来说，
+ * `npm run build` 不会因为这里漏列一个新文件而变红——所以它靠的是**新增文件时顺手加一行**
+ * 这条纪律（写在这里，就是为了让纪律有个落点）。
+ *
+ * 为什么仍然逐个列路径，而不是只写一句"`sections/` 至少扫到一个"：
+ * - 写成 `toBe(N)` 会在每加一个区块时变红（那是正常增长，不是回归）；
+ * - 写成"至少 N 个"在**今天**等价于"至少 1 个"：它只在"扫到 0 个"时才红，而"遍历器坏掉、
+ *   只扫顶层"（`sections/` 整个目录被漏掉）这种最可能的坏法它抓不住——实测把下界改成
+ *   `>= 0` 仍然全绿。
+ *
+ * 逐个列路径是"对增长稳健、又抓得住遍历器坏掉"的形态：下面每一条钉住一个具体模块，
+ * 少扫到任何一个就红。（`shortcuts.ts` 在 Task 3 时就存在，只是当时这份清单漏了它。）
  */
 const REQUIRED_SECTION_PATHS = [
   'src/options/sections/engine.ts',
   'src/options/sections/language.ts',
-  'src/options/sections/cache.ts',
+  'src/options/sections/shortcuts.ts',
+  'src/options/sections/glossary.ts',
+  'src/options/sections/site-rules.ts',
+  'src/options/sections/prompt.ts',
   'src/options/sections/privacy.ts',
+  'src/options/sections/cache.ts',
 ];
 
 describe('设置页源码守卫：用户数据一律走 textContent', () => {
