@@ -118,6 +118,26 @@ describe('设置页存储层：单字段写回', () => {
     expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
   });
 
+  it('快照必须是存储里真正生效的值：越界写入被夹后，快照与存储一致', async () => {
+    // 这条是"快照 = 落盘"这条不变式的**直接**读数：快照是设置页所有区块读"生效值"的地方，
+    // 它一旦拿的是"请求值"，界面就会显示一个没生效的数字。此前这条不变式只有一条**间接**
+    // 读数（`cache-section.test.ts` 的「越界的数字被夹到允许范围」——它经由区块的输入框回填
+    // 才看得见夹取），存储层自己少一次 `mergeSettings` 却未必有人发现，所以这里直接钉住。
+    await seed({ concurrency: 3 });
+    await store.loadSnapshot();
+
+    // 999 越界：`mergeSettings` 的 clampInt 会把它夹到并发允许范围的上限 8。
+    await store.patchSettings({ concurrency: 999 });
+
+    // ① 存储里是生效值，不是提交上来的那个请求值。
+    expect((await stored()).concurrency).toBe(8);
+    // ② 快照与存储同一个值：读快照的地方（各区块的 `settings()`）拿到的就是生效值。
+    expect(store.currentSettings()?.concurrency).toBe(8);
+    // ③ 重新读一遍存储，快照与它逐字段一致：上一步的快照不是"另写了一份看起来对的数字"。
+    const reloaded = await store.loadSnapshot();
+    expect(reloaded).toEqual(store.currentSettings());
+  });
+
   it('成功加载之后再加载失败：保留上一次成功的快照，写仍可用（失败原因是版本，不是还没读出来）', async () => {
     // 这条把 `loadSnapshot` 的**失败语义**从"碰巧"变成"契约"：它的两种失败后果不同。
     // 首次失败必须留下 null（否则拿空设置覆盖存储，见上一条用例）；**已经加载过之后**失败

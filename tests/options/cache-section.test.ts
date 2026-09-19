@@ -213,7 +213,9 @@ describe('设置页：缓存与请求', () => {
 
     expect(pick<HTMLElement>('stat-cached').textContent).toBe('—');
     // 0 是"缓存是空的"，`—` 才是"没数出来"：两者的区别正是这条用例守的东西。
-    expect(status().textContent).toContain('读取缓存条数失败');
+    // 原因本身也要留在状态行里：只说"失败"等于把存储给出的那条线索丢掉，
+    // 用户和排查的人都拿不到"为什么没数出来"（`describe` 把 Error 摊成 message）。
+    expect(status().textContent).toContain('读取缓存条数失败：存储读取失败');
     // 数不出来没有副作用：条目还在（不能被顺手删掉）。
     expect((await chromeStub.storage.local.keys()).filter((key) => key.startsWith('jt:'))).toEqual(['jt:a']);
   });

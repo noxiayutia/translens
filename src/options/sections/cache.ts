@@ -10,7 +10,7 @@
 import { TranslationCache } from '../../core/cache';
 import { chromeArea } from '../../shared/chrome-area';
 import type { Settings } from '../../shared/settings';
-import { runSafely, setStatus } from '../dom';
+import { describe, runSafely, setStatus } from '../dom';
 import type { Section, SectionContext } from '../section';
 // 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
@@ -51,22 +51,11 @@ function caches(maxEntries: number | undefined): { persistent: TranslationCache;
   };
 }
 
-/**
- * 已缓存段落数 = 两层各自真实条目数之和（与「清除」报的数是同一个口径）。
- *
- * **数不出来时返回 `null`，不是 0**：0 的意思是"缓存是空的"，那是个结论；读失败时没有结论。
- * 返回 `null` 而不是抛给调用方，是因为两处调用点的处置不同：挂载路径要把统计摆成占位符
- * 并写状态行（`refreshStats` 里那一支），清除路径只需要一个"报多少条"的数字（读不出来就
- * 按 0 计入，清除本身照做——一次读失败不该把用户点的那一下拦下来）。
- */
-async function countCached(maxEntries: number | undefined): Promise<number | null> {
+/** 已缓存段落数 = 两层各自真实条目数之和（与「清除」报的数是同一个口径）。 */
+async function countCached(maxEntries: number | undefined): Promise<number> {
   const { persistent, session } = caches(maxEntries);
-  try {
-    const [persistentCount, sessionCount] = await Promise.all([persistent.count(), session.count()]);
-    return persistentCount + sessionCount;
-  } catch {
-    return null;
-  }
+  const [persistentCount, sessionCount] = await Promise.all([persistent.count(), session.count()]);
+  return persistentCount + sessionCount;
 }
 
 /** 把三个统计数字与四个输入框刷成当前设置的样子。 */
@@ -76,16 +65,13 @@ async function refreshStats(ctx: SectionContext): Promise<void> {
   statMax.textContent = String(current.cacheMaxEntries);
   statConcurrency.textContent = String(current.concurrency);
   for (const entry of NUMBER_FIELDS) entry.input.value = String(current[entry.field]);
-  const counted = await countCached(current.cacheMaxEntries);
-  if (counted === null) {
+  try {
+    statCached.textContent = String(await countCached(current.cacheMaxEntries));
+  } catch (raw) {
     // 数不出来不是致命错误，但**绝不能显示成 0**：那是在说"缓存是空的"。
-    // 也不能把上一次的旧数字留在屏幕上——清除路径上那正是"清完还显示旧条数"。
-    // 所以先摆占位符再写状态行：中间没有一帧是假的数字。
     statCached.textContent = '—';
-    setStatus(cacheStatus, 'err', '读取缓存条数失败');
-    return;
+    setStatus(cacheStatus, 'err', `读取缓存条数失败：${describe(raw)}`);
   }
-  statCached.textContent = String(counted);
 }
 
 /**
@@ -97,12 +83,11 @@ async function refreshStats(ctx: SectionContext): Promise<void> {
  */
 async function handleClearCache(ctx: SectionContext): Promise<void> {
   const { persistent, session } = caches(ctx.settings()?.cacheMaxEntries);
-  // 清之前的条数只用于"报了多少条"：数不出来（`null`）不拦下这次清除，按 0 计入。
   const [persistentBefore, sessionBefore] = await Promise.all([persistent.count(), session.count()]);
   await Promise.all([persistent.clear(), session.clear()]);
-  const cleared = (persistentBefore ?? 0) + (sessionBefore ?? 0);
+  const cleared = persistentBefore + sessionBefore;
   // 统计跟着走：清完还显示旧条数，用户会以为按钮没生效。
-  // 顺序是"先刷数字、再写结果"：`refreshStats` 在数不出来时会写状态行，而按钮的结果是
+  // 顺序是"先刷数字、再写结果"：`refreshStats` 只在数不出来时写状态行，而按钮的结果是
   // 用户这一下的直接反馈，必须留在最上面（数不出来时统计本身就显示成 `—`，看得出来）。
   await refreshStats(ctx);
   setStatus(cacheStatus, 'ok', cleared === 0 ? '缓存本来就是空的' : `已清除 ${cleared} 条翻译缓存`);
