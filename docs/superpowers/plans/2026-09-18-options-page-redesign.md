@@ -614,11 +614,11 @@ options.html 里那句话现在是错的，而 options.test.ts:295 正断言它�
 - Create: `tests/options/harness.ts`
 - Create: `tests/options/options-css.test.ts`
 - Create: `tests/options/no-innerhtml.test.ts`
-- Modify: `src/options/options.ts`（694 行 → 约 90 行的装配）
+- Modify: `src/options/options.ts`（改写前 695 行 → 约 90 行的装配；**别照抄这个行数**：`git show 39864c9:src/options/options.ts` 数出 694 还是 695，取决于"末尾那个换行算不算一行"，两种数法都有人用）
 - Modify: `src/options/options.html`（89 行 → 8 组骨架里的前 4 组 + 导航）
-- Modify: `src/options/options.css`（441 行 → 新体系的完整样式表）
+- Modify: `src/options/options.css`（改写前 442 行 / 9588 字节，`git show 39864c9:src/options/options.css`；`wc -l` 口径会得到 441——同上，别为这个数字停下来对账）
 - Modify: `src/popup/popup.css:28`（加 `--on-accent`）
-- Modify: `tests/options/options.test.ts`（夹具改为 import；4 条 `#save` 用例改写）
+- Modify: `tests/options/options.test.ts`（夹具改为 import；**5 条**用例改写——4 条 `#save` 相关 + `#target-hint` 那句文案的断言，见 Step 13）
 
 > 这是本轮最大的一刀，但性质是**搬家**：引擎区块的实现（`buildEditor` / `handleSaveProfile` / `handleTestProfile` / `handleDeleteProfile` / 服务商模板 / Key 显示切换 / 权限申请）逐行照搬进 `sections/engine.ts`，只把 `settings` 换成 `ctx.settings()`、把 `setStatus(engineStatus, …)` 换成 `ctx.save(…)` / `setStatus(status, …)`。**引擎区块的 20 条既有用例一条都不改、一条都不许红**——它们是这次搬家的验收标准。
 >
@@ -1613,6 +1613,9 @@ Expected: PASS —— **7 条用例**（令牌 2 条、正文颜色与 opacity 2
 
 - [ ] **Step 8: 写「不许用 `innerHTML`」的源码守卫**
 
+> ⚠️ **这条守卫连注释一起扫**（`FORBIDDEN` 按裸标识符匹配，`src/options/**` 下**任何**行命中就红）。所以 **`src/options/**` 里的源码与注释都不能出现那三个 HTML 注入属性名本身**——想表达这条纪律，用描述性说法（仓库里 `dom.ts:8` 现在写的就是"规格 §7：用户数据不许走 HTML 解析"）。
+> **踩过的坑**：计划里 `dom.ts` 那块原本写的是"（规格 §7：不许 innerHTML）"，照它写文件、或让 `sync-plan-code.mjs` 把仓库文件拉进计划，守卫**当场红**（实测：`no-innerhtml.test.ts` 逐行扫、不剥注释）。所以那一行现在与仓库逐字一致。
+
 创建 `tests/options/no-innerhtml.test.ts`：
 
 ```ts
@@ -1924,7 +1927,7 @@ Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task
 
 export type StatusKind = 'ok' | 'err' | 'pending';
 
-/** 状态行的唯一出口：`data-kind` 决定颜色，文案一律 `textContent`（规格 §7：不许 innerHTML）。 */
+/** 状态行的唯一出口：`data-kind` 决定颜色，文案一律 `textContent`（规格 §7：用户数据不许走 HTML 解析）。 */
 export function setStatus(element: HTMLElement, kind: StatusKind, message: string): void {
   element.dataset.kind = kind;
   element.textContent = message;
@@ -2680,13 +2683,17 @@ export const languageSection: Section = {
 
 创建 `src/options/sections/cache.ts`：
 
-> **这一块的首行标记故意不带 `// src/options/sections/cache.ts`**：它是这个文件的**中间态**，
-> 最终版在 Task 8（那里有一份**带标记**的完整版）。`scripts/sync-plan-code.mjs` 只会把带标记的
-> 块刷成仓库当前内容——两个块都带标记时，它会把**两块都**刷成同一份最终文件，计划里就多出一份
-> 重复的 cache.ts。中间态这一块与 `options.html` / `options.css` 一样**手工维护**。
+> **这一块的首行标记故意带了括号后缀，所以 `scripts/sync-plan-code.mjs` 永远不会同步它。**
+> 机制要说准（**上一版计划在这里说反了**）：`PATH_LABEL`（`scripts/sync-plan-code.mjs:23`）要求首行**恰好**是 `// <路径>`；`body[0].trim()` 匹配不上时（`:45-51`）脚本**把整块原样跳过、什么都不做**——它**不会**"多出一行标记"，也没有任何副作用。
+> **真正的风险在别处**：这一块永远不会被同步，于是 Task 8 那份**带标记**的完整版一旦同步，**不会替换它、而是与它并存** → 计划里出现**两份 `cache.ts`**，其中一份是过时的中间态（"计划在教假话"的另一种形态）。
+> **处置（二选一，这里选后者）**：
+> - ~~现在就把中间态块删掉~~ —— 不行：Task 3 的这一 Step 需要"先写哪些、暂不写哪些"的完整代码，删了这一步就没有可照抄的东西；
+> - ✅ **保留它，由 Task 8 在落地时把它从计划里删掉**（Task 8 Step 4 已写明），并在 Task 11 的收口清单里加一条核对：**同步之后，每个源文件在计划里只剩一个代码块**。
+>
+> 这一块与 `options.html` / `options.css` 一样**手工维护**（没有可识别的标记 = 同步不管它）。
 
 ```ts
-// src/options/sections/cache.ts（中间态：Task 8 换成完整版）
+// src/options/sections/cache.ts（中间态：Task 8 换成完整版——**本块同步脚本不管，Task 8 落地时从计划里删掉**）
 //
 // §3.7 缓存与请求。本任务先落地「清除」这一半（行为与搬家前逐字相同：两层一起清、计数报两层合计），
 // 三个统计数字、缓存上限与「高级：批量与并发」折叠区在 Task 8 补齐。
@@ -2842,15 +2849,23 @@ init();
 - [ ] **Step 12: 跑到绿（搬家完成的读数）**
 
 Run: `npx vitest run tests/options/options.test.ts`
-Expected: PASS —— **25 条**（29 条里的 4 条 `#save` 用例在 Step 13 之前会红）
+Expected: **`24 passed | 5 failed`**（实测于 Task 3 落地时）。**红的必须恰好是这 5 条**：
 
-> 若此时红的**不是**那 4 条，停下来：说明搬家改变了行为（最常见的是把行内按钮的
-> `data-action` 写错、或把 `.profile-editor` 塞到了行外）。逐条对照 Step 2 的契约清单修，
-> **不要**改断言。
+| # | 用例 | 红在哪 | 归 Step 13 的哪一条 |
+| --- | --- | --- | --- |
+| 1 | `设置页：初始化与列表渲染 > 存储版本高于本代码：初始化如实报错；所有写入口在设置读出来之前都不放行` | `options.html 里没有 #save` | 第 1 条 |
+| 2 | `设置页：语言与显示（独立于档案的保存） > 「保存语言与显示」只写这两个字段：档案、Key 与 engineId 一律原样` | `options.html 里没有 #save` | 第 2~4 条（整段替换） |
+| 3 | 同上 describe `> 免费引擎下保存设置：一个宿主权限申请都不发` | `options.html 里没有 #save` | 同上 |
+| 4 | 同上 describe `> 期间弹窗改过的其它字段不会被旧快照抹掉` | `options.html 里没有 #save` | 同上 |
+| 5 | `设置页：初始化与列表渲染 > 目标语言与显示模式照旧按存储回填` | **`:317` 的 `expect(hint).toContain('保存语言与显示')`**——Task 2 加的那句断言在这里必须反过来（Task 3 的 HTML 已经把「改完点下面的「保存语言与显示」」换成「改动即时保存」，按钮也删了） | **第 5 条**（上一版计划漏了它） |
 
-- [ ] **Step 13: 改 4 条 `#save` 用例（改成等存储写入完成，断言只强不弱）**
+> 若红的**不是**这 5 条（多红、少红、或红在别处），停下来：说明搬家改变了行为（最常见的是把行内按钮的
+> `data-action` 写错、或把 `.profile-editor` 塞到了行外）。逐条对照 Step 2 的契约清单修，**不要**改断言。
+> **别把"25 条全绿"当成目标**：那 5 条红是**设计的一部分**（钉的是本任务删掉的按钮与那句话），Step 13 会把它们改成等存储写入完成的版本。
 
-`tests/options/options.test.ts:308-321`（「存储版本高于本代码」那条）的后半段改成：
+- [ ] **Step 13: 改这 5 条用例（断言只强不弱）**
+
+**第 1 条**：`tests/options/options.test.ts:308-321`（「存储版本高于本代码」那条）的后半段改成：
 
 ```ts
     pick<HTMLButtonElement>('add-profile').click();
@@ -2934,10 +2949,31 @@ describe('设置页：语言与显示（change 即存，没有保存按钮）', 
 });
 ```
 
+**第 5 条**（**上一版计划漏了它**，Step 12 的读数会把你带到这里）：`设置页：初始化与列表渲染 > 目标语言与显示模式照旧按存储回填` 里，Task 2 加的那句断言：
+
+```ts
+    // 改前（Task 2 的版本）
+    expect(hint).toContain('保存语言与显示');
+```
+
+改成：
+
+```ts
+    // 改后（Task 3 的版本）：本任务把「改完点下面的「保存语言与显示」」换成了「改动即时保存」，
+    // 按钮也删了——所以这句话必须反过来钉。**Task 2 在本用例里加的另外六条断言
+    // （链接仍可点击 / 仍可能失去下划线与可点击 / 降级为纯文本 / 仅译文模式下 / 六成）
+    // 一条都不许动**：它们与按钮无关，Task 3 也不改那半段文案。
+    expect(hint).not.toContain('保存语言与显示');
+    expect(hint).toContain('改动即时保存');
+```
+
+（新写的「改这两个下拉即落盘」用例里也有一条 `not.toContain('保存语言与显示')`——**两处都对，重复是有意的**：一条钉"旧文案在既有用例里被改掉了"，一条钉"新用例自己完整"。）
+
 - [ ] **Step 14: 跑到绿（两种测试一起）**
 
 Run: `npx vitest run tests/options/`
-Expected: PASS —— `options.test.ts` **29 条** + `options-css.test.ts` **7 条** + `no-innerhtml.test.ts` **2 条** + `store.test.ts` **6 条** + `dom.test.ts` **4 条**
+Expected: PASS —— `options.test.ts` **29 条**（Step 13 改完 5 条之后）+ `options-css.test.ts` **7 条** + `no-innerhtml.test.ts` **2 条** + `store.test.ts` **7 条** + `dom.test.ts` **4 条** = **49 条**。
+（`store.test.ts` 是 **7** 不是 6：Task 1 落地后补过一条「成功加载之后再失败，快照保留旧值」。**计划的逐文件计数是"计划内新增"的口径，实现阶段补的用例会让它变大**——对账锚点：Task 3 落地后 `npm test` 实测 **887 tests / 44 files**。）
 
 - [ ] **Step 15: 变异验证**
 
@@ -2947,7 +2983,7 @@ Expected: PASS —— `options.test.ts` **29 条** + `options-css.test.ts` **7 �
 | `options.css` 的 `:root` 把 `--danger` 改成 `#c0342c`（与 popup 差一个字符） | `options-css.test.ts`「共用令牌逐字一致」 |
 | 删掉 `@media (max-width: 900px)` 里的 `.nav { position: static }` | `options-css.test.ts`「窄窗口有明确的降级策略」 |
 | `.lab small` 加一句 `opacity: 0.7` | `options-css.test.ts`「不许用 opacity」 |
-| `sections/engine.ts` 里把 `engineStatus.textContent = …` 改成 `engineStatus.innerHTML = …` | `no-innerhtml.test.ts` |
+| `sections/engine.ts` 里把 `engineHint.textContent = …`（`renderEngineHint` 里那两处赋值）改成 `engineHint.innerHTML = …` | `no-innerhtml.test.ts`。**别去改 `engineStatus`**：引擎状态一律走 `setStatus(...)`（`dom.ts` 的唯一出口），磁盘上根本没有 `engineStatus.textContent = …` 这种赋值——上一版计划在这里指了一个不存在的赋值 |
 | `sections/language.ts` 的 `change` 监听换成 `input` | 「改这两个下拉即落盘」（change 事件不再触发任何写入） |
 | 把 `options.ts` 的 `for (const section of SECTIONS) section.bind(context)` 删掉 | 版本闸门那条（`#language-status` 永远不出现「设置还没读出来」） |
 
@@ -2959,15 +2995,19 @@ Expected: PASS —— `options.test.ts` **29 条** + `options-css.test.ts` **7 �
 git add src/options/options.html src/options/options.css src/options/options.ts \
   src/options/dom.ts src/options/section.ts src/options/sections/ \
   src/popup/popup.css tests/options/harness.ts tests/options/options-css.test.ts \
-  tests/options/no-innerhtml.test.ts tests/options/options.test.ts
+  tests/options/no-innerhtml.test.ts tests/options/dom.test.ts \
+  tests/options/options.test.ts
 git commit -m "refactor(options): 设置页骨架（左导航 + 区块契约 + 引擎/语言/缓存/隐私四区块搬家）
 
-- options.ts 694 行拆成 store.ts + dom.ts + section.ts + sections/<name>.ts，入口只做装配
+- options.ts 695 行拆成 store.ts + dom.ts + section.ts + sections/<name>.ts，入口只做装配
 - 语言与显示改为 change 即存，「保存语言与显示」按钮与 #save 一并移除
-- 4 条依赖 #save 的用例改成等存储写入完成（含"连改两次不互相覆盖"这条更强的断言）
+- 5 条用例改写：4 条依赖 #save 的改成等存储写入完成（含"连改两次不互相覆盖"这条更强的断言），
+  外加 #target-hint 那句「保存语言与显示」的断言反过来
 - 新增样式纪律测试（令牌逐字一致 / 无硬编码颜色 / 无 opacity / 焦点环 / 窄窗口降级）
-- 新增源码守卫：设置页不得出现 innerHTML"
+- 新增源码守卫：设置页不得出现那三个 HTML 注入属性（连注释一起扫）"
 ```
+
+> **路径清单是 15 条**（上一版漏了 `tests/options/dom.test.ts`——它是 Step 11 亲手要求创建的）。落地的提交就是 **15 files / `+1804 / −1099`**（`e5007a0`）。**提交前用 `git status --porcelain` 核一遍**：本任务新建的文件一个都不该留成未跟踪。
 
 ---
 
@@ -2981,6 +3021,8 @@ git commit -m "refactor(options): 设置页骨架（左导航 + 区块契约 + �
 - Modify: `tests/helpers/chrome-stub.ts`（给 `StubTabs` 加 `created` 与 `create`）
 
 > **这个区块的开关必须真的生效**：`hoverTranslate` / `selectionTranslate` 的消费者是**内容脚本**（`content/index.ts` 的 `applyFeatures`），只写存储不会改变已经打开的页面上挂没挂监听器。弹窗的 `onFeatureToggleChange`（`src/popup/popup.ts:436`）保存后会发一条 `APPLY_SETTINGS` 让页面当场重挂；设置页**必须做同一件事**，否则这里的开关就是"改完没反应"的假控件。
+>
+> **本任务是四个"还没落地的锚点 id"里的第一个**：Task 3 的 `options.css:177`/`:190` 已经写了 `body:has(#sec-shortcuts:target)` 这条高亮规则，但 `#sec-shortcuts` 这个 id **要等本任务把区块插进 `options.html` 才存在**。所以 Step 5 的 HTML 里 `id="sec-shortcuts"` **不能少、不能拼错**——少了它导航项点了不会高亮（而且**没有任何用例会红**，Task 9 的结构守卫只查 DOM 元素、不查 CSS 里引用的 id）。同理：Task 5 要落地 `#sec-glossary`、Task 6 `#sec-site-rules`、Task 7 `#sec-prompt`。
 >
 > 但设置页**拿不到"当前页面"**：它自己就占着活动标签。所以这里**广播给所有标签**（`chrome.tabs.query({})` + 逐个 `sendMessage`，不需要任何新权限；`tabs.sendMessage` 本来就不需要 `tabs` 权限）。一条都没送达时如实说"重新加载页面后生效"，不静默。
 
@@ -3014,7 +3056,7 @@ git commit -m "refactor(options): 设置页骨架（左导航 + 区块契约 + �
 
 Run: `npx vitest run tests/popup/ tests/options/`
 Expected: PASS —— 与改动前**同样的条数**（`tests/popup/popup.test.ts` **44 条** + `tests/options/` **48 条**）。
-> 这两个数是**实测**的：popup 那 44 条由 `npx vitest run tests/popup/popup.test.ts` 报出（本任务只给替身加 `create`，不改任何既有用例，所以条数必须一模一样）；options 的 48 条 = 上一任务留下的 29（`options.test.ts`）+ 7（`options-css.test.ts`）+ 2（`no-innerhtml.test.ts`）+ 6（`store.test.ts`）+ 4（`dom.test.ts`）——**注意这里必须把 `dom.test.ts` 的 4 条算进去**，否则执行者会拿一个对不上的数字去查半天。
+> 这两个数是**实测**的：popup 那 44 条由 `npx vitest run tests/popup/popup.test.ts` 报出（本任务只给替身加 `create`，不改任何既有用例，所以条数必须一模一样）；options 的 **49** 条 = 上一任务留下的 29（`options.test.ts`）+ 7（`options-css.test.ts`）+ 2（`no-innerhtml.test.ts`）+ **7**（`store.test.ts`——Task 1 落地时补过一条）+ 4（`dom.test.ts`）——**把 `store.test.ts` 的 7 与 `dom.test.ts` 的 4 都算进去**，否则执行者会拿一个对不上的数字去查半天。（全量口径可交叉验证：Task 3 落地后 `npm test` 实测 **887 tests / 44 files**。）
 
 - [ ] **Step 3: 写失败测试**
 
@@ -3359,14 +3401,24 @@ git commit -m "feat(options): 快捷翻译区块（悬停/划词开关即时保�
 - Modify: `src/options/options.ts`（import + `SECTIONS` 插到 `shortcutsSection` 之后）
 - Modify: `src/options/options.css`（加 `.add` 与 `.arrow`）
 
+> **顺手办一件事（一个前向引用要在这里收口）**：`src/options/sections/engine.ts:31` 现在写着
+> 「这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`」——
+> 而 `glossary.ts` **本任务才创建**（核实过：那条注释在 Task 3 就落进仓库了，是计划原文如此，不是实现者写歪了）。
+> 本任务落地后请把这条交叉引用**收口成自足的说法**：三处（`engine.ts` / `site-rules.ts` / `cache.ts`）
+> 各自写一句"这句话只有一个来源：`store.ts` 的 `NOT_LOADED`"即可，**不要再互相指**——注释指向另一个文件，
+> 读的人得来回跳，而且文件重命名/移动后它会静默变成谎话。
+>
+> **本任务也是四个"还没落地的锚点 id"里的第二个**：Step 3 的 HTML 里 `id="sec-glossary"` 不能少
+> （`options.css:178`/`:191` 的 `:target` 高亮规则在等它；少了不会有任何用例红）。
+>
 > 一行一条 `from → to`；**文本类 → 失焦才存**（§4.1）。这里的"失焦"落成原生 `change`
 > 事件：对文本控件，`change` 的触发时机就是「失焦**且值变了**」，而它**冒泡**，能配合
 > 动态行的委托监听（`blur` 不冒泡，用它就得给每一行单独挂）。它比 `blur` 更严格：
 > 没改动就不写存储。§10.3 的"打字过程中存储不变"因此天然成立。
 >
 > 空行语义（§10.4 + 一条自己的补充）：草稿行（`from` 或 `to` 为空）**不写存储**；
-> **已存在**的那条被清空时从存储里删掉——否则输入框是空的、存储里还留着它，翻译仍被
-> 那条术语强制替换，界面与存储对不上。
+> **已存在**的那条被清空时也**不写存储**——只给一句能读懂的话（"没有保存，存储里仍是原来那条，要删请点行尾「删除」"）。
+> **不要**在失焦那一刻顺手删掉它：用户可能只是"清掉重打"，删条目 + 重绘会让他正在编辑的一行**当场消失**，而这份界面没有撤销出口（详见 `sections/glossary.ts` 的 `commitRow` 注释与文末复盘 D-1）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -5054,6 +5106,8 @@ Expected: FAIL —— `options.html 里没有 #stat-cached`
 
 用下面的内容**整体替换** `src/options/sections/cache.ts`：
 
+> **同时把 Task 3 那块「中间态」代码块从本计划里删掉**（它的首行标记带了括号后缀，同步脚本永远不会碰它——留着它，计划里就会有**两份 `cache.ts`**，其中一份是过时的）。删掉之后 `sections/cache.ts` 在计划里只剩下面这一块（带标记）✓；Task 11 的收口清单会核对"每个源文件只剩一个代码块"。
+
 ```ts
 // src/options/sections/cache.ts
 //
@@ -6433,7 +6487,7 @@ npm test
 ```
 
 Expected: 全绿；测试总数 = **867 + 本轮新增**。本轮新增用例的逐文件计数（**写完最后一个 Task 后按实际输出核对**）：
-`store.test.ts` 6、`dom.test.ts` 4、`options-css.test.ts` 8（Task 3 的 7 条 + Task 9 补的 `[hidden]` 那条）、`no-innerhtml.test.ts` 2、`shortcuts.test.ts` 5、`glossary.test.ts` 11、`rule-pattern.test.ts` 11、`site-rules.test.ts` 9、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8 = **90 条**，因此预期 **957 个测试 / 52 files**（40 + 12 个新测试文件；`tests/options/harness.ts` 不是测试文件，不计）。`options.test.ts` 仍是 **29 条**。
+`store.test.ts` **7**（计划内 6 + 实现阶段补的 1）、`dom.test.ts` 4、`options-css.test.ts` 8（Task 3 的 7 条 + Task 9 补的 `[hidden]` 那条）、`no-innerhtml.test.ts` 2、`shortcuts.test.ts` 5、`glossary.test.ts` 11、`rule-pattern.test.ts` 11、`site-rules.test.ts` 9、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8 = **91 条**，因此预期 **958 个测试 / 52 files**（40 + 12 个新测试文件；`tests/options/harness.ts` 不是测试文件，不计）。`options.test.ts` 仍是 **29 条**。（对账锚点：Task 3 落地后实测 **887 / 44**。）
 实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
 > **实现阶段补的用例会让总数比这里的预期多几条**（单元 A 就有先例：审查或变异验证逼出来的必需用例）。多出来的是好事，不是错误——只要每一条都能说清它守的是什么、并且是**加强**而不是放宽既有断言。真正要警惕的是"数字对得上但守卫是假的"，不是"数字比预期大"。
 
@@ -6467,7 +6521,9 @@ Expected: 第一次跑会同步一批带 `// <路径>` 首行标记的块（`src
 > ⚠️ **这条命令绝对不能在实现之前跑。** 计划里 **28 个**带标记的块中，**只有 `// src/options/options.ts` 一个指向已经存在的文件**——而它现在是**旧版**（694 行）。实现之前跑同步，脚本会认为"计划落后于仓库"，把这个块**整块刷成旧文件**，Task 3 的装配层设计就没了。
 > 已核对过这件事（在计划的**副本**上跑，没碰真文件）：不带前缀跑报 `同步 src/options/options.ts（72 行 -> 694 行）` + 「已同步 1 个代码块」，另外 **27 个**文件全部列进"跳过（文件尚不存在）"；只跑 `tests/` 前缀时是「已同步 0 个代码块」。
 > **所以顺序是：Task 1~10 全落地 → 跑 `npm test/typecheck/build/zip` → 再跑同步。** 那时 `src/options/options.ts` 已经是新版装配层，同步才会正确地"0 个块"或只补上实现期的偏差。
-> （另外两条同源的坑，已经在本计划里避开：`options.ts` 是**一整块**、不是"前半块带标记 + 后半块不带"；`sections/cache.ts` 的**中间态那一块没有标记**，只有 Task 8 的最终版带标记——两块都带标记时同步会刷出两份同样的文件。）
+> （另外两条同源的坑，已经在本计划里避开：`options.ts` 是**一整块**、不是"前半块带标记 + 后半块不带"；`sections/cache.ts` 的**中间态那一块的首行标记带了括号后缀**——`PATH_LABEL` 匹配不上，脚本**整块跳过、什么都不做**（不是"多出一行标记"），所以它永远不会被同步；Task 8 落地时要把它从计划里删掉，否则计划里会同时存在两份 `cache.ts`。）
+>
+> ✅ **同步之后必须核一条**：数一数计划里 `// src/options/…` 与 `// tests/options/…` 这两类首行标记的出现次数，应当**等于"每个文件一个块"**——也就是**计划里每个源文件只剩一个代码块**（中间态块、被替换掉的旧块都该没有了）。同一个路径出现两次，就是某次替换没删干净：在**计划**里删掉过时的那一块（**别删仓库里的文件**）。
 
 - [ ] **Step 6: 提交**
 
@@ -6485,13 +6541,13 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 1 | 8 个区块全部可操作，每个能改的字段都有真实消费者，无占位控件 | Task 3（engine/language/cache/privacy）+ Task 4（shortcuts）+ Task 5（glossary）+ Task 6（site-rules）+ Task 7（prompt）+ Task 8（cache 统计与高级） | 每个区块的用例都在真实 HTML 上操作并直读存储；`privacySection` 是**空实现**（没有可改字段，因此没有任何控件）；`autoTranslateDelay` 全程不出现（§1 表 + §8） |
 | 2 | 即时保存：改字段后重新读取存储确认落盘，不点任何保存按钮 | Task 3 Step 13（语言/显示）、Task 4 Step 3（开关）、Task 5 Step 1（术语）、Task 6 Step 5（规则）、Task 7 Step 1（提示词）、Task 8 Step 1（四个数字） | 所有新用例走 `waitFor(async () => (await storedSettings())… )` 直读存储；唯一保留的显式保存按钮是档案的「保存档案」，理由见「需要评审先点头的 9 个决定」第 2 条 |
 | 3 | 文本字段 `blur` 才写存储：打字过程中存储不变 | Task 5（术语）、Task 6（规则）、Task 7（提示词）各自的「打字过程中存储不变」用例 | 落成原生 `change`（= 失焦且值变了，且**冒泡**，能配合动态行的委托监听）；`input` 事件一律不写 |
-| 4 | 术语表空行（`from` 或 `to` 为空）不写入存储 | Task 5 Step 1「只填一半的行不写存储，也不凭空长出第二行」（§10.4） | 另有「清空既有行 = 删掉那一条」，防止界面与存储对不上 |
+| 4 | 术语表空行（`from` 或 `to` 为空）不写入存储 | Task 5 Step 1「只填一半的行不写存储，也不凭空长出第二行」（§10.4） | 另有「把既有行清空：**不写存储** + 明说存储里仍是原来那条、要删请点行尾「删除」」（**不顺手删**——决定 #6 被审查改过一次，理由是没有撤销出口）；站点规则同一口径 |
 | 5 | 搜索：命中时只显示匹配区块；零命中出现「没找到」 | Task 9 全部用例 | `visibleSections()` 断言"只剩哪一个"；零命中时所有区块与导航项 hidden 且 `#search-empty` 不 hidden |
 | 6 | 状态点三态各自可达且互不混淆；灰态 `title` 明说"从没测过" | Task 10 Step 1「绿 / 灰 / 红各自可达」+ 脏数据用例 | `data-state` 三值 + `title` 逐条断言；灰态文案含「从没测过」 |
 | 7 | 站点规则：`never` 命中时三个入口都不翻译；`*.x.com` 通配与精确匹配各有用例；首条命中生效 | **单元 A 已交付**（`tests/core/site-rules.test.ts` 12 条、`tests/content/index.test.ts` 的拦截用例、`tests/popup/popup.test.ts` 的解除用例）；本单元 Task 6 补**写入侧**（界面里能增删的规则就是那三条语义的输入） | 本单元不重复实现、不重复测匹配语义；Task 6 的规则行只写 `action: 'never'` |
 | 8 | §6 的文案已改对，且断言更新在提交信息里写明理由 | Task 2 全部（含提交信息模板） | 改后的断言从 1 条变成 **7 条**（链接仍可点击 / 仍可能失去下划线与可点击 / **降级为纯文本** / 旧说法不许回来 / 当下为真的「保存语言与显示」/ **仅译文模式下** / **六成**），条数与语气都只强不弱；**后两条是限定词与真判据自己的回归网**（三处修正里只有白名单那处原本有读数）；Task 3 Step 10 的 HTML 块与 Task 2 的块**逐字相同** |
 | 9 | 亮/暗两套下无硬编码颜色（用 `tests/helpers/css.ts` 的解析器断言声明块） | Task 3 Step 4（`options-css.test.ts` 7 条）+ Task 9 Step 5（`[hidden]` 那条，第 8 条） | 令牌逐字一致、正文无 `#`/`rgb()`/`hsl()` 字面量、无 `opacity`；`--on-accent` 同时加进 `popup.css` 以保持共用组一致 |
-| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数预期 **957 / 52 files**（867 + 本轮 90 条） |
+| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数预期 **958 / 52 files**（867 + 本轮 91 条；对账锚点：Task 3 落地后实测 887 / 44） |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -6606,7 +6662,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 项 | 结论 | 终版怎么写的 |
 | --- | --- | --- |
 | **N1** 隐私那条第 3 条的**行号与序数**都写错了（写着 `:79-83`、叫"第四条"） | **成立**：实测 `:63-71` 第 1 条、`:72-74` 第 2 条、**`:75-78` 第 3 条**（授权按需申请）、`:79-82` 第 4 条（只送可见文本，`:83` 是 `</ul>`） | 已按实测改写，并且把话说清楚：**现状里它是第 3 条**，新版按 1/2/3/4 重排后落在**第 4 条**——"我们保住了那条被压掉的承诺"这个结论**不再建立在一个错的序数上**。Task 3 Step 10 的注记 + 文件结构表 + 本表 |
-| **N2** Task 4 的 Expected 没随 `dom.test.ts` 重算（写 popup 33 + options 42） | **成立**（两个数都旧了） | 实测：`tests/popup/popup.test.ts` = **44 条**、`tests/options/` = **48 条**（29 + 7 + 2 + 6 + **4**）。Task 4 Step 2 已改成这两个数并写明"必须把 `dom.test.ts` 的 4 条算进去" |
+| **N2** Task 4 的 Expected 没随 `dom.test.ts`/`store.test.ts` 重算（写 popup 33 + options 42） | **成立**（两个数都旧了） | 实测：`tests/popup/popup.test.ts` = **44 条**、`tests/options/` = **49 条**（29 + 7 + 2 + **7** + **4**）。Task 4 Step 2 已改成这两个数，并写明"把 `store.test.ts` 的 7 与 `dom.test.ts` 的 4 都算进去"，另附全量对账锚点 887 / 44 |
 | **N3** Task 9 的 Expected 组内拆分 | **总数 13 对，拆分按实测更正**：`describe` 三段是 `:5125` **2 条** + `:5141` **8 条** + `:5250` **3 条**（每一段的 `it` 行号都在计划里数过；对账方给的是 7/4，与实测不一致——**总数 13 不变**，且总数才是承重的数） | Task 9 Step 4 写成 2 / 8 / 3 并附三条 describe 的行号，末尾注明"总数 13 才是承重的数" |
 | **N4** 复盘表里"`search.test.ts` 实际有 10 个 `it`（2+6+2）"是错的 | **成立**（那个括注不驱动任何结论） | **直接删掉**该括注，S3 那一行改成"撤回（算错了）+ 不影响任何结论 + 总数已全量重算" |
 | **N5** 隐私加固用例里那两条"文案耦合"断言 | **不用改**（防空洞的必要代价，对账方也认这笔账划算） | 原位加了半句说明："这两条是**防空洞的护栏**，断言的是文案的形状不是搜索逻辑；将来改隐私文案红的是这里——那时该改的是**文案或索引边界**，不是搜索" |
@@ -6615,7 +6671,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 **顺带修掉两处只有跑一次同步才看得见的坑**（核查要求跑 `sync-plan-code.mjs` 验证幂等；我在计划**副本**上跑的，没碰真文件）：
 
 1. `src/options/options.ts` 原来被写成**两块**（前半块带路径标记、后半块不带）。同步脚本只认带标记的那一块，会把**前半块**刷成整个文件（实测：`同步 src/options/options.ts（72 行 -> 694 行）`——因为仓库里现在是 694 行的旧版），后半块就变成重复内容。→ 已合并成**一整块**。
-2. `src/options/sections/cache.ts` 原来有**两个**带标记的块（Task 3 的中间态 + Task 8 的最终版）→ 同步会把两块都刷成同一份最终文件。→ 中间态那一块的标记已去掉并写明理由（手工维护，和 `options.html` / `options.css` 一样）。
+2. `src/options/sections/cache.ts` 在计划里会出现**两块**（Task 3 的中间态 + Task 8 的最终版）。**机制被上一版写反了**：中间态块的首行标记带了括号后缀 → `PATH_LABEL` 匹配不上 → 脚本**整块跳过、什么都不做**（不是"多出一行标记"）。真正的后果是：Task 8 那一块同步时**不会替换它**，计划里会**并存两份 `cache.ts`**（一份过时）。→ 中间态块保留（Task 3 那一步要照抄），但 **Task 8 落地时必须把它从计划里删掉**；Task 11 收口清单里核对"每个源文件在计划里只剩一个代码块"。
 
 ### Task 1 落地时的三条（**写在这里，是为了拦住后人"顺手修一行本来正确的东西"**）
 
@@ -6657,4 +6713,23 @@ Task 2 的规格审查用真实渲染器跑了 9 例探针，抓出三条不准�
 → 正确做法（将来要做时）：用一个容器同时包住两者，例如 `<div id="target-hint-block">` 里放 `<p id="target-hint">`（保留既有 7 条断言能读到的那半段）与 `<details>`，**再把断言靶子改成那个容器**，一次改到位。
 → **两条禁止**：① **不许**把 `<details>` 直接塞进 `<p>`；② **不许**默默把文案从 `#target-hint` 里挪走（那会静默弄坏 7 条断言——它们不会报"我找不到文案了"，只会报某句话不见了，看起来像文案回归）。
 → 这条留痕的价值：它把一个"看起来顺手、实际会静默弄坏 7 条断言"的改动，变成**显式的决定点**。本轮**不动结构**（文案长度是已知代价，写在这里比塞进 `<details>` 后弄坏断言网划算）。
+
+### Task 3 落地时抓出的一条**恒真断言**（质量审查，已退回实现者修）
+
+`tests/options/options-css.test.ts` 里那条「暗色只定义一次，且覆盖正文用到的每一个颜色令牌」**是恒真的**：它把正文里用到的令牌集合 `used` 拿去查 **`light`**（`:39-40`），而按设计**每个正文令牌在亮色 `:root` 里都有值** → `missing` 恒为 `[]`；同时 `:32` 的 `dark` 与 `:37` 的 `body` 是**死变量**（声明了没用上）。
+**实测反证**：把暗色块里的 `--text-2`（正文大量使用）**删掉**，7 条用例**全绿**——这条断言对"暗色缺令牌"这件事零读数。
+
+**教训（写给写"覆盖率"类断言的人）**：**必须拿被查的那一侧（`dark`）去查**，否则它验的是另一件事（这里是"亮色齐全"，而亮色齐全由 `:root` 的定义本身保证，等于什么都没验）。
+
+**修的时候有个坑**（所以不是把 `light` 换成 `dark` 就完事）：`used` 里有一部分令牌**本来就只在亮色定义、暗色不重定义**——`--on-accent`（强调色上的文字，两种模式下都是白字）、`--radius-sm/md/pill`（尺寸，与配色无关）。直接把 `light` 换成 `dark`，这几条会立刻变成**假红**。可行的做法（交给实现者定，最终文本落地后由 `sync-plan-code.mjs` 拉回本计划的块）：
+- 把 `used` 收窄到**颜色**令牌，并显式列出"故意不随模式变"的那几个（`--on-accent`）；或
+- 断言"`used` 里每个令牌要么在 `dark` 里有值、要么在**白名单**里"，白名单只放那两类。
+
+### 两条"只记录、不改"的事实
+
+1. **四个 `:target` 选择器当前是死的**：`src/options/options.css:175-182` 与 `:188-195` 已经写了 `#sec-shortcuts` / `#sec-glossary` / `#sec-site-rules` / `#sec-prompt` 这四条 `body:has(#sec-…:target)` 规则，而 `src/options/options.html` 里这**四个 id 都还不存在**（Task 3 只落地了 engine / language / cache / privacy 四组）。
+   - 规格审查确认**没有任何断言声称"这四个 id 存在"** → 不构成"断言白过"；
+   - 但**Task 4~8 必须让这四个 id 真的落地**（`sections/shortcuts.ts` → `#sec-shortcuts`、`glossary` → `#sec-glossary`、`site-rules` → `#sec-site-rules`、`prompt` → `#sec-prompt`），否则它们永远是死选择器（点了导航项也不会有高亮）；
+   - Task 9 的结构守卫（`SECTIONS` ↔ `[data-section]` ↔ `[data-nav]`）**抓不到**这一类问题（它查的是 DOM 元素，不是 CSS 里引用的 id）。**可选加固**（等实现者修完上面那条恒真断言再加，别同时改同一个文件）：在 `options-css.test.ts` 里断言"CSS 里出现的每个 `#sec-*` 都能在 `options.html` 里找到"。
+2. **`src/options/sections/engine.ts:31` 交叉引用了一个当时还不存在的文件**：注释写「这句话只有一个来源（见 `sections/glossary.ts` 的注释）」，而 `glossary.ts` 要到 **Task 5** 才创建（核实过：计划的 `engine.ts` 块与仓库文件**逐字节相同**，所以这是**计划原文如此**，不是实现者写歪了）。→ **Task 5 里加了一步**：顺手确认/改写这条交叉引用（要么改成"见各文件自己的 import 注记"，要么确认 `glossary.ts` 落地后指向正确）。
 
