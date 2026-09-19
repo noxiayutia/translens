@@ -2077,7 +2077,7 @@ import {
   type Settings,
 } from '../../shared/settings';
 import { describe, element, fillSelect, requireWithin, runSafely, setStatus } from '../dom';
-// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+// 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 import type { Section, SectionContext } from '../section';
 
@@ -3399,7 +3399,7 @@ git commit -m "feat(options): 快捷翻译区块（悬停/划词开关即时保�
 - Create: `tests/options/glossary.test.ts`
 - Modify: `src/options/options.html`（新建「内容控制」导航组 + 区块）
 - Modify: `src/options/options.ts`（import + `SECTIONS` 插到 `shortcutsSection` 之后）
-- Modify: `src/options/options.css`（加 `.add` 与 `.arrow`）
+- Modify: `src/options/options.css`（加 `.arrow`、`.add`、`.add:hover` 与 **`.add:disabled`**——最后一条是 Task 5 落地时补的真问题：`.add` 的 author 规则会盖掉浏览器默认的 disabled 外观，草稿行开着时按钮看着完全可点、点下去没反应。Task 6 / Task 8 复用 `.add` 时靠的就是它）
 
 > **顺手办一件事（一个前向引用要在这里收口）**：`src/options/sections/engine.ts:31` 现在写着
 > 「这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`」——
@@ -3518,6 +3518,27 @@ describe('设置页：术语表', () => {
     expect(status().dataset.kind).toBe('ok');
   });
 
+  it('落盘后草稿行收起来、`+ 添加术语` 重新可用（少了重绘就会卡在这里）', async () => {
+    // 这条单独成例，是为了让"保存成功后必须重绘"这件事有自己的读数：
+    // 删掉 `writeTerms` 里的 `if (ok) renderRows(ctx)` → 存储照样对、状态照样是 ok，
+    // 但**草稿行留在屏幕上、按钮停在 disabled**（只有 `renderRows` 那一行会复位它），
+    // 用户得刷新页面才能加第二条。把它挂在别处会让这一条变异连坐好几例、看不出是谁守的。
+    await seedSettings({ glossary: [] });
+    await loadOptions();
+
+    pick<HTMLButtonElement>('add-term').click();
+    // 草稿行开着时按钮就该是禁用的（此时页面上已经有一行空行，再点没有意义）。
+    expect(pick<HTMLButtonElement>('add-term').disabled).toBe(true);
+
+    fill(rowAt(0), 'serverless', '无服务器');
+
+    await waitFor(async () => (await storedGlossary()).length === 1);
+    expect(rows()).toHaveLength(1);
+    // 落盘的那一行**不是**草稿行，而且按钮回来了。
+    expect(rows()[0]?.dataset.draft).toBeUndefined();
+    expect(pick<HTMLButtonElement>('add-term').disabled).toBe(false);
+  });
+
   it('打字过程中存储一个字节都不变，失焦（change）之后才写', async () => {
     await seedSettings({ glossary: [] });
     await loadOptions();
@@ -3548,6 +3569,71 @@ describe('设置页：术语表', () => {
     expect(rows()).toHaveLength(2);
     // 半个词不是术语，也不该被当成"用户想删点什么"。
     expect(status().textContent ?? '').not.toContain('已保存');
+  });
+
+  it('改既有行是**就地更新**：条数不变，且只有这一行变', async () => {
+    // 变异验证逼出来的补充：计划那条「两边都填 → 就地更新（按下标）」的写路径，
+    // 原本**没有任何用例走到**——把 `index < terms.length ? 就地改 : 追加` 改成永远追加，
+    // 全仓 907 条用例全绿（连同 `npm run typecheck`）。下面两条断言把它钉住：
+    // 条数不许长（追加会变 3 条）、且**只有被改的那一行**变。
+    await seedSettings({
+      glossary: [
+        { from: 'one', to: '一' },
+        { from: 'two', to: '二' },
+      ],
+    });
+    await loadOptions();
+
+    fill(rowAt(1), 'TWO', '贰');
+
+    await waitFor(async () => (await storedGlossary())[1]?.from === 'TWO');
+    expect(await storedGlossary()).toEqual([
+      { from: 'one', to: '一' },
+      { from: 'TWO', to: '贰' },
+    ]);
+    expect(rows()).toHaveLength(2);
+  });
+
+  it('草稿行只填一半时**连状态行都不碰**：上一条状态逐字留着，既不报错也不说"已保存"', async () => {
+    // 规格与 `commitRow` 的注释写的是"什么都不做"。只断言"不说已保存"是不够的——
+    // 变异成"落到下面那条既有行的报错分支"（即删掉 `if (index >= terms.length) return;`）
+    // 照样全绿，可用户每按一次 Tab 就会看到一句红字，等于在自己还没填完时被指责。
+    //
+    // 钉的是"**上一条状态不被抹掉**"而不是"状态行初始为空"：后者钉的是 HTML 的初始标记，
+    // 将来给状态行加个默认 `kind` 就会因为**与本病无关的原因**变红，报错还会指向这里。
+    // 所以先制造一条**真实的、用户看得见的**状态，再证明它逐字留着——顺带把"只清文案"
+    // 那种变异也一起杀掉。
+    //
+    // 这条真实状态**故意用「删除」造、不用「保存」造**：保存那条路径要把按钮重新启用
+    // （`writeTerms` 成功后的 `renderRows`），于是"保存成功后不重绘"那个变体会连坐到这里，
+    // 让两条用例争同一个读数。删除这条路径不改按钮状态，两个变异各红各的。
+    await seedSettings({
+      glossary: [
+        { from: 'keep', to: '留着' },
+        { from: 'gone', to: '删掉' },
+      ],
+    });
+    await loadOptions();
+    pick<HTMLButtonElement>('add-term').click();
+    rowAt(1).querySelector<HTMLButtonElement>('[data-action="delete-term"]')!.click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    const kind = status().dataset.kind;
+    const message = status().textContent;
+    // 前提自检：确实拿到了一条非空状态，否则下面两条断言会退化成"空 == 空"的恒真。
+    expect(message).not.toBe('');
+
+    // 草稿行现在排在已有术语后面，在里面只填原文就失焦 —— 等于用户按 Tab 跳到译文。
+    // 这里**按 `data-draft` 找那一行、并且只断言与"状态行"有关的事**：不用行数之类的
+    // 前置条件，免得"别的路径没重绘"这种无关故障也把它带红（那样报错会指错地方）。
+    const draft = rows().at(-1);
+    expect(draft?.dataset.draft).toBe('');
+    inputOf(draft as HTMLElement, '.glossary-from').value = 'half';
+    inputOf(draft as HTMLElement, '.glossary-from').dispatchEvent(bubble('change'));
+
+    expect(await storedGlossary()).toEqual([{ from: 'keep', to: '留着' }]);
+    expect(inputOf(draft as HTMLElement, '.glossary-from').value).toBe('half');
+    expect(status().dataset.kind).toBe(kind);
+    expect(status().textContent).toBe(message);
   });
 
   it('真实用户路径：先填 from、Tab 到 to（两次 change），第二次才落盘——中途不许写坏存储', async () => {
@@ -3622,6 +3708,29 @@ describe('设置页：术语表', () => {
 
     await waitFor(async () => (await storedGlossary()).length === 2);
     expect((await storedGlossary()).map((term) => term.from)).toEqual(['one', 'three']);
+  });
+
+  it('行尾红字删除后**那一行真的从 DOM 里消失**（不只是存储里没了）', async () => {
+    // 与上一条分开成例、并且**只断言 DOM 这一件事**：
+    // - 上一条看的是**存储**（存的确实是另外两条）；
+    // - 这一条看的是**界面**——少了 `deleteRow` 里的 `renderRows`，存储照样对、状态照样是
+    //   「已删除」，但被删的那一行**留在屏幕上**，用户看着它还在、以为没删掉。
+    // 两件事混在一条里，变异读数就会指向错的那条（上一轮"前置条件抢读数"的教训）。
+    await seedSettings({
+      glossary: [
+        { from: 'one', to: '一' },
+        { from: 'two', to: '二' },
+        { from: 'three', to: '三' },
+      ],
+    });
+    await loadOptions();
+    expect(rows()).toHaveLength(3);
+
+    rowAt(1).querySelector<HTMLButtonElement>('[data-action="delete-term"]')!.click();
+
+    await waitFor(() => rows().length === 2);
+    // 删掉的那条也不许留在行里（顺便钉住"剩下的确实是另外两条"，不是随便少了一行）。
+    expect(rows().map((row) => inputOf(row, '.glossary-from').value)).toEqual(['one', 'three']);
   });
 
   it('草稿行上的删除只是收起那一行，存储一个字节不动', async () => {
@@ -3731,6 +3840,18 @@ Expected: FAIL —— `options.html 里没有 #glossary-list`
   background: var(--accent-weak);
   border-color: var(--accent);
 }
+
+/*
+ * 草稿行开着时这个按钮是 disabled 的（`renderRows` 里的 `addButton.disabled = draftOpen`）。
+ * **必须显式写**：`.add` 的 author 规则会盖掉浏览器默认的 disabled 外观，于是它看着完全可点、
+ * 点下去没反应——一个"假控件"是这一轮最不该出现的东西。Task 6 / Task 8 复用 `.add` 时同样受益。
+ */
+.add:disabled {
+  color: var(--text-3);
+  background: transparent;
+  border-color: var(--border);
+  cursor: default;
+}
 ```
 
 - [ ] **Step 4: 写实现**
@@ -3748,7 +3869,7 @@ Expected: FAIL —— `options.html 里没有 #glossary-list`
 // 2. **草稿位只有一个**：点一次「+ 添加术语」出现一行，再点只是把焦点放回那一行——
 //    空白行叠出好几条除了让人困惑没有任何作用。
 import type { Term } from '../../engines/types';
-import { element, setStatus } from '../dom';
+import { element, requireWithin, setStatus } from '../dom';
 import type { Section, SectionContext } from '../section';
 // **这句话只有一个来源**：`store.ts` 导出的 `NOT_LOADED`。四个区块都要在"设置还没读出来"时
 // 说同一句话，各写一份字面量迟早会漂成四种说法——`shared/settings.ts` 的 `isAllowedBaseUrl`
@@ -3764,12 +3885,6 @@ let draftOpen = false;
 
 function rowsOf(): HTMLElement[] {
   return Array.from(list.querySelectorAll<HTMLElement>('[data-glossary-row]'));
-}
-
-function inputWithin(row: HTMLElement, className: string): HTMLInputElement {
-  const input = row.querySelector<HTMLInputElement>(`.${className}`);
-  if (input === null) throw new Error(`术语行缺控件 .${className}`);
-  return input;
 }
 
 /**
@@ -3839,8 +3954,8 @@ async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
   const current = ctx.settings();
   if (current === null) return;
   const index = Number(row.dataset.index);
-  const from = inputWithin(row, 'glossary-from').value.trim();
-  const to = inputWithin(row, 'glossary-to').value.trim();
+  const from = requireWithin<HTMLInputElement>(row, '.glossary-from').value.trim();
+  const to = requireWithin<HTMLInputElement>(row, '.glossary-to').value.trim();
   const terms = current.glossary;
 
   if (from.length > 0 && to.length > 0) {
@@ -3935,7 +4050,7 @@ export const SECTIONS: readonly Section[] = [
 - [ ] **Step 5: 跑到绿**
 
 Run: `npx vitest run tests/options/glossary.test.ts`
-Expected: PASS —— **11 条用例**
+Expected: PASS —— **15 条用例**（计划内 11 条 + 实现阶段补的 4 条：M1/M3 守卫各 1、重绘守卫单独成例 1、删除后 DOM 守卫 1。**以落地文件为准**：`tests/options/glossary.test.ts` 实测 15 条）
 
 - [ ] **Step 6: 变异验证**
 
@@ -4283,8 +4398,9 @@ describe('设置页：站点规则（写入侧）', () => {
   });
 
   it('既有行的域名被清空：**不写存储**、给一句能读懂的话，要删得点行尾「删除」', async () => {
-    // 与术语表同一条口径（见 `sections/glossary.ts` 的注释）：用户可能只是"清掉重打"，
+    // 与术语表同一条口径（**自己说清，别指向另一个文件**）：用户可能只是"清掉重打"，
     // 在失焦那一刻顺手删条目 + 重绘会让他正在编辑的一行当场消失，且没有撤销出口。
+    // 所以这里只**如实说明**"没有保存、存储里仍是原来那条、要删请点行尾「删除」"。
     await seedSettings({
       siteRules: [
         { pattern: 'a.com', action: 'never' },
@@ -4348,8 +4464,59 @@ describe('设置页：站点规则（写入侧）', () => {
     expect(text).toContain('划词与悬停翻译不受约束');
     expect(text).toContain('已经翻译过的页面');
   });
+
+  it('把既有规则改成一个新的合法值：**就地更新**——条数不变、只有那一行变、顺序不变', async () => {
+    // 这条钉的是 `index < rules.length ? rules.map(…) : [...rules, next]` 的**真分支**。
+    // 没有它，"编辑既有规则"完全可能被写成"追加一条"（条数变多、旧规则还在），而上面 9 条用例
+    // 与原来的 7 行变异表**一条都杀不掉**——Task 5 的实测结论是：这一类分支在升级前全仓 907 条
+    // 用例无人能杀（`index < rules.length` 的真分支从未被执行）。所以这条**不是**锦上添花。
+    await seedSettings({
+      siteRules: [
+        { pattern: 'a.com', action: 'never' },
+        { pattern: 'b.com', action: 'never' },
+      ],
+    });
+    await loadOptions();
+
+    commit(rowAt(0), 'edited.example.com');
+
+    await waitFor(async () => (await storedRules())[0]?.pattern === 'edited.example.com');
+    expect(await storedRules()).toEqual([
+      { pattern: 'edited.example.com', action: 'never' },
+      { pattern: 'b.com', action: 'never' },
+    ]);
+    // 条数与顺序都不变：追加式实现在这里会得到 3 条、且旧规则还在。
+    expect(await storedRules()).toHaveLength(2);
+    expect(rows()).toHaveLength(2);
+    expect(patternOf(rowAt(0)).value).toBe('edited.example.com');
+  });
+
+  it('草稿行的域名为空时：**什么都不发生**——不写存储，连状态行都不许碰', async () => {
+    // ⚠️ 只断言"状态行不含『已保存』"是**不够**的：既有行被清空时落下去的文案是「没有保存」，
+    // 它本来也不含那个子串——那条断言抓不到"草稿行也顺手写了一句"这个缺陷。
+    // 真正要钉的是草稿行那一支（`if (index >= rules.length) return;`）**根本不动状态行**。
+    await seedSettings({ siteRules: [{ pattern: 'keep.me', action: 'never' }] });
+    await loadOptions();
+
+    // 先制造一个"已知状态"：把既有行保存一次 → 状态行变成「已保存（按 keep.me 匹配）」。
+    commit(rowAt(0), 'keep.me');
+    await waitFor(() => status().dataset.kind === 'ok');
+    const textBefore = status().textContent;
+    const kindBefore = status().dataset.kind;
+
+    // 再加一个草稿行、派发一次 change（域名为空）——这一支必须静默。
+    pick<HTMLButtonElement>('add-rule').click();
+    commit(rowAt(1), '');
+
+    expect(status().textContent).toBe(textBefore);
+    expect(status().dataset.kind).toBe(kindBefore);
+    expect(await storedRules()).toEqual([{ pattern: 'keep.me', action: 'never' }]);
+    expect(rows()).toHaveLength(2);
+  });
 });
 ```
+
+> **这两条用例的由来（Task 5 的实测教训，别删）**：Task 6 的计划代码里有**逐字相同**的两段——`index < rules.length ? map : append` 与 `if (index >= rules.length) return;`；而 Task 5 的同类分支在升级前**全仓 907 条用例里没有任何一条能杀掉它的变异**。原计划 Task 6 的 9 条用例（只查存储与行数）与 7 行变异表都覆盖不到这两支，**同一个缺陷会原样复制到站点规则上**。所以：用例从 9 条增加到 **11 条**，变异表补两行（见 Step 10）。
 
 - [ ] **Step 6: 跑到红**
 
@@ -4433,11 +4600,11 @@ Expected: FAIL —— `options.html 里没有 #site-rules-list`
 //    静默不命中，这一侧的责任就是在写入前挡住或者救回来。
 // 3. **草稿行不写存储**（同术语表）：空白规则在核心那边是"什么都不匹配"，
 //    但让它进存储只会让列表里多一条看着像规则的空行。
-import { element, setStatus } from '../dom';
+import { element, requireWithin, setStatus } from '../dom';
 import { normalizeRulePattern } from '../rule-pattern';
 import type { SiteRule } from '../../shared/settings';
 import type { Section, SectionContext } from '../section';
-// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+// 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 
 const list = document.getElementById('site-rules-list') as HTMLElement;
@@ -4451,11 +4618,10 @@ function rowsOf(): HTMLElement[] {
   return Array.from(list.querySelectorAll<HTMLElement>('[data-rule-row]'));
 }
 
-function inputWithin(row: HTMLElement): HTMLInputElement {
-  const input = row.querySelector<HTMLInputElement>('.rule-pattern');
-  if (input === null) throw new Error('规则行缺控件 .rule-pattern');
-  return input;
-}
+// **不自己写 inputWithin**：Task 5 落地时把那份近拷贝删掉了，改用 `dom.ts` 的共享
+// `requireWithin(root, selector)`——两个近名函数（`inputWithin(row)` 与
+// `requireWithin(root, selector)`）的调用约定**正好相反**，摆在一起迟早有人传错参数。
+// 它就在上面 import 进来的 `../dom` 里。
 
 /** 造一行。域名走 `.value`（不是 HTML 解析），动作是静态文字。 */
 function buildRow(index: number, rule: SiteRule | null): HTMLElement {
@@ -4504,19 +4670,20 @@ async function writeRules(ctx: SectionContext, rules: SiteRule[], prefix: string
  * - 规范化成功：既有行就地更新，草稿行追加成新条目，并把**规范化后的值写回输入框**；
  * - 规范化失败：**不写存储**，把原因说给用户听（输入框保留原文，让他能改）；
  * - 空：草稿行 → 什么都不做（等用户接着填）；**既有行 → 不写存储**，只说明"存储里仍是原来
- *   那条，要删请点行尾「删除」"。与术语表同一条口径（见 `sections/glossary.ts` 的注释）：
- *   在失焦那一刻顺手删条目 + 重绘，会让**用户正在编辑的一行当场消失**，而这份界面没有撤销出口。
+ *   那条，要删请点行尾「删除」"。**为什么不一并删掉**（自己说清，别指向另一个文件）：用户的真实
+ *   动作可能是"清掉重打"，而在失焦那一刻删条目 + 重绘会让**正在编辑的一行当场消失**，这份界面
+ *   没有撤销出口；相比之下"界面与存储暂时不一致"只要**明说**就是诚实的（术语表同一口径）。
  */
 async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
   const current = ctx.settings();
   if (current === null) return;
   const index = Number(row.dataset.index);
-  const input = inputWithin(row);
+  const input = requireWithin<HTMLInputElement>(row, '.rule-pattern');
   const raw = input.value.trim();
   const rules = current.siteRules;
 
   if (raw.length === 0) {
-    if (index >= rules.length) return; // 草稿行空着：等他填，不写存储
+    if (index >= rules.length) return; // 草稿行空着：等他填——**连状态行都不许碰**（Step 5 有专门用例）
     setStatus(status, 'err', '这一条规则没有域名，没有保存；存储里仍是原来那条（要删掉请点行尾「删除」）');
     return;
   }
@@ -4608,12 +4775,14 @@ export const SECTIONS: readonly Section[] = [
 - [ ] **Step 9: 跑到绿**
 
 Run: `npx vitest run tests/options/site-rules.test.ts tests/options/rule-pattern.test.ts`
-Expected: PASS —— **9 条 + 11 条**
+Expected: PASS —— **11 条 + 11 条**（site-rules 从 9 条加到 11 条：补了「既有规则就地更新」与「草稿行空域名连状态行都不碰」两条分支守卫，见 Step 5 的注记）
 
 - [ ] **Step 10: 变异验证**
 
 | 变异 | 期望红在哪一条 |
 | --- | --- |
+| **`index < rules.length ? rules.map(… ) : [...rules, next]` 改成永远 `[...rules, next]`（追加式）** | 「把既有规则改成一个新的合法值：**就地更新**」——会变成 3 条、旧规则还在（**这一支在补用例之前杀不掉**） |
+| **草稿行那一支的 `if (index >= rules.length) return;` 改成落进下面的 `setStatus(status, 'err', …)`** | 「草稿行的域名为空时：**什么都不发生**——连状态行都不许碰」（**这一支同样在补用例之前杀不掉**：只断言"不含『已保存』"抓不到「没有保存」这种文案） |
 | `if (!normalized.ok) { setStatus(...); return; }` 删掉（非法也写） | 「非法形状不写存储并说清为什么」 |
 | 空域名那一支的 `setStatus(status,'err', …)` 改成 `await writeRules(… filter …)`（＝上一版计划的"顺手删掉"） | 「既有行的域名被清空：**不写存储**、给一句能读懂的话」 |
 | `input.value = normalized.pattern` 删掉 | 「整条网址被规范化成主机名」的第二个断言 |
@@ -4621,6 +4790,9 @@ Expected: PASS —— **9 条 + 11 条**
 | `rule-pattern.ts` 里 `hadPort` 那条判断删掉（`example.com:8080` 会走 `https://example.com:8080` → hostname 是 `example.com`） | 「带端口的写法」与页面上的「端口」用例 |
 | `HOSTNAME` 的 `(?:\.…)*` 改回 `(?:\.…)+`（要求至少一个点） | 「单标签主机名照收（localhost / 内网短名）」——**已决**：单标签是合法的核心规则，不拒 |
 | `hadPath` 那条判断删掉（`https://example.com/docs` 会被静默截成 `example.com`） | 「带路径的网址」 |
+
+> **前两行是这一轮补的**（Task 5 的实测教训：那两支在升级前全仓 907 条用例里无人能杀）。
+> 执行变异时**先确认这两条新用例已经在测试文件里**——它们不在的话，这两行变异会"全绿通过"，看起来像"变异无害"，实际是"没人守"。
 
 - [ ] **Step 11: 提交**
 
@@ -5123,7 +5295,7 @@ import { chromeArea } from '../../shared/chrome-area';
 import type { Settings } from '../../shared/settings';
 import { describe, runSafely, setStatus } from '../dom';
 import type { Section, SectionContext } from '../section';
-// 这句话只有一个来源（见 `sections/glossary.ts` 的注释）：`store.ts` 导出的 `NOT_LOADED`。
+// 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 
 const statCached = document.getElementById('stat-cached') as HTMLElement;
@@ -5307,9 +5479,18 @@ git commit -m "feat(options): 缓存与请求区块补齐（三个统计 + 上�
  * 结构守卫那一段是这一轮"8 组信息架构"的机械保证：导航项、区块元素、搜索索引三者都由
  * `options.ts` 的 `SECTIONS` 驱动，一旦有人加了区块却忘了导航项（或反过来），这里当场红。
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { matchesTerms, parseQuery } from '../../src/options/search';
 import { bubble, loadOptions, pick, resetOptionsPage, seedSettings } from './harness';
+
+/**
+ * 设置页样式表的路径（只给上面那条"CSS 引用的 `#sec-*` 都得存在"的守卫用）。
+ * 用 `import.meta.dirname` 拼，而不是 `new URL(..., import.meta.url)`——后者会被 Vite 的
+ * 资源转换改写成 http 地址，jsdom 下 `fileURLToPath` 直接拒绝。
+ */
+const CSS_PATH = join(import.meta.dirname, '..', '..', 'src', 'options', 'options.css');
 
 /** 当前**可见**（没有 `hidden`）的区块 id，按页面顺序。 */
 function visibleSections(): string[] {
@@ -5529,6 +5710,26 @@ describe('区块清单与页面结构一一对应', () => {
       '数据',
     ]);
   });
+
+  it('**每个 `aria-labelledby` 都指向文档里真实存在的 id**（否则标题关联静默失效）', async () => {
+    // 这条是**可选加固里最便宜的一个**，补上它是因为同一类问题已经踩到两次：
+    // ① 四个 `:target` 选择器引用的 `#sec-*` 当时在 DOM 里还不存在（CSS 里的死引用）；
+    // ② 下面这条要防的：`<section aria-labelledby="sec-x-title">` 与 `<h2 id="sec-x-title">`
+    //    拼写对不上——屏幕阅读器读不出这个区块的标题，而**没有任何用例会红**。
+    await seedSettings();
+    await loadOptions();
+
+    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'));
+    expect(labelled.length).toBeGreaterThanOrEqual(8);
+    const missing = labelled
+      .map((node) => [node.dataset.section ?? node.id, node.getAttribute('aria-labelledby') as string] as const)
+      .filter(([, id]) => document.getElementById(id) === null);
+    expect(missing).toEqual([]);
+    // 反向也查一遍：CSS 里引用的每个 `#sec-*` 都得在页面里存在（就是那四个死选择器的守卫）。
+    const cssIds = new Set([...readFileSync(CSS_PATH, 'utf-8').matchAll(/#(sec-[a-z-]+)/g)].map((match) => match[1] as string));
+    const cssMissing = [...cssIds].filter((id) => document.getElementById(id) === null);
+    expect(cssMissing).toEqual([]);
+  });
 });
 ```
 
@@ -5711,10 +5912,10 @@ function init(): void {
 - [ ] **Step 4: 跑到绿**
 
 Run: `npx vitest run tests/options/search.test.ts`
-Expected: PASS —— **13 条用例**：`describe('搜索：查询解析与匹配（纯函数）')` **2 条**（`:5126`、`:5131`）
+Expected: PASS —— **14 条用例**：`describe('搜索：查询解析与匹配（纯函数）')` **2 条**
 + `describe('搜索：过滤的是区块，不是 DOM 结构')` **8 条**（占位符、密钥、词库、隐私正文不进索引、导航项可见、字段标签、零命中、清空）
-+ `describe('区块清单与页面结构一一对应')` **3 条**（八个区块、别名互斥、导航分组归属）。
-（行号是这三个 `describe` 在**本计划文件里**的位置，用来对账；**总数 13 才是承重的数**。）
++ `describe('区块清单与页面结构一一对应')` **4 条**（八个区块、别名互斥、导航分组归属、**`aria-labelledby` 与 CSS 里的 `#sec-*` 都存在**）。
+（行号是这三个 `describe` 在**本计划文件里**的位置，用来对账；**总数 14 才是承重的数**。）
 
 - [ ] **Step 5: 补一条样式断言（`[hidden]` 是搜索的地基）**
 
@@ -6486,8 +6687,10 @@ git commit -m "feat(options): 状态点三态（会话内记录）+ 内置免费
 npm test
 ```
 
-Expected: 全绿；测试总数 = **867 + 本轮新增**。本轮新增用例的逐文件计数（**写完最后一个 Task 后按实际输出核对**）：
-`store.test.ts` **7**（计划内 6 + 实现阶段补的 1）、`dom.test.ts` 4、`options-css.test.ts` 8（Task 3 的 7 条 + Task 9 补的 `[hidden]` 那条）、`no-innerhtml.test.ts` 2、`shortcuts.test.ts` 5、`glossary.test.ts` 11、`rule-pattern.test.ts` 11、`site-rules.test.ts` 9、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8 = **91 条**，因此预期 **958 个测试 / 52 files**（40 + 12 个新测试文件；`tests/options/harness.ts` 不是测试文件，不计）。`options.test.ts` 仍是 **29 条**。（对账锚点：Task 3 落地后实测 **887 / 44**。）
+Expected: 全绿；测试总数 = **867 + 本轮新增**。**已落地的实测数**（截至 Task 5，可直接核对）：`store.test.ts` **7**、`dom.test.ts` **4**、`options-css.test.ts` **7**（Task 9 还会补 1 条）、`no-innerhtml.test.ts` **2**、`shortcuts.test.ts` **9**、`glossary.test.ts` **15** → 全量 **911 tests / 46 files**。
+**还没落地的计划内用例**：`rule-pattern.test.ts` 11、`site-rules.test.ts` **11**、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8（合计 56；Task 9 补进 `options-css.test.ts` 的那 1 条已在上面注明）。
+→ **预期 `911 + 56 = 967` tests / `46 + 6 = 52` files**。`options.test.ts` 仍是 **29 条**。
+**这只是投影**：`store`（7 vs 计划 6）、`shortcuts`（9 vs 5）、`glossary`（15 vs 11）三个文件落地时都比计划多写了必需用例，后面六个同样可能补——**以命令输出为准**。对不上先看"多出来的是不是实现阶段补的必需用例"。
 实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
 > **实现阶段补的用例会让总数比这里的预期多几条**（单元 A 就有先例：审查或变异验证逼出来的必需用例）。多出来的是好事，不是错误——只要每一条都能说清它守的是什么、并且是**加强**而不是放宽既有断言。真正要警惕的是"数字对得上但守卫是假的"，不是"数字比预期大"。
 
@@ -6547,7 +6750,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 7 | 站点规则：`never` 命中时三个入口都不翻译；`*.x.com` 通配与精确匹配各有用例；首条命中生效 | **单元 A 已交付**（`tests/core/site-rules.test.ts` 12 条、`tests/content/index.test.ts` 的拦截用例、`tests/popup/popup.test.ts` 的解除用例）；本单元 Task 6 补**写入侧**（界面里能增删的规则就是那三条语义的输入） | 本单元不重复实现、不重复测匹配语义；Task 6 的规则行只写 `action: 'never'` |
 | 8 | §6 的文案已改对，且断言更新在提交信息里写明理由 | Task 2 全部（含提交信息模板） | 改后的断言从 1 条变成 **7 条**（链接仍可点击 / 仍可能失去下划线与可点击 / **降级为纯文本** / 旧说法不许回来 / 当下为真的「保存语言与显示」/ **仅译文模式下** / **六成**），条数与语气都只强不弱；**后两条是限定词与真判据自己的回归网**（三处修正里只有白名单那处原本有读数）；Task 3 Step 10 的 HTML 块与 Task 2 的块**逐字相同** |
 | 9 | 亮/暗两套下无硬编码颜色（用 `tests/helpers/css.ts` 的解析器断言声明块） | Task 3 Step 4（`options-css.test.ts` 7 条）+ Task 9 Step 5（`[hidden]` 那条，第 8 条） | 令牌逐字一致、正文无 `#`/`rgb()`/`hsl()` 字面量、无 `opacity`；`--on-accent` 同时加进 `popup.css` 以保持共用组一致 |
-| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数预期 **958 / 52 files**（867 + 本轮 91 条；对账锚点：Task 3 落地后实测 887 / 44） |
+| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**预期 967 / 52 files**（= 已落地实测 911 / 46 + 后续六个测试文件的计划内 56 条；**以命令输出为准**——实现阶段补的用例只多不少） |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -6614,7 +6817,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | `SECTIONS` | Task 3 `options.ts`（导出） | Task 9 的结构守卫与别名守卫（`await import('../../src/options/options')`） |
 | `patchFor(field, value)` | `sections/language.ts`（Task 3）与 `sections/cache.ts`（Task 8）**各一份同名私有函数**，参数类型不同（`string` / `number`） | 各自的区块；同名是有意的（同一件事的两个类型版本） |
 | `runConnectionTest` / `recordHealth` / `applyDot` / `buildFreeEngineRow` / `handleTestFreeEngine` | Task 10 `sections/engine.ts` | 同文件 |
-| `renderRows` / `writeTerms` / `commitRow` / `deleteRow` / `draftOpen` / `rowsOf` / `inputWithin` / `buildRow` | `sections/glossary.ts`（Task 5）与 `sections/site-rules.ts`（Task 6）**各一份私有实现** | 各自的区块。**这是刻意的取舍**：两处的行结构、字段、提交规则都不同（术语是 `from→to` 两框，规则是域名一框 + 静态动作 + 规范化失败的第三种结局），硬抽一个共用抽象会把两种语义拧在一起。共用的部分（`element` / `setStatus` / `runSafely` 家族）已经在 `dom.ts` 里 |
+| `renderRows` / `writeTerms` / `commitRow` / `deleteRow` / `draftOpen` / `rowsOf` / `buildRow` | `sections/glossary.ts`（Task 5，**已落地**）与 `sections/site-rules.ts`（Task 6）**各一份私有实现** | **决定：这一轮不抽，等 Task 6 落地后两份真实实现同时在屏幕上时再抽。** 理由（**上一版给的理由是错的，已改**）：① **没有合法落脚点**——`dom.ts:3-4` 自己声明"不碰存储"，而 `writeTerms` / `renderRows` / `commitRow` 全都碰 `ctx.settings()` / `ctx.save()`，抽出来必须**新建一个模块** + 一个约 7 个旋钮的接口；② **第二个消费者还不存在**（今天只有草稿，没有能 typecheck 的实现），与 Task 4 的 `notifyAllTabs` 是同一类判断——"第二个需要广播的区块出现时才搬"；③ 计划是执行契约，现在抽要顺带把 Task 6 的整段代码块改掉，**churn > 收益**。<br>⚠️ **别再用"两处行结构不同"当理由**：审查把 `glossary.ts`（已落地）与 Task 6 的草稿做过归一化逐行比对——**116 行代码里 83 行逐字相同（72%）**，相同的正是整段控制流（`rowsOf` / `renderRows` / `writeTerms` / `deleteRow` / `commitRow` 前导 / 三个 `bind` 委托块 / `mount`）；真正的语义增量只有 `buildRow` 的控件、`commitRow` 的分支、`id/title/aliases` 三处。**"行结构不同"不成立**，拿它当挡箭牌会在下一次审查里被推翻。（顺带：`inputWithin` 已经不存在了——Task 5 改用 `dom.ts` 的共享 `requireWithin`，Task 6 也跟着改了，别再写第二个近名函数。） |
 
 **④ DOM 契约核对（grep 出来的，不凭记忆）。** 计划里出现的每一个 id / class / `data-*` 都对着 `tests/options/options.test.ts` 的实际用法核过：
 - 保留的 id：`profiles`（`:52`）、`engine-status`（`:135`）、`target-lang`（`:284`）、`display-mode`（`:285`）、`target-hint`（`:295`）、`add-profile`（`:315`）、`clear-cache`（`:775`）、`cache-status`（`:776`）——全部仍在 Task 3 的 HTML 里，且仍是原来的元素类型（`select` / `button` / `.status` 行）。
@@ -6731,5 +6934,15 @@ Task 2 的规格审查用真实渲染器跑了 9 例探针，抓出三条不准�
    - 规格审查确认**没有任何断言声称"这四个 id 存在"** → 不构成"断言白过"；
    - 但**Task 4~8 必须让这四个 id 真的落地**（`sections/shortcuts.ts` → `#sec-shortcuts`、`glossary` → `#sec-glossary`、`site-rules` → `#sec-site-rules`、`prompt` → `#sec-prompt`），否则它们永远是死选择器（点了导航项也不会有高亮）；
    - Task 9 的结构守卫（`SECTIONS` ↔ `[data-section]` ↔ `[data-nav]`）**抓不到**这一类问题（它查的是 DOM 元素，不是 CSS 里引用的 id）。**可选加固**（等实现者修完上面那条恒真断言再加，别同时改同一个文件）：在 `options-css.test.ts` 里断言"CSS 里出现的每个 `#sec-*` 都能在 `options.html` 里找到"。
-2. **`src/options/sections/engine.ts:31` 交叉引用了一个当时还不存在的文件**：注释写「这句话只有一个来源（见 `sections/glossary.ts` 的注释）」，而 `glossary.ts` 要到 **Task 5** 才创建（核实过：计划的 `engine.ts` 块与仓库文件**逐字节相同**，所以这是**计划原文如此**，不是实现者写歪了）。→ **Task 5 里加了一步**：顺手确认/改写这条交叉引用（要么改成"见各文件自己的 import 注记"，要么确认 `glossary.ts` 落地后指向正确）。
+2. **`src/options/sections/engine.ts:31` 交叉引用了一个当时还不存在的文件**：注释写「这句话只有一个来源（见 `sections/glossary.ts` 的注释）」，而 `glossary.ts` 要到 **Task 5** 才创建（核实过：计划的 `engine.ts` 块与仓库文件**逐字节相同**，所以这是**计划原文如此**，不是实现者写歪了）。→ **Task 5 里加了一步**：顺手确认/改写这条交叉引用；**Task 5 已把它改成自足说法**（`// 这句话只有一个来源：store.ts 导出的 NOT_LOADED。`），本计划里 Task 6 / Task 8 的两处也一并改成同一句——**否则照计划落地就等于把这个刚收敛掉的问题原样装回去**。
+
+### Task 5 落地时抓出的两条（一条要 Task 11 处理，一条留给可选加固）
+
+1. **`tests/content/extractor-scale.test.ts:75` 是真 flake**（独立复核的数字）：单独跑 **1948ms**（余量 1.80×）；单份全量并行 **2443ms**（余量 1.43×）；**三份套件并发时 2 红 1 绿**，绿的那次只剩 **1.3%** 余量——每次并发包里唯一红的就是它，其余 908 条全绿。
+   **Task 11 要处理它**（这是本单元唯一一条已知的、与本轮改动无关的测试不稳定项），可选方向与**明确反对**的方向：
+   - ✅ **显式 opt-in**：`if (process.env.JY_SCALE_MS === '1')` 才跑那条基准（它本来就是"规模基准"，不是功能断言）；
+   - ✅ **相对判据**：同进程先标定一份固定工作量，断言**比值**（对机器负载不敏感，仍然抓得住"×1.22 这类算法级回归"）；
+   - ❌ **不要简单调阈值**：要覆盖实测的 6293ms 得放到 8000+，那"2000→8000 的四倍回归"也能通过，守卫就废了；
+   - ❌ **不要 skip 整条**：会一起丢掉最有价值的两个断言——段数 `segments=1175`（inline 载体修复的验收数字）与无时钟的 `styleReads` 复杂度断言。
+2. **`aria-labelledby` 没有任何守卫**：Task 9 的结构守卫按计划只查 `SECTIONS` ↔ `[data-section]` ↔ `[data-nav]`，**不含 `aria-labelledby`** → 将来某个区块的标题 id 打错（`<h2 id="sec-x-title">` 与 `<section aria-labelledby="sec-x-title">` 对不上）同样**静默**——与"四个死 `:target` 选择器"是同一类问题（**CSS/ARIA 里引用的 id 不在 DOM 里，没有任何用例会红**）。**记在这里，留待 Task 9 或后续可选加固**：一条断言扫 `options.html` 里每个 `aria-labelledby` 的值，确认文档里真有那个 id。
 
