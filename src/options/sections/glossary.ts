@@ -8,7 +8,7 @@
 // 2. **草稿位只有一个**：点一次「+ 添加术语」出现一行，再点只是把焦点放回那一行——
 //    空白行叠出好几条除了让人困惑没有任何作用。
 import type { Term } from '../../engines/types';
-import { element, setStatus } from '../dom';
+import { element, requireWithin, setStatus } from '../dom';
 import type { Section, SectionContext } from '../section';
 // **这句话只有一个来源**：`store.ts` 导出的 `NOT_LOADED`。四个区块都要在"设置还没读出来"时
 // 说同一句话，各写一份字面量迟早会漂成四种说法——`shared/settings.ts` 的 `isAllowedBaseUrl`
@@ -24,12 +24,6 @@ let draftOpen = false;
 
 function rowsOf(): HTMLElement[] {
   return Array.from(list.querySelectorAll<HTMLElement>('[data-glossary-row]'));
-}
-
-function inputWithin(row: HTMLElement, className: string): HTMLInputElement {
-  const input = row.querySelector<HTMLInputElement>(`.${className}`);
-  if (input === null) throw new Error(`术语行缺控件 .${className}`);
-  return input;
 }
 
 /**
@@ -99,8 +93,8 @@ async function commitRow(ctx: SectionContext, row: HTMLElement): Promise<void> {
   const current = ctx.settings();
   if (current === null) return;
   const index = Number(row.dataset.index);
-  const from = inputWithin(row, 'glossary-from').value.trim();
-  const to = inputWithin(row, 'glossary-to').value.trim();
+  const from = requireWithin<HTMLInputElement>(row, '.glossary-from').value.trim();
+  const to = requireWithin<HTMLInputElement>(row, '.glossary-to').value.trim();
   const terms = current.glossary;
 
   if (from.length > 0 && to.length > 0) {

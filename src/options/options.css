@@ -346,6 +346,17 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   border-color: var(--accent);
 }
 
+/* 草稿行开着时这个按钮是 disabled 的（`renderRows` 里的 `addButton.disabled = draftOpen`）。
+   上面那条规则显式给了 color / background / border，**会盖掉浏览器自己的禁用外观**，
+   于是按钮看着完全可点、点下去没反应——正是"看着能用其实没有监听器"那类死控件状态。
+   这里把它如实画灰。用令牌而不是 `opacity`（§7：次级文字不许用透明度，暗色下对比度不可控）。 */
+.add:disabled {
+  color: var(--text-3);
+  background: transparent;
+  border-color: var(--border);
+  cursor: default;
+}
+
 /* ------------------------------------------------------------------ 成组设置（一块卡片 + 行间细线） */
 
 .group {

@@ -91,6 +91,27 @@ describe('设置页：术语表', () => {
     expect(status().dataset.kind).toBe('ok');
   });
 
+  it('落盘后草稿行收起来、`+ 添加术语` 重新可用（少了重绘就会卡在这里）', async () => {
+    // 这条单独成例，是为了让"保存成功后必须重绘"这件事有自己的读数：
+    // 删掉 `writeTerms` 里的 `if (ok) renderRows(ctx)` → 存储照样对、状态照样是 ok，
+    // 但**草稿行留在屏幕上、按钮停在 disabled**（只有 `renderRows` 那一行会复位它），
+    // 用户得刷新页面才能加第二条。把它挂在别处会让这一条变异连坐好几例、看不出是谁守的。
+    await seedSettings({ glossary: [] });
+    await loadOptions();
+
+    pick<HTMLButtonElement>('add-term').click();
+    // 草稿行开着时按钮就该是禁用的（此时页面上已经有一行空行，再点没有意义）。
+    expect(pick<HTMLButtonElement>('add-term').disabled).toBe(true);
+
+    fill(rowAt(0), 'serverless', '无服务器');
+
+    await waitFor(async () => (await storedGlossary()).length === 1);
+    expect(rows()).toHaveLength(1);
+    // 落盘的那一行**不是**草稿行，而且按钮回来了。
+    expect(rows()[0]?.dataset.draft).toBeUndefined();
+    expect(pick<HTMLButtonElement>('add-term').disabled).toBe(false);
+  });
+
   it('打字过程中存储一个字节都不变，失焦（change）之后才写', async () => {
     await seedSettings({ glossary: [] });
     await loadOptions();
@@ -123,7 +144,7 @@ describe('设置页：术语表', () => {
     expect(status().textContent ?? '').not.toContain('已保存');
   });
 
-  it('改既有行是**就地更新**，不是又追加一条（计划里唯一没人杀的变异指的就是这里）', async () => {
+  it('改既有行是**就地更新**：条数不变，且只有这一行变', async () => {
     // 变异验证逼出来的补充：计划那条「两边都填 → 就地更新（按下标）」的写路径，
     // 原本**没有任何用例走到**——把 `index < terms.length ? 就地改 : 追加` 改成永远追加，
     // 全仓 907 条用例全绿（连同 `npm run typecheck`）。下面两条断言把它钉住：
@@ -146,21 +167,46 @@ describe('设置页：术语表', () => {
     expect(rows()).toHaveLength(2);
   });
 
-  it('草稿行只填一半时**连状态行都不碰**：既不说"已保存"，也不报错', async () => {
+  it('草稿行只填一半时**连状态行都不碰**：上一条状态逐字留着，既不报错也不说"已保存"', async () => {
     // 规格与 `commitRow` 的注释写的是"什么都不做"。只断言"不说已保存"是不够的——
     // 变异成"落到下面那条既有行的报错分支"（即删掉 `if (index >= terms.length) return;`）
     // 照样全绿，可用户每按一次 Tab 就会看到一句红字，等于在自己还没填完时被指责。
-    await seedSettings({ glossary: [{ from: 'keep', to: '留着' }] });
+    //
+    // 钉的是"**上一条状态不被抹掉**"而不是"状态行初始为空"：后者钉的是 HTML 的初始标记，
+    // 将来给状态行加个默认 `kind` 就会因为**与本病无关的原因**变红，报错还会指向这里。
+    // 所以先制造一条**真实的、用户看得见的**状态，再证明它逐字留着——顺带把"只清文案"
+    // 那种变异也一起杀掉。
+    //
+    // 这条真实状态**故意用「删除」造、不用「保存」造**：保存那条路径要把按钮重新启用
+    // （`writeTerms` 成功后的 `renderRows`），于是"保存成功后不重绘"那个变体会连坐到这里，
+    // 让两条用例争同一个读数。删除这条路径不改按钮状态，两个变异各红各的。
+    await seedSettings({
+      glossary: [
+        { from: 'keep', to: '留着' },
+        { from: 'gone', to: '删掉' },
+      ],
+    });
     await loadOptions();
     pick<HTMLButtonElement>('add-term').click();
+    rowAt(1).querySelector<HTMLButtonElement>('[data-action="delete-term"]')!.click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    const kind = status().dataset.kind;
+    const message = status().textContent;
+    // 前提自检：确实拿到了一条非空状态，否则下面两条断言会退化成"空 == 空"的恒真。
+    expect(message).not.toBe('');
 
-    inputOf(rowAt(1), '.glossary-from').value = 'half';
-    inputOf(rowAt(1), '.glossary-from').dispatchEvent(bubble('change'));
+    // 草稿行现在排在已有术语后面，在里面只填原文就失焦 —— 等于用户按 Tab 跳到译文。
+    // 这里**按 `data-draft` 找那一行、并且只断言与"状态行"有关的事**：不用行数之类的
+    // 前置条件，免得"别的路径没重绘"这种无关故障也把它带红（那样报错会指错地方）。
+    const draft = rows().at(-1);
+    expect(draft?.dataset.draft).toBe('');
+    inputOf(draft as HTMLElement, '.glossary-from').value = 'half';
+    inputOf(draft as HTMLElement, '.glossary-from').dispatchEvent(bubble('change'));
 
     expect(await storedGlossary()).toEqual([{ from: 'keep', to: '留着' }]);
-    expect(rows()).toHaveLength(2);
-    expect(status().dataset.kind).toBeUndefined();
-    expect(status().textContent).toBe('');
+    expect(inputOf(draft as HTMLElement, '.glossary-from').value).toBe('half');
+    expect(status().dataset.kind).toBe(kind);
+    expect(status().textContent).toBe(message);
   });
 
   it('真实用户路径：先填 from、Tab 到 to（两次 change），第二次才落盘——中途不许写坏存储', async () => {
