@@ -283,6 +283,29 @@ describe('设置页：术语表', () => {
     expect((await storedGlossary()).map((term) => term.from)).toEqual(['one', 'three']);
   });
 
+  it('行尾红字删除后**那一行真的从 DOM 里消失**（不只是存储里没了）', async () => {
+    // 与上一条分开成例、并且**只断言 DOM 这一件事**：
+    // - 上一条看的是**存储**（存的确实是另外两条）；
+    // - 这一条看的是**界面**——少了 `deleteRow` 里的 `renderRows`，存储照样对、状态照样是
+    //   「已删除」，但被删的那一行**留在屏幕上**，用户看着它还在、以为没删掉。
+    // 两件事混在一条里，变异读数就会指向错的那条（上一轮"前置条件抢读数"的教训）。
+    await seedSettings({
+      glossary: [
+        { from: 'one', to: '一' },
+        { from: 'two', to: '二' },
+        { from: 'three', to: '三' },
+      ],
+    });
+    await loadOptions();
+    expect(rows()).toHaveLength(3);
+
+    rowAt(1).querySelector<HTMLButtonElement>('[data-action="delete-term"]')!.click();
+
+    await waitFor(() => rows().length === 2);
+    // 删掉的那条也不许留在行里（顺便钉住"剩下的确实是另外两条"，不是随便少了一行）。
+    expect(rows().map((row) => inputOf(row, '.glossary-from').value)).toEqual(['one', 'three']);
+  });
+
   it('草稿行上的删除只是收起那一行，存储一个字节不动', async () => {
     await seedSettings({ glossary: [{ from: 'one', to: '一' }] });
     await loadOptions();
