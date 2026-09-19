@@ -2846,7 +2846,7 @@ function init(): void {
 init();
 ```
 
-- [ ] **Step 12: 跑到绿（搬家完成的读数）**
+- [ ] **Step 12: 跑到红（搬家完成了，但 5 条用例必须红——这才是本步的读数）**
 
 Run: `npx vitest run tests/options/options.test.ts`
 Expected: **`24 passed | 5 failed`**（实测于 Task 3 落地时）。**红的必须恰好是这 5 条**：
