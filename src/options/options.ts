@@ -26,7 +26,7 @@ import type { Settings } from '../shared/settings';
  * `tests/options/search.test.ts` 有一条结构守卫钉住这件事）。导出是给测试用的。
  *
  * 顺序就是下面这个数组的顺序，**刻意不在这里复述一份**（复述出来的那份清单必然有一次会漂）；
- * 也**刻意不写死数量**：尚未落地的区块由各自的 Task 追加进来，写死的数字每加一项就过期一次。
+ * 也**刻意不写死数量**（写死的数字每加一项就过期一次）。
  */
 export const SECTIONS: readonly Section[] = [
   engineSection,

@@ -5,6 +5,13 @@
 //
 // **留空即内置**：存储里存空串，消费者（`engines/openai-compat.ts` 的 buildMessages）
 // 用 `systemPrompt.trim().length > 0` 判断要不要追加，所以用户清空之后行为自动回到内置。
+//
+// 但 `trim` **不是纯装饰**，也**不只管"要不要追加"**：`systemPrompt` 的**原文**还进缓存键
+// （设置被原样交给 `background/scheduler.ts`，那里 `hashString(deps.systemPrompt ?? '')`
+// 进 `buildCacheKey`）。于是 `'abc'` 与 `'  abc  '` 送给模型的提示**一模一样**、却是两个键：
+// 只改了前后空白，同样的段落也会重翻一遍。这是"存原文（不 trim）"这个决定的**代价**——
+// 多一个键、多翻一次；可接受（界面上也如实说了"提示词是缓存键的一部分，改过之后同样的段落
+// 会重新翻译一次"），但必须写在这里，别让后来者以为 trim 只是显示层的事。
 import type { Section, SectionContext } from '../section';
 
 const promptArea = document.getElementById('system-prompt') as HTMLTextAreaElement;
