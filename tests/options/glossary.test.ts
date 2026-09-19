@@ -121,8 +121,9 @@ describe('设置页：术语表', () => {
     input.value = 'half';
     input.dispatchEvent(bubble('input'));
     input.dispatchEvent(bubble('keyup'));
-    // 先给写队列一次排空的机会再读数：写是"排队 + 好几次 await"才落盘的，不 flush 就等于在
-    // 写落地之前抢跑——那样下面这句"存储没被动过"恒真，谁把这条路径改成会写它都照样绿。
+    // 这一路**本来就不该调 save**：`input` / `keyup` 上没有监听器（术语表只在 `change` 上写）。
+    // 先让写队列排空再读数：万一哪天它改成会写，写也是"排队 + 好几次 await"才落盘的——
+    // 不 flush 就查存储等于在写落地之前抢跑，下面这句"存储没被动过"读到旧值、恒真。
     await settle();
     // §10.3：边打字边写存储既吵又没必要。
     expect(await storedGlossary()).toEqual([]);
@@ -226,8 +227,9 @@ describe('设置页：术语表', () => {
 
     from.value = 'serverless';
     from.dispatchEvent(bubble('change')); // = 用户按 Tab 离开 from
-    // 同上：先让写队列排空再读数。这一支**不该写**，而"不该写"只有排空之后读到的才算数——
-    // 抢跑读到旧值，会让"半行被写进存储"这个缺陷在这条断言上隐形。
+    // handler 会跑到这一行，但半填的草稿行**不该落进写分支**。先让写队列排空再读数：
+    // 万一哪天它落进去了，写是"排队 + 好几次 await"才落盘的——抢跑读到旧值，会让
+    // "半行被写进存储"这个缺陷在这条断言上隐形（下面那句状态行断言同理）。
     await settle();
     expect(await storedGlossary()).toEqual([]);
     expect(rows()).toHaveLength(1);

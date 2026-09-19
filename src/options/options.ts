@@ -22,11 +22,15 @@ import { currentSettings, loadSnapshot, patchSettings } from './store';
 import type { Settings } from '../shared/settings';
 
 /**
- * 区块清单，**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
- * `tests/options/search.test.ts` 有一条结构守卫钉住这件事）。导出是给测试用的。
+ * 区块清单：**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
+ * 且顺序必须一致）。导出是给测试用的。
  *
- * 顺序就是下面这个数组的顺序，**刻意不在这里复述一份**（复述出来的那份清单必然有一次会漂）；
- * 也**刻意不写死数量**（写死的数字每加一项就过期一次）。
+ * ⚠ **今天还没有测试守着这件事**：`tests/options/search.test.ts` 尚未落地，`SECTIONS` 也还没有
+ * 被任何测试 import 过——"三者一一对应"目前只靠人肉核对（对应关系本身是真的，只是没人守）。
+ * **别把这段读成"已经有守卫"**，那正是它最容易被误读出来的意思；守卫由 Task 9 的搜索接线补上。
+ *
+ * 顺序就是下面这个数组的顺序，这里不复述一份（复述出来的那份清单必然有一次会漂）；
+ * 也不写死数量（写死的数字每加一项就过期一次）。
  */
 export const SECTIONS: readonly Section[] = [
   engineSection,

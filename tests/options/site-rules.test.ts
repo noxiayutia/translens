@@ -113,8 +113,10 @@ describe('设置页：站点规则（写入侧）', () => {
 
     input.value = 'exa';
     input.dispatchEvent(bubble('input'));
-    // 先给写队列一次排空的机会再读数：写是"排队 + 好几次 await"才落盘的，不 flush 就等于在
-    // 写落地之前抢跑——那样下面这句"存储没被动过"恒真，谁把这条路径改成会写它都照样绿。
+    // 这一路**本来就不该调 save**：`input` 上没有监听器（域名只在 `change` 上写）。
+    // 先让写队列排空再读数：万一哪天它改成会写（例如监听从 `change` 挪到 `input`），写也是
+    // "排队 + 好几次 await"才落盘的——不 flush 就查存储等于在写落地之前抢跑，
+    // 下面这句"存储没被动过"读到旧值、恒真。
     await settle();
     expect(await storedRules()).toEqual([]);
   });
@@ -276,12 +278,18 @@ describe('设置页：站点规则（写入侧）', () => {
     pick<HTMLButtonElement>('add-rule').click();
     commit(rowAt(1), '');
 
-    // 先排空写队列再读数（状态行与存储两处都要）：这一支必须**完全静默**，而"什么都没发生"
-    // 只有在队列排空之后才读得准——抢跑时读到的是"还没来得及写"，不是"没写"。
+    // handler 会跑到这一行（草稿行的域名是空的），但这一支必须**完全静默**：不写存储、
+    // 连状态行都不许碰。先让写队列排空再读数——万一哪天它落进写分支，抢跑时读到的是
+    // "还没来得及写"，不是"没写"；下面那行状态行文案的比对同理。
     await settle();
 
     expect(status().textContent).toBe(textBefore);
     expect(status().dataset.kind).toBe(kindBefore);
+    // ⚠ 这一句**守不住**"空域名被写进存储"这类变异，写在这里是为了别让人以为它守住了：
+    // 归一化发生在**写路径**上——`saveSettings` 落盘前先过 `mergeSettings` → `pickSiteRules`
+    // （`shared/settings.ts`，那里滤掉 `pattern.length === 0`），所以哪怕产品真的把空规则写
+    // 进去，存储里也不会多出那一条（内存快照里会，界面于是多一行），这句断言照样绿。
+    // 这一支**真正的读数**是上面那两行状态行（先红的那处）与下面那行行数。
     expect(await storedRules()).toEqual([{ pattern: 'keep.me', action: 'never' }]);
     expect(rows()).toHaveLength(2);
   });

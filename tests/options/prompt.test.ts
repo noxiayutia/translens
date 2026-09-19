@@ -33,9 +33,11 @@ describe('设置页：自定义提示词', () => {
 
     textarea().value = '语气正式一点';
     textarea().dispatchEvent(bubble('input'));
-    // 让排队中的微任务跑完再读数：写路径是"排队 + 好几次 await"才落盘的，不 flush 就查存储
-    // 等于在写落地之前抢跑——那样这句断言**恒真**，它本该守住的变异会被放过去
-    // （实测：把监听从 `change` 改成 `input`，不加这句这条用例仍然绿）。
+    // 这一路**本来就不该调 save**：`input` 上没有监听器（文本控件只在 `change` 上写）。
+    // 先让写队列排空再读数：万一哪天它改成会写（例如监听从 `change` 挪到 `input`），写也是
+    // "排队 + 好几次 await"才落盘的——不 flush 就查存储等于在写落地之前抢跑，下面两句
+    // （存储仍是旧的、`dataset.kind` 还没被设过）就都会读到旧状态而恒真。
+    // 实测：监听从 `change` 改成 `input`，不加这句这条用例仍然绿。
     await settle();
     expect((await storedSettings()).systemPrompt).toBe('');
     // 第二个见证：打字这一路上**一次保存都不该发生过**——状态行的 data-kind 还从没被设过。
