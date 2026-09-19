@@ -17,7 +17,8 @@
 ## 已核实的前提（不要重新发明）
 
 0. **执行前提：实现者从「仓库 + 本 Task 的小节」出发工作，不必重读整个计划。** 计划里的代码块已经落在磁盘上的（例如 Task 3 写完的 `src/options/sections/engine.ts`）应当**直接读文件**；只有**本 Task 要新建/新建后修改**的文件才需要照本 Task 的代码块写。Task 10 是唯一跨 Task 改文件的地方（`sections/engine.ts` 在 Task 3 就已存在），它给出的每一处改动都**引足了上下文**（能唯一定位到那几行），不靠"把某一段改掉"这种指代。
-1. **基线：867 个测试 / 40 files 全绿**（`npm test` 实测，2026-09-18，分支 `feat/core-translation`，工作树干净）。单元 A 已落地：`src/core/site-rules.ts` 的 `matchSiteRule` / `isNeverTranslate`、内容脚本拦截、弹窗状态与一键解除，全都有测试。
+1. **基线：867 个测试 / 40 files 全绿**（`npm test` 实测，2026-09-18，分支 `feat/core-translation`，工作树干净）——**这是本单元的起点**。单元 A 已落地：`src/core/site-rules.ts` 的 `matchSiteRule` / `isNeverTranslate`、内容脚本拦截、弹窗状态与一键解除，全都有测试。
+   **滚动实测（每落地一个 Task 就更新这一行，执行者开工前先看它）**：Task 3 后 **887 / 44** → Task 5 后 **911 / 46** → **Task 6 后 933 / 48**。所以后面几个任务**不要**再拿 867/40 当基线——那是单元 A 时期的数字。
 2. **测试契约是契约属性名，不是查询细节**（逐条 grep 过 `tests/options/options.test.ts`，见下表）。`#save` 随即时保存移除，依赖它的 4 条用例改写（Task 3 Step 13）。
 3. **`options.html` 是测试的真实输入**：`options.test.ts` 用 `DOMParser` 加载它，然后把 `parsed.body.innerHTML` 塞进 `document.body`。所以页面骨架必须留在 HTML 里，JS 只填内容与挂行为。
 4. **被测模块在 import 时就跑 `init()`**：模块顶层按 id 取元素（DOM 必须先就位），`init()` 同步挂监听器，然后才 `await loadSettings()`。测试的顺序固定为「装替身 → 写存储 → 装 DOM → `await import(...)` → `settle()`」，且 `vi.resetModules()` 每个用例重置一次。
@@ -1728,7 +1729,7 @@ Expected: PASS —— **2 条用例**（此时 `src/options` 下只有 `options.
           </div>
           <p id="engine-hint" class="sec-desc"></p>
           <!-- 档案列表由 sections/engine.ts 渲染：一行一张卡片，点行展开编辑。
-               展开编辑框里 API Key **永远从空开始**（留空保存 = 保留原 Key）——
+               展开编辑框里 API Key 永远从空开始（留空保存 = 保留原 Key）——
                密钥不回填、不渲染进 DOM。 -->
           <div id="profiles"></div>
           <p class="hint">
@@ -4559,7 +4560,7 @@ Expected: FAIL —— `options.html 里没有 #site-rules-list`
               <strong>划词与悬停翻译不受约束</strong>——那是你主动发起的单段翻译，与"这个站整页不该翻"是两件事。
             </p>
             <p>
-              还有一处缝：规则的闸只装在**整页翻译的入口**上，所以<strong>已经翻译过的页面</strong>
+              还有一处缝：规则的闸只装在<strong>整页翻译的入口</strong>上，所以<strong>已经翻译过的页面</strong>
               再加规则时，已经翻好的内容与之后新出现的内容都不会被撤掉——要立刻生效请先按 Alt+T 还原再重新翻译。
             </p>
           </details>
@@ -4785,7 +4786,7 @@ Expected: PASS —— **11 条 + 11 条**（site-rules 从 9 条加到 11 条：
 | **草稿行那一支的 `if (index >= rules.length) return;` 改成落进下面的 `setStatus(status, 'err', …)`** | 「草稿行的域名为空时：**什么都不发生**——连状态行都不许碰」（**这一支同样在补用例之前杀不掉**：只断言"不含『已保存』"抓不到「没有保存」这种文案） |
 | `if (!normalized.ok) { setStatus(...); return; }` 删掉（非法也写） | 「非法形状不写存储并说清为什么」 |
 | 空域名那一支的 `setStatus(status,'err', …)` 改成 `await writeRules(… filter …)`（＝上一版计划的"顺手删掉"） | 「既有行的域名被清空：**不写存储**、给一句能读懂的话」 |
-| `input.value = normalized.pattern` 删掉 | 「整条网址被规范化成主机名」的第二个断言 |
+| `input.value = normalized.pattern` 删掉 | **⚠️ 这一行原预测杀不死——已核实（执行者删掉它、全量 933 条全绿），并已让实现者在写失败路径上补网。** 机理：写成功后 `writeRules` 会 `renderRows`，用**最新快照整表重建**每一行，所以那行内联赋值在**成功路径上不可观测**；它只在**写失败（不重绘）**时可观测——那时输入框该显示"本来要存的那个规范化形式"，而不是用户原样敲的网址。**期望红在**：`tests/options/site-rules.test.ts` 里**实现阶段补的那条写失败路径 + 输入框断言**（见落地文件；补网前这条变异是绿的，别以为"变异无害"）。**不要删掉这行变异**——删掉等于默认那行赋值没用） |
 | `{ pattern: normalized.pattern, action: 'never' }` 改成 `action: 'translate'` | 「加一条规则…动作写的是 never」 |
 | `rule-pattern.ts` 里 `hadPort` 那条判断删掉（`example.com:8080` 会走 `https://example.com:8080` → hostname 是 `example.com`） | 「带端口的写法」与页面上的「端口」用例 |
 | `HOSTNAME` 的 `(?:\.…)*` 改回 `(?:\.…)+`（要求至少一个点） | 「单标签主机名照收（localhost / 内网短名）」——**已决**：单标签是合法的核心规则，不拒 |
@@ -6687,10 +6688,10 @@ git commit -m "feat(options): 状态点三态（会话内记录）+ 内置免费
 npm test
 ```
 
-Expected: 全绿；测试总数 = **867 + 本轮新增**。**已落地的实测数**（截至 Task 5，可直接核对）：`store.test.ts` **7**、`dom.test.ts` **4**、`options-css.test.ts` **7**（Task 9 还会补 1 条）、`no-innerhtml.test.ts` **2**、`shortcuts.test.ts` **9**、`glossary.test.ts` **15** → 全量 **911 tests / 46 files**。
-**还没落地的计划内用例**：`rule-pattern.test.ts` 11、`site-rules.test.ts` **11**、`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 13、`engine-health.test.ts` 8（合计 56；Task 9 补进 `options-css.test.ts` 的那 1 条已在上面注明）。
-→ **预期 `911 + 56 = 967` tests / `46 + 6 = 52` files**。`options.test.ts` 仍是 **29 条**。
-**这只是投影**：`store`（7 vs 计划 6）、`shortcuts`（9 vs 5）、`glossary`（15 vs 11）三个文件落地时都比计划多写了必需用例，后面六个同样可能补——**以命令输出为准**。对不上先看"多出来的是不是实现阶段补的必需用例"。
+Expected: 全绿；测试总数 = **867 + 本轮新增**。**已落地的实测数**（截至 Task 6，可直接核对）：`store.test.ts` **7**、`dom.test.ts` **4**、`options-css.test.ts` **7**（Task 9 还会补 1 条）、`no-innerhtml.test.ts` **2**、`shortcuts.test.ts` **9**、`glossary.test.ts` **15**、`rule-pattern.test.ts` **11**、`site-rules.test.ts` **11**（与计划一致，**+2 个文件**）→ 全量 **933 tests / 48 files**。
+**还没落地的计划内用例**：`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 14、`engine-health.test.ts` 8（合计 35；Task 9 补进 `options-css.test.ts` 的那 1 条已在上面注明）。
+→ **预期 `933 + 35 = 968` tests / `48 + 4 = 52` files**。`options.test.ts` 仍是 **29 条**。
+**这只是投影**：`store`（7 vs 计划 6）、`shortcuts`（9 vs 5）、`glossary`（15 vs 11）、`site-rules`（11 vs 11，附一条实现阶段补的写失败输入框断言）落地时都比计划多了必需用例，后面四个同样可能补——**以命令输出为准**。对不上先看"多出来的是不是实现阶段补的必需用例"。
 实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
 > **实现阶段补的用例会让总数比这里的预期多几条**（单元 A 就有先例：审查或变异验证逼出来的必需用例）。多出来的是好事，不是错误——只要每一条都能说清它守的是什么、并且是**加强**而不是放宽既有断言。真正要警惕的是"数字对得上但守卫是假的"，不是"数字比预期大"。
 
@@ -6750,7 +6751,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 7 | 站点规则：`never` 命中时三个入口都不翻译；`*.x.com` 通配与精确匹配各有用例；首条命中生效 | **单元 A 已交付**（`tests/core/site-rules.test.ts` 12 条、`tests/content/index.test.ts` 的拦截用例、`tests/popup/popup.test.ts` 的解除用例）；本单元 Task 6 补**写入侧**（界面里能增删的规则就是那三条语义的输入） | 本单元不重复实现、不重复测匹配语义；Task 6 的规则行只写 `action: 'never'` |
 | 8 | §6 的文案已改对，且断言更新在提交信息里写明理由 | Task 2 全部（含提交信息模板） | 改后的断言从 1 条变成 **7 条**（链接仍可点击 / 仍可能失去下划线与可点击 / **降级为纯文本** / 旧说法不许回来 / 当下为真的「保存语言与显示」/ **仅译文模式下** / **六成**），条数与语气都只强不弱；**后两条是限定词与真判据自己的回归网**（三处修正里只有白名单那处原本有读数）；Task 3 Step 10 的 HTML 块与 Task 2 的块**逐字相同** |
 | 9 | 亮/暗两套下无硬编码颜色（用 `tests/helpers/css.ts` 的解析器断言声明块） | Task 3 Step 4（`options-css.test.ts` 7 条）+ Task 9 Step 5（`[hidden]` 那条，第 8 条） | 令牌逐字一致、正文无 `#`/`rgb()`/`hsl()` 字面量、无 `opacity`；`--on-accent` 同时加进 `popup.css` 以保持共用组一致 |
-| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**预期 967 / 52 files**（= 已落地实测 911 / 46 + 后续六个测试文件的计划内 56 条；**以命令输出为准**——实现阶段补的用例只多不少） |
+| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**预期 968 / 52 files**（= 已落地实测 **933 / 48**（Task 6 后）+ 后续四个测试文件的计划内 35 条；**以命令输出为准**——实现阶段补的用例只多不少） |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -6944,5 +6945,21 @@ Task 2 的规格审查用真实渲染器跑了 9 例探针，抓出三条不准�
    - ✅ **相对判据**：同进程先标定一份固定工作量，断言**比值**（对机器负载不敏感，仍然抓得住"×1.22 这类算法级回归"）；
    - ❌ **不要简单调阈值**：要覆盖实测的 6293ms 得放到 8000+，那"2000→8000 的四倍回归"也能通过，守卫就废了；
    - ❌ **不要 skip 整条**：会一起丢掉最有价值的两个断言——段数 `segments=1175`（inline 载体修复的验收数字）与无时钟的 `styleReads` 复杂度断言。
-2. **`aria-labelledby` 没有任何守卫**：Task 9 的结构守卫按计划只查 `SECTIONS` ↔ `[data-section]` ↔ `[data-nav]`，**不含 `aria-labelledby`** → 将来某个区块的标题 id 打错（`<h2 id="sec-x-title">` 与 `<section aria-labelledby="sec-x-title">` 对不上）同样**静默**——与"四个死 `:target` 选择器"是同一类问题（**CSS/ARIA 里引用的 id 不在 DOM 里，没有任何用例会红**）。**记在这里，留待 Task 9 或后续可选加固**：一条断言扫 `options.html` 里每个 `aria-labelledby` 的值，确认文档里真有那个 id。
+2. **`aria-labelledby` 没有任何守卫**：Task 9 的结构守卫按计划只查 `SECTIONS` ↔ `[data-section]` ↔ `[data-nav]`，**不含 `aria-labelledby`** → 将来某个区块的标题 id 打错（`<h2 id="sec-x-title">` 与 `<section aria-labelledby="sec-x-title">` 对不上）同样**静默**——与"四个死 `:target` 选择器"是同一类问题（**CSS/ARIA 里引用的 id 不在 DOM 里，没有任何用例会红**）。**记在这里，留待 Task 9 或后续可选加固**：一条断言扫 `options.html` 里每个 `aria-labelledby` 的值，确认文档里真有那个 id。（Task 9 的 `search.test.ts` 已经加了这条加固，见 Task 9 Step 1 的最后一条用例。）
+
+### Task 6 落地时处理与留痕的四条
+
+1. **HTML 代码块里不许出现 Markdown 强调记号（`**…**`）**——这是**同一类缺陷第二次出现**（第一次是 Task 3 的 S6：`填了 API Key **不等于**能用`）。它为什么危险：**设置页上会字面显示两个星号，而现有断言看不见**（`options.test.ts` 只断言若干字面量子串，多出来的 `**` 不会让任何用例红；HTML 注释里的那种更是谁也看不见）。**这一轮做了全量扫描**（脚本按围栏切块，`lang === 'html'` 或块内容出现行首 `<` 判为 HTML）：**101 个代码块、13 个 HTML 块、命中 2 处，两处都已修**——
+   - `sections/site-rules.ts` 区块的 `<details>` 里：`**整页翻译的入口**` → `<strong>整页翻译的入口</strong>`（执行者按意图落地成 `<strong>`，**已确认正确、不要回退**）；
+   - `options.html` 那一块里的**注释**：`API Key **永远从空开始**` → 去掉星号（注释不上屏，本来无害，但清掉之后"HTML 块里没有 `**`"就是一条**没有例外**的机械规则）。
+   → 以后新增/修改 HTML 块时，强调一律用 `<strong>`；这条规则可以用同一段扫描复验。
+2. **写失败路径上的"有行为、无读数"补网**：变异「删掉 `input.value = normalized.pattern;`」原预测杀不死，**实测确认**（删掉后全量 933 条全绿）——机理是写成功后 `writeRules` 会 `renderRows` 用最新快照**整表重建**，那行内联赋值在成功路径上不可观测，只在**写失败（不重绘）**时可观测。裁决：那行**有真实用途**（失败时输入框显示"本来要存的那个规范化形式"，而不是用户原样敲的网址），**已让实现者在写失败用例里补输入框断言**（要求变异恰好红在那条）。计划里的变异行**保留并标注**，不删——删掉等于默认那行赋值没用。
+3. **三种失败/空值结局是"三套独立文案"，口径就是「三分支各不相同」**（Task 6 立的规矩，值得记住）：① **域名为空**（草稿行静默、既有行说"没有保存…要删请点行尾「删除」"）；② **规范化失败**（说出具体原因，如"规则只按域名匹配，不要带端口"）；③ **写入失败**（"保存规则失败：…"）。**三者互不覆盖、各有用例**——写测试/写变异时要能一眼说出"这条守的是哪一支"。
+   这条留痕的由来：Task 5 曾把"既有行清空"在计划里描述成"什么都不做"，而实现落进了**报错分支**——计划文本与实现不一致，**害得一条变异没有读数**。所以：**分支的文案要写准，别用"什么都不做"这种含糊描述**（它既可能指"静默返回"，也可能指"报错但不写"）。
+4. **`rule-pattern.ts` 导出的 `StoredRule` 类型目前零消费者**（测试文件里自己声明了同名局部 interface）——按计划原样保留。它是本仓"不给零消费者的公共表面留位置"那条纪律的一个**边角例外**：留着是因为它把"站点规则在存储里的形状"和 `SiteRule` 绑在一处，将来真要加 `always` 时有个现成的落脚点。**要么哪天有人用上它，要么跟着那次改动一起删**——别让第三种情况发生（默默留着、又没人知道它为什么在）。
+
+### 顺便：`#sec-site-rules` 已落地（第三个死选择器复活）
+
+Task 6 落地后 `sections/site-rules.ts` 的区块 id 与 CSS 里 `body:has(#sec-site-rules:target)` 对上了——**四个死选择器里已有三个复活**（`#sec-shortcuts` Task 4、`#sec-glossary` Task 5、`#sec-site-rules` Task 6）。**只剩 `#sec-prompt`**，那是 Task 7 的活。
+（时间线要说准，别指望它在 Task 7 之前替你把关：Task 9 那条"CSS 里引用的每个 `#sec-*` 都必须在页面里存在"的断言住在 `tests/options/search.test.ts`，而**那个文件要到 Task 9 才创建**——Task 7 落地时四个 id 已经全在了，所以它一出生就是绿的。它的价值是**防以后**：谁再改区块 id 或 CSS 选择器时当场红。）
 
