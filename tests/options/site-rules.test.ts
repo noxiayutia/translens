@@ -6,6 +6,7 @@
  * 匹配语义本身（精确 / `*.` 通配 / 首条命中）在 `tests/core/site-rules.test.ts`，这里不重复。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
+import { CURRENT_VERSION } from '../../src/shared/settings';
 import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, storedSettings, waitFor } from './harness';
 
 interface StoredRule {
@@ -173,6 +174,52 @@ describe('设置页：站点规则（写入侧）', () => {
     await waitFor(() => status().dataset.kind === 'err');
     expect(status().textContent).toContain('保存规则失败');
     expect(await storedRules()).toEqual([]);
+  });
+
+  it('写入被版本门禁拒绝时：输入框里留下的是**规范化之后**的形式（写成功会重绘，这句只在失败路径上有读数）', async () => {
+    // 与上一条「写入被拒」**同族但不同机制**：上一条注入 `set` 抛错、只看状态行与存储；
+    // 这一条走**真实的版本门禁**（存储版本高于本代码 → `loadSettings` 当场拒绝），钉的是
+    // `commitRow` 里那句 `input.value = normalized.pattern`。
+    //
+    // 为什么它非有不可：写成功时 `writeRules` 会 `renderRows` 整表重建，输入框里天然就是
+    // 规范化后的值——那句赋值**在成功路径上不可观测**，删掉它全仓 933 条用例全绿
+    // （Task 6 变异 5 的实测读数）。只有"写失败了、没有重绘"这条路径能读出它做了什么：
+    // 输入框里留下的是**本来要存的那个规范化形式**（`www.example.com`），
+    // 而不是用户原样输入的整条网址（`https://WWW.Example.COM/`）。
+    await seedSettings({ siteRules: [{ pattern: 'keep.me', action: 'never' }] });
+    await loadOptions();
+
+    // 先正常保存一次：证明整条流程在版本被抬高之前是通的，后面那次失败才归因得清。
+    pick<HTMLButtonElement>('add-rule').click();
+    commit(rowAt(1), 'example.com');
+    await waitFor(async () => (await storedRules()).length === 2);
+
+    // 把存储里的设置换成"版本高于本代码"的一份：此后**读**与**写**都会被版本门禁拒绝。
+    await seedSettings({
+      siteRules: [
+        { pattern: 'keep.me', action: 'never' },
+        { pattern: 'example.com', action: 'never' },
+      ],
+      version: CURRENT_VERSION + 1,
+    });
+    const raised = await storedSettings();
+
+    // 草稿行填一个**必须规范化**的值：整条网址 → 主机名（带路径的会在规范化阶段就被拒，
+    // 读的是另一条分支，见上面「非法形状」那条用例）。
+    pick<HTMLButtonElement>('add-rule').click();
+    commit(rowAt(2), 'https://WWW.Example.COM/');
+
+    await waitFor(() => status().dataset.kind === 'err');
+    expect(status().textContent).toContain('保存规则失败');
+    // 归因也要钉住：失败必须来自**版本门禁**（而不是碰巧撞上别的错），否则这条用例
+    // 会在"版本门禁哪天不生效了、写失败另有其因"时静默变成另一回事。
+    // 断言这句跨模块文案是**故意**的漂移探测器，与 `store.test.ts` 的 `toContain('高于当前支持')` 同款。
+    expect(status().textContent).toContain('高于当前支持');
+    // **本用例的重点**：写失败、界面没有重绘，输入框里仍是"规范化之后"的那一份。
+    expect(patternOf(rowAt(2)).value).toBe('www.example.com');
+    // 存储一个字节都没动（连"抬高版本"留下的那一份都原样）。
+    expect(await storedSettings()).toEqual(raised);
+    expect((await storedRules()).map((rule) => rule.pattern)).toEqual(['keep.me', 'example.com']);
   });
 
   it('区里写清两条边界：划词/悬停不受约束、已翻译页面不受回头管', async () => {
