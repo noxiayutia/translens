@@ -12,7 +12,7 @@ export type StatusKind = 'ok' | 'err' | 'pending';
  * ⚠ **本文件里不许写出那三个 HTML 注入面的标识符**（`tests/options/no-innerhtml.test.ts`
  * 顶部 `FORBIDDEN` 正则里那三个）：该守卫按**裸标识符**扫源码文本、**连注释一起扫**
  * （口径是有意的"往严格一侧失败"），所以想提这件事只能用描述性说法——**这段注释自己就是
- * 一次实例**：第一版把它写了出来，守卫当场红在 `dom.ts:12`。别"顺手补全"它。
+ * 一次实例**：第一版把它写了出来，守卫当场红了。别"顺手补全"它。
  */
 export function setStatus(element: HTMLElement, kind: StatusKind, message: string): void {
   element.dataset.kind = kind;

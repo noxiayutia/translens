@@ -609,6 +609,36 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect(profileRows().map((row) => row.dataset.profileId)).toEqual(['p-a']);
     expect(rowOf('p-a').textContent).toContain('说没就没');
   });
+
+  it('删除发现档案已不在、刷新成功时：宣称「列表已刷新」，并且那一行真的从界面上消失', async () => {
+    // 上一条用例盖的是这条契约**失败**的那一半；这一条盖**成功**的那一半（也是常见路径）。
+    // 两半都要有网：把 `renderFromStorage` 成功路径的 `return true` 改成 `return false`
+    // （例如有人为了别的目的改成"失败时也刷一下"），调用方就再也不会说「列表已刷新」——
+    // 实测**只有这一条会红**，上一条照样绿。
+    await seedSettings({ version: CURRENT_VERSION, engineId: 'p-a', profiles: [profileSeed({ label: '真删掉了' })] });
+    await loadOptions();
+    expect(profileRows().map((row) => row.dataset.profileId)).toEqual(['p-a']);
+
+    // p-a 从**存储**里消失，但页面**快照**不动（不触发任何重读）：于是这一行还在页面上，
+    // 而"删除"这条路会发现目标已不在、转去重读存储（这一次是能读成功的）。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, engineId: 'p-a', profiles: [] } });
+
+    expand('p-a');
+    actionButton(editorOf('p-a'), 'delete-profile').click();
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const text = engineStatus().textContent ?? '';
+      if (text.includes('列表已刷新') || text.includes('列表刷新失败')) break;
+      await settle(1);
+    }
+
+    // ① 刷新成功，如实宣称。
+    expect(engineStatus().dataset.kind).toBe('err');
+    expect(engineStatus().textContent).toContain('该档案已经不在了（可能在别处被删除），列表已刷新。');
+    // ② 而且**那一行真的没了**——这才是"刷新成功"的实质，不是只看到一句话。
+    //    （`renderFromStorage` 的 `renderProfiles` 拿的是 reload 之后的快照，列表按存储重建。）
+    expect(profileRows()).toEqual([]);
+  });
 });
 
 describe('设置页：测试连接（按档案，测的是正在编辑的那一行）', () => {
