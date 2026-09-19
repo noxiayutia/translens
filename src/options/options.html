@@ -6,87 +6,128 @@
     <title>浸译 · 设置</title>
   </head>
   <body>
-    <main class="page">
-      <h1 class="title">浸译 设置</h1>
-      <p class="subtitle">配置翻译引擎、语言与显示、缓存</p>
+    <div class="wrap">
+      <!-- 左导航：原生锚点（键盘可达，不自造 widget）。活动项的高亮由 CSS 的
+           `:target` + `:has()` 给，跟着最近点过的那一项走。 -->
+      <nav class="nav" aria-label="设置导航">
+        <p class="brand"><span class="glyph" aria-hidden="true">浸</span>浸译</p>
 
-      <section class="card">
-        <h2>翻译引擎 · 服务商档案</h2>
-        <p id="engine-hint" class="hint"></p>
-        <!-- 档案列表由 options.ts 渲染：每行「名字 + 接口地址 + 模型名」，点行展开编辑。
-             展开编辑框里 API Key **永远从空开始**（留空保存 = 保留原 Key）——
-             密钥不回填、不渲染进 DOM。 -->
-        <div id="profiles"></div>
-        <div class="actions">
-          <button id="add-profile" class="ghost" type="button">新增档案</button>
+        <div class="nav-grp" data-nav-group>
+          <p class="grp">翻译</p>
+          <a class="nav-link" href="#sec-engine" data-nav="engine"><span class="i" aria-hidden="true">⚙</span>翻译引擎</a>
+          <a class="nav-link" href="#sec-language" data-nav="language"><span class="i" aria-hidden="true">文</span>语言与显示</a>
         </div>
-        <p class="hint">
-          一个档案 = 一份接口地址 + 模型名 + API Key（走 OpenAI 兼容协议，可接 OpenAI、DeepSeek、
-          硅基流动、Ollama 等）。配好几个后，在<strong>弹窗</strong>的「翻译引擎」下拉里按名字直接切换。
-          每个档案的访问授权在点「保存档案」时按它自己的地址申请（Chrome 要求用户手势）。
-        </p>
-        <p id="engine-status" class="status" role="status" aria-live="polite"></p>
-      </section>
 
-      <section class="card">
-        <h2>语言与显示</h2>
-        <label class="field">
-          <span>把网页翻译成</span>
-          <select id="target-lang"></select>
-        </label>
-        <label class="field">
-          <span>显示模式</span>
-          <select id="display-mode"></select>
-        </label>
-        <p id="target-hint" class="hint">
-          「仅译文」只显示译文（原文被隐藏，按 Alt+T 可还原）；「双语对照」在每段原文下方插入译文。
-          仅译文模式下译文里的链接：一段里只有一个链接、且它的文字占该段六成以上时（例如整行标题、作者署名行），
-          链接<strong>仍可点击</strong>；一段里有多个链接、或链接文字不足六成时（正文段落常见），
-          链接<strong>仍可能失去下划线与可点击</strong>；链接地址不合规时也会降级为纯文本。
-          要读原文请按 Alt+T 还原，或在弹窗里切「双语对照」后重新翻译。
-          改完点下面的「保存语言与显示」；已经翻译过的页面要重新翻译才会换过来。
-        </p>
-        <div class="actions">
-          <button id="save" class="primary" type="button">保存语言与显示</button>
+        <div class="nav-grp" data-nav-group>
+          <p class="grp">数据</p>
+          <a class="nav-link" href="#sec-cache" data-nav="cache"><span class="i" aria-hidden="true">⛁</span>缓存与请求</a>
+          <a class="nav-link" href="#sec-privacy" data-nav="privacy"><span class="i" aria-hidden="true">🛈</span>隐私</a>
         </div>
-      </section>
 
-      <section class="card">
-        <h2>翻译缓存</h2>
-        <p class="hint">
-          缓存里存的是原文与译文，不含 API Key。「清除」会<strong>同时清掉会话层与持久层</strong>两层缓存，
-          清完后所有页面都要重新翻译一次（报出的条数是两层合计）。
-        </p>
-        <button id="clear-cache" class="ghost" type="button">清除翻译缓存</button>
-        <p id="cache-status" class="status" role="status" aria-live="polite"></p>
-      </section>
+        <p class="foot">v0.1.0 · 设置改动即时保存<br />无需点「保存」</p>
+      </nav>
 
-      <section class="card">
-        <h2>隐私</h2>
-        <ul class="privacy">
-          <li>
-            每个档案的 <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：不上传、不同步、
-            不写入日志。档案编辑框的 Key 输入框<strong>永远从空开始</strong>（留空保存即保留原 Key），
-            密钥不会渲染进本页 DOM。发给内容脚本的设置是<strong>类型级投影</strong>——投影结果里
-            每个档案都没有这个字段，下游代码拿不到它；内容脚本又运行在浏览器的 isolated world，
-            页面脚本读不到它的内存。（如实说明：这是"字段隔离 + isolated world"，不是内存级隔离——
-            读取设置的瞬间，密钥仍会随整份设置经过扩展自己的 isolated world 堆；彻底的结构性隔离
-            要把密钥拆成独立存储键，属后续工作。）
-          </li>
-          <li>
-            <strong>除翻译请求本身外，不发起任何网络请求</strong>：不采集浏览数据，不做任何统计上报。
-          </li>
-          <li>
-            每个档案接口地址的访问权限<strong>只在你点该档案的「保存档案」时</strong>按需申请，
-            授权范围限定为那个地址的域名；免费引擎不需要额外授权。
-          </li>
-          <li>
-            只有网页里<strong>可见</strong>的文本才会被送去翻译；不可见区域与
-            <code>contenteditable</code> 可编辑区域（你正在写、还没保存的草稿）一律不采集。
-          </li>
-        </ul>
-      </section>
-    </main>
+      <main class="main">
+        <h1 class="sr-only">浸译 设置</h1>
+
+        <!-- 翻译引擎 -->
+        <section class="sec" id="sec-engine" data-section="engine" aria-labelledby="sec-engine-title">
+          <div class="sec-head">
+            <h2 id="sec-engine-title">翻译引擎</h2>
+            <div class="act"><button id="add-profile" class="ghost tiny" type="button">+ 新增档案</button></div>
+          </div>
+          <p id="engine-hint" class="sec-desc"></p>
+          <!-- 档案列表由 sections/engine.ts 渲染：一行一张卡片，点行展开编辑。
+               展开编辑框里 API Key **永远从空开始**（留空保存 = 保留原 Key）——
+               密钥不回填、不渲染进 DOM。 -->
+          <div id="profiles"></div>
+          <p class="hint">
+            一个档案 = 一份接口地址 + 模型名 + API Key（走 OpenAI 兼容协议，可接 OpenAI、DeepSeek、
+            硅基流动、Ollama 等）。配好几个后，在<strong>弹窗</strong>的「翻译引擎」下拉里按名字直接切换。
+            每个档案的访问授权在点「保存档案」时按它自己的地址申请（Chrome 要求用户手势）。
+          </p>
+          <p id="engine-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 语言与显示 -->
+        <section class="sec" id="sec-language" data-section="language" aria-labelledby="sec-language-title">
+          <div class="sec-head"><h2 id="sec-language-title">语言与显示</h2></div>
+          <div class="group">
+            <div class="field">
+              <label class="lab" for="target-lang">目标语言<small>译文使用的语言</small></label>
+              <select id="target-lang"></select>
+            </div>
+            <div class="field">
+              <label class="lab" for="source-lang">源语言<small>「自动检测」按页面文字判断</small></label>
+              <select id="source-lang"></select>
+            </div>
+            <div class="field">
+              <label class="lab" for="display-mode">显示模式<small>仅译文会隐藏原文</small></label>
+              <select id="display-mode"></select>
+            </div>
+          </div>
+          <p id="target-hint" class="hint">
+            「仅译文」只显示译文（原文被隐藏，按 Alt+T 可还原）；「双语对照」在每段原文下方插入译文。
+            仅译文模式下译文里的链接：一段里只有一个链接、且它的文字占该段六成以上时（例如整行标题、作者署名行），
+            链接<strong>仍可点击</strong>；一段里有多个链接、或链接文字不足六成时（正文段落常见），
+            链接<strong>仍可能失去下划线与可点击</strong>；链接地址不合规时也会降级为纯文本。
+            要读原文请按 Alt+T 还原，或在弹窗里切「双语对照」后重新翻译。
+            改动即时保存；已经翻译过的页面要重新翻译才会换过来。
+          </p>
+          <p id="language-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 缓存与请求 -->
+        <section class="sec" id="sec-cache" data-section="cache" aria-labelledby="sec-cache-title">
+          <div class="sec-head"><h2 id="sec-cache-title">缓存与请求</h2></div>
+          <div class="group">
+            <div class="grow2">
+              <div class="lab">清除翻译缓存<span>同时清掉会话层与持久层，之后所有页面都要重翻一次</span></div>
+              <button id="clear-cache" class="ghost tiny" type="button">清除</button>
+            </div>
+          </div>
+          <p class="hint">
+            缓存里存的是原文与译文，不含 API Key。「清除」会<strong>同时清掉会话层与持久层</strong>两层缓存，
+            清完后所有页面都要重新翻译一次（报出的条数是两层合计）。
+          </p>
+          <p id="cache-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- 隐私 -->
+        <section class="sec" id="sec-privacy" data-section="privacy" aria-labelledby="sec-privacy-title">
+          <div class="sec-head"><h2 id="sec-privacy-title">隐私</h2></div>
+          <p class="sec-desc">逐条写清边界：本地存储、零网络请求、只采集可见文本、授权按需申请。</p>
+          <ul class="privacy">
+            <li>
+              <strong>API Key 只存在本机</strong>（<code>chrome.storage.local</code>）：
+              <strong>不上传、不同步</strong>、不写入日志。档案编辑框的 Key 输入框<strong>永远从空开始</strong>
+              （留空保存即保留原 Key），密钥不会渲染进本页 DOM。发给内容脚本的设置是<strong>类型级投影</strong>——
+              投影结果里每个档案都没有这个字段，下游代码拿不到它；内容脚本又运行在浏览器的 isolated world，
+              页面脚本读不到它的内存。
+            </li>
+            <li>
+              <strong>除翻译请求本身外，不发起任何网络请求</strong>：不采集浏览数据，不做任何统计上报。
+            </li>
+            <li>
+              只有网页里<strong>可见</strong>的文本才会被送去翻译；不可见区域与
+              <code>contenteditable</code> 可编辑区域（你正在写、还没保存的草稿）一律不采集。
+            </li>
+            <li>
+              每个档案接口地址的访问权限<strong>只在你点该档案的「保存档案」时</strong>按需申请，
+              授权范围限定为那个地址的域名；免费引擎不需要额外授权。
+            </li>
+          </ul>
+          <details>
+            <summary>密钥隔离做到哪一步（如实说明）</summary>
+            <p>
+              这是"字段隔离 + isolated world"，<strong>不是内存级隔离</strong>——读取设置的瞬间，
+              密钥仍会随整份设置经过扩展自己的 isolated world 堆。彻底的结构性隔离要把密钥拆成
+              独立存储键，属后续工作。
+            </p>
+          </details>
+        </section>
+      </main>
+    </div>
 
     <script type="module" src="./options.ts"></script>
   </body>

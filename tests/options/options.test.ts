@@ -7,6 +7,8 @@
  * （所以 DOM 必须先就位），`init()` 同步挂好事件委托，然后才 `await loadSettings()`。于是
  * 每个用例的顺序固定为：装替身 → 写存储 → 装 DOM → `import` → 等初始化那串 await 跑完。
  * `vi.resetModules()` 保证每个用例拿到一份新的模块实例（页面里持有 `settings` 快照）。
+ * 上面这套夹具（替身、装 DOM、直读存储、waitFor……）住在 `./harness.ts`：本文件与各区块的
+ * 测试文件共用同一份，改一处两边同时生效。
  *
  * DOM 用 `src/options/options.html` 的**真实内容**（`DOMParser` 解析后取 body），不手抄一份
  * 结构。档案行是动态渲染的：用例一律按 `data-profile-id` 找行、按 class 找编辑控件、
@@ -16,143 +18,36 @@
  * - 增删改**直读存储**确认（不是只看内存副本）；
  * - **隐私**：编辑框的 Key 永远从空开始，任何档案的任何密钥都不许出现在 DOM 里。
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LANGUAGES } from '../../src/core/lang';
 import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
 import { CURRENT_VERSION, DISPLAY_MODES, PROVIDER_PRESETS, SETTINGS_KEY } from '../../src/shared/settings';
-import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
-
-/**
- * 用 `import.meta.dirname` 拼路径，而不是 `new URL('...', import.meta.url)`：后者会被
- * Vite 的资源转换改写成 http 地址（jsdom 环境下 `fileURLToPath` 直接拒绝它）。
- */
-const OPTIONS_HTML_PATH = join(import.meta.dirname, '..', '..', 'src', 'options', 'options.html');
-
-const CUSTOM_BASE_URL = 'https://api.example.com/v1';
-/** 与 shared/host-permission 的 originPattern 同形：申请授权的对象是整串匹配模式。 */
-const CUSTOM_ORIGIN_PATTERN = 'https://api.example.com/*';
-
-let chromeStub: ChromeStub;
-
-/** 档案的种子形状；用例只覆盖自己在意的那几个字段。 */
-function profileSeed(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return { id: 'p-a', label: '我的 DeepSeek', baseUrl: CUSTOM_BASE_URL, model: 'deepseek-chat', apiKey: 'sk-a', ...over };
-}
-
-function pick<T extends HTMLElement>(id: string): T {
-  const found = document.getElementById(id);
-  if (found === null) throw new Error(`options.html 里没有 #${id}`);
-  return found as T;
-}
-
-/** 全部档案行（含"新增"草稿行），按渲染顺序。 */
-function profileRows(): HTMLElement[] {
-  return Array.from(pick<HTMLElement>('profiles').querySelectorAll<HTMLElement>('.profile-row[data-profile-id]'));
-}
-
-function rowOf(id: string): HTMLElement {
-  const row = profileRows().find((candidate) => candidate.dataset.profileId === id);
-  if (row === undefined) throw new Error(`档案行不存在：${id}`);
-  return row;
-}
-
-function editorOf(id: string): Element {
-  const editor = rowOf(id).querySelector('.profile-editor');
-  if (editor === null) throw new Error(`档案 ${id} 没有展开编辑区`);
-  return editor;
-}
-
-function fieldOf(editor: Element, selector: string): HTMLInputElement {
-  const input = editor.querySelector<HTMLInputElement>(selector);
-  if (input === null) throw new Error(`编辑区缺控件 ${selector}`);
-  return input;
-}
-
-function actionButton(editor: Element, action: string): HTMLButtonElement {
-  const button = editor.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);
-  if (button === null) throw new Error(`编辑区缺按钮 ${action}`);
-  return button;
-}
-
-/** 展开某个档案的编辑区（点它自己那一行的摘要按钮；已经展开就原样返回，点了不重复收起）。 */
-function expand(id: string): Element {
-  const row = rowOf(id);
-  const existing = row.querySelector('.profile-editor');
-  if (existing !== null) return existing;
-  row.querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
-  return editorOf(id);
-}
-
-/** jsdom 的 `new Event(...)` 默认不冒泡；档案区的监听是事件委托，必须带 bubbles。 */
-function bubble(type: string): Event {
-  return new Event(type, { bubbles: true });
-}
-
-/** 往存储里写一份**故意不完整**的设置：`loadSettings` 是逐字段补齐的反序列化边界。 */
-async function seedSettings(patch: Record<string, unknown> = {}): Promise<void> {
-  await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, ...patch } });
-}
-
-/** 直读存储：验证「改动真的落盘了」，而不是只改了页面里的内存副本。 */
-async function storedSettings(): Promise<Record<string, unknown>> {
-  const raw = await chromeStub.storage.local.get([SETTINGS_KEY]);
-  return (raw[SETTINGS_KEY] ?? {}) as Record<string, unknown>;
-}
-
-async function storedProfiles(): Promise<Array<Record<string, unknown>>> {
-  return ((await storedSettings()).profiles ?? []) as Array<Record<string, unknown>>;
-}
-
-function mountOptionsHtml(): void {
-  const html = readFileSync(OPTIONS_HTML_PATH, 'utf-8');
-  const parsed = new DOMParser().parseFromString(html, 'text/html');
-  document.body.innerHTML = parsed.body.innerHTML;
-}
-
-/** 让已经排队的微任务跑完（替身里的存储与权限调用都是立即兑现的 promise）。 */
-async function settle(rounds = 3): Promise<void> {
-  for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-/** 轮询直到条件成立（点击后的收尾是异步的）。 */
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() > deadline) throw new Error('waitFor 超时：条件始终不成立');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
-
-/** 装 DOM、import 设置页模块，并等 `init()` 那串 await（loadSettings → 渲染档案）跑完。 */
-async function loadOptions(): Promise<void> {
-  mountOptionsHtml();
-  await import('../../src/options/options');
-  await settle();
-}
-
-function engineStatus(): HTMLElement {
-  return pick<HTMLElement>('engine-status');
-}
-
-/**
- * 引擎只读 `status` / `ok` / `json()`，所以不必真的构造 `Response`——jsdom 环境里
- * 全局 `Response` 是 Node 那份，用它只会把用例和运行时实现绑在一起。
- */
-function jsonResponse(data: unknown, status = 200): Response {
-  return { status, ok: status >= 200 && status < 300, json: async () => data } as unknown as Response;
-}
-
-/** OpenAI 兼容接口的编号响应。 */
-function chatResponse(content: string): Response {
-  return jsonResponse({ choices: [{ message: { role: 'assistant', content } }] });
-}
+import {
+  CUSTOM_BASE_URL,
+  CUSTOM_ORIGIN_PATTERN,
+  actionButton,
+  bubble,
+  chatResponse,
+  chromeStub,
+  editorOf,
+  engineStatus,
+  expand,
+  fieldOf,
+  jsonResponse,
+  loadOptions,
+  pick,
+  profileRows,
+  profileSeed,
+  resetOptionsPage,
+  rowOf,
+  seedSettings,
+  storedProfiles,
+  storedSettings,
+  waitFor,
+} from './harness';
 
 beforeEach(() => {
-  document.body.innerHTML = '';
-  vi.resetModules();
-  chromeStub = installChromeStub();
+  resetOptionsPage();
 });
 
 afterEach(() => {
@@ -293,15 +188,18 @@ describe('设置页：初始化与列表渲染', () => {
     expect(displayMode.value).toBe('bilingual');
     // §6 文案修正：旧文案说"段落里的链接点不了"，那**早就不成立**了——链接保留下划线、
     // 颜色与可点击是已经实现的行为（README「渲染」一节写的就是这个）。这里的断言因此改成
-    // 钉住**如实**的说法，而不是删掉一条断言。七条断言各自承重（**同一条用例内，vitest
-    // 只报第一条失败的那条**，所以改动时别以为"只红一条"就等于其余六条没事）：
+    // 钉住**如实**的说法，而不是删掉一条断言。六条断言各自承重（**同一条用例内，vitest
+    // 只报第一条失败的那条**，所以改动时别以为"只红一条"就等于其余五条没事）：
     //   ① 整段几乎就是一个链接时（单链接 + 占比 ≥0.6），译文里的链接仍可点击；
     //   ② 多链接段落与链接文字不足六成的段落里，链接仍可能失去下划线与可点击（仍存在的限制）；
     //   ③ 链接地址不合规（协议白名单之外）时也会降级为纯文本——第三种失败形态；
     //   ④ 反向钉住：那句不成立的旧说法不许回来；
-    //   ⑤ 结尾那句「改完点下面的『保存语言与显示』」此刻还是真的（按钮在），故意保留；
-    //   ⑥ 链接包裹只在「仅译文」模式发生——这个限定词丢了，双语用户就把①读成了对自己的承诺；
-    //   ⑦ 真判据是「六成」，不是含糊的"大部分/文字占主"——少了它，判据改错也没人拦。
+    //   ⑤ 链接包裹只在「仅译文」模式发生——这个限定词丢了，双语用户就把①读成了对自己的承诺；
+    //   ⑥ 真判据是「六成」，不是含糊的"大部分/文字占主"——少了它，判据改错也没人拦。
+    // 原来这里还有第 ⑤ 条「文案里那句『改完点下面的保存语言与显示』还是真的」。本任务把
+    // `#save` 连按钮一起删掉，那句话于是指向一个不存在的东西——这条断言**反过来**住进了
+    // 下面「语言与显示」那条用例（`not.toContain('保存语言与显示')`）。一句话只在一个地方改：
+    // 这里不再留 `toContain`，那边也不重复留一份旧说法。
     const hint = pick<HTMLElement>('target-hint').textContent ?? '';
     expect(hint).toContain('链接仍可点击');
     expect(hint).toContain('仍可能失去下划线与可点击');
@@ -310,13 +208,8 @@ describe('设置页：初始化与列表渲染', () => {
     //    没有这条断言，文案漏掉整条失败路径也不会有任何用例变红。
     expect(hint).toContain('降级为纯文本');
     expect(hint).not.toContain('链接点不了');
-    // ⑤ 结尾那句「改完点下面的『保存语言与显示』」本任务**故意保留**：此刻那个按钮还在
-    //    （`#save` 到 Task 3 才随即时保存一起删掉），这句话在这个提交上是**真的**，
-    //    现在删它反而会让文案与界面不符。它的收尾写在 Task 3 Step 13：那里删按钮，
-    //    并把这条断言改成 `not.toContain('保存语言与显示')`——一句话只在一个地方改。
-    expect(hint).toContain('保存语言与显示');
-    // ⑥⑦ 这两条是本轮两处修正自己的回归网：没有它们，「仅译文模式下」这个限定词与
-    //    「六成」这个真判据被改掉/删掉时，874 条用例不会有任何一条变红。
+    // ⑤⑥ 这两条是本轮两处修正自己的回归网：没有它们，「仅译文模式下」这个限定词与
+    //    「六成」这个真判据被改掉/删掉时，不会有任何一条用例变红。
     expect(hint).toContain('仅译文模式下');
     expect(hint).toContain('六成');
   });
@@ -341,9 +234,15 @@ describe('设置页：初始化与列表渲染', () => {
     pick<HTMLButtonElement>('add-profile').click();
     expect(engineStatus().textContent).toContain('设置还没读出来');
 
-    pick<HTMLButtonElement>('save').click();
-    await waitFor(() => (engineStatus().textContent ?? '').includes('设置还没读出来'));
-    expect(engineStatus().textContent).toContain('设置还没读出来');
+    // 即时保存之后没有「保存」按钮了，改用**改一个下拉**去撞同一个闸：写入口在设置读出来
+    // 之前一律不放行，而且存储里那份「版本高于本代码」的设置一个字节都不许被动过。
+    const targetLang = pick<HTMLSelectElement>('target-lang');
+    targetLang.value = 'en';
+    targetLang.dispatchEvent(bubble('change'));
+    await waitFor(() => (pick<HTMLElement>('language-status').textContent ?? '').includes('设置还没读出来'));
+    expect(pick<HTMLElement>('language-status').dataset.kind).toBe('err');
+    expect((await storedSettings()).version).toBe(CURRENT_VERSION + 1);
+    expect((await storedSettings()).targetLang).toBeUndefined();
   });
 });
 
@@ -719,8 +618,8 @@ describe('设置页：测试连接（按档案，测的是正在编辑的那一�
   });
 });
 
-describe('设置页：语言与显示（独立于档案的保存）', () => {
-  it('「保存语言与显示」只写这两个字段：档案、Key 与 engineId 一律原样', async () => {
+describe('设置页：语言与显示（change 即存，没有保存按钮）', () => {
+  it('改这两个下拉即落盘：连改两次不会互相覆盖，档案、Key 与 engineId 一律原样', async () => {
     await seedSettings({
       engineId: 'p-a',
       profiles: [profileSeed({ apiKey: 'sk-keep' })],
@@ -729,31 +628,39 @@ describe('设置页：语言与显示（独立于档案的保存）', () => {
     });
     await loadOptions();
 
-    pick<HTMLSelectElement>('target-lang').value = 'en';
-    pick<HTMLSelectElement>('display-mode').value = 'bilingual';
-    pick<HTMLButtonElement>('save').click();
-    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    // 两次 change **中间不 await**：这就是"改完目标语言顺手改显示模式"的真实序列，
+    // 也是写队列存在与否的分水岭——不排队时后一次写会拿旧基线把前一次抹掉。
+    const targetLang = pick<HTMLSelectElement>('target-lang');
+    targetLang.value = 'en';
+    targetLang.dispatchEvent(bubble('change'));
+    const displayMode = pick<HTMLSelectElement>('display-mode');
+    displayMode.value = 'bilingual';
+    displayMode.dispatchEvent(bubble('change'));
 
+    await waitFor(async () => (await storedSettings()).targetLang === 'en');
+    await waitFor(async () => (await storedSettings()).displayMode === 'bilingual');
     const stored = await storedSettings();
-    expect(stored.targetLang).toBe('en');
-    expect(stored.displayMode).toBe('bilingual');
     expect(stored.engineId).toBe('p-a');
     expect((stored.profiles as Array<Record<string, unknown>>)[0].apiKey).toBe('sk-keep');
+    expect(pick<HTMLElement>('language-status').dataset.kind).toBe('ok');
+    // Task 2 那条「文案里还有『保存语言与显示』」的断言在**这里反过来**：按钮已经随即时保存
+    // 删掉了，文案里不许再指着一个不存在的东西。Task 2 的 `toContain` 请**整条替换**成这一条
+    // （不要两处都留，也不要只删不换）。
+    expect(pick<HTMLElement>('target-hint').textContent ?? '').not.toContain('保存语言与显示');
   });
 
-  it('免费引擎下保存设置：一个宿主权限申请都不发（google 的地址已在 host_permissions 里）', async () => {
+  it('免费引擎下改设置：一个宿主权限申请都不发（google 的地址已在 host_permissions 里）', async () => {
     // 档案化之后，"不申请权限"这条断言从保存路径上消失了：没有它，
     // "无条件给当前档案地址申请权限"这类回归不会被任何人发现——免费引擎明明
     // 不需要授权，却每次都弹一个用户看不懂的框。这里钉住：engineId=google 时
-    // 保存语言与显示，permissions.request 一次都不许被调用。
+    // 改语言，permissions.request 一次都不许被调用。
     await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
     await loadOptions();
 
     pick<HTMLSelectElement>('target-lang').value = 'ja';
-    pick<HTMLButtonElement>('save').click();
-    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    pick<HTMLSelectElement>('target-lang').dispatchEvent(bubble('change'));
+    await waitFor(async () => (await storedSettings()).targetLang === 'ja');
 
-    expect((await storedSettings()).targetLang).toBe('ja');
     expect(chromeStub.permissions.requests).toEqual([]);
     // 也不许有任何"顺手授予"：一次授权都不该发生。
     expect([...chromeStub.permissions.grantedOrigins]).toEqual([]);
@@ -767,12 +674,10 @@ describe('设置页：语言与显示（独立于档案的保存）', () => {
     await chromeStub.storage.local.set({ [SETTINGS_KEY]: { ...current, concurrency: 7 } });
 
     pick<HTMLSelectElement>('target-lang').value = 'ja';
-    pick<HTMLButtonElement>('save').click();
-    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    pick<HTMLSelectElement>('target-lang').dispatchEvent(bubble('change'));
+    await waitFor(async () => (await storedSettings()).targetLang === 'ja');
 
-    const stored = await storedSettings();
-    expect(stored.targetLang).toBe('ja');
-    expect(stored.concurrency).toBe(7);
+    expect((await storedSettings()).concurrency).toBe(7);
   });
 });
 
