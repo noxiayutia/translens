@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 import { MSG, type TranslateItemResult } from '../../src/shared/messages';
 import {
-  FULL_RESCAN_MAX_ELEMENTS,
   INCREMENTAL_DEBOUNCE_MS,
   INCREMENTAL_MAX_SEGMENTS_PER_ROUND,
   INTERACTION_RESCAN_DEBOUNCE_MS,
