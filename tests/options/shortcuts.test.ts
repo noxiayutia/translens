@@ -99,7 +99,7 @@ describe('设置页：快捷翻译', () => {
     // **刻意不用 `rejectSendMessage`**：那条路走的是"没有接收方 → sendMessage 抛错"，
     // 于是 `notifyAllTabs` 里那句 `reply?.ok === true` 根本不会被求值。把 `responder`
     // 留成 null 时 sendMessage **兑现 undefined**——消息送达了、但没有任何页面确认，
-    // 这正是那句守卫唯一被真正判定的分支（把它改成无条件 `applied = true` 会恰好红在这里）。
+    // 这正是那句守卫唯一被真正判定的分支（把它改成无条件 `confirmed = true` 会恰好红在这里）。
     expect(chromeStub.tabs.responder).toBe(null);
 
     flip(hoverSwitch(), false);
@@ -110,6 +110,34 @@ describe('设置页：快捷翻译', () => {
     expect(status().textContent ?? '').not.toContain('即时生效');
     expect(status().dataset.kind).toBe('ok');
     expect(chromeStub.tabs.sent.length).toBe(1);
+  });
+
+  it('先成功写过一次、之后写失败：回拨用的是**那一次成功**留下的值（不是别的开关、也不是默认值）', async () => {
+    // 这条钉住 `applied[field] = next;`——它删不掉（`applied[field] ?? false` 那个回拨要用），
+    // 但前 6 条用例一条都没约束它：把它改成 `!next` 全绿。真正需要它的是**同一个开关
+    // "先成功一次、再失败一次"**（跨开关的构造测不到它：`applied` 是**分键**的，A 的写永远
+    // 读不到 B；而且那种构造里两次保存都失败，这一行根本没执行）。
+    await seedSettings({ hoverTranslate: true, selectionTranslate: true });
+    await loadOptions();
+
+    // ① 先成功写一次 false：走完 `applied.hoverTranslate = false`。
+    flip(hoverSwitch(), false);
+    await waitFor(async () => (await storedSettings()).hoverTranslate === false);
+
+    // ② 模拟另一个上下文写入更高版本：此后每次写都被版本门禁拒绝（`store.ts` 的重读会撞上它）。
+    const stored = await storedSettings();
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { ...stored, version: 99 } });
+
+    // ③ 再拨到 true：这次写失败，界面必须回到**①那一次成功**的 false。
+    //    若 `applied` 没被①更新过（仍是 null），回拨同样落到 false —— 所以这条用例区分不出
+    //    "null 回落"与"记忆生效"；它区分的是 `applied[field] = !next` 那种记反了的写法。
+    flip(hoverSwitch(), true);
+
+    await waitFor(() => status().dataset.kind === 'err');
+    expect(hoverSwitch().checked).toBe(false);
+    expect(status().textContent ?? '').toContain('保存悬停翻译失败');
+    // 写失败不许污染存储：第一次那笔仍是存储里的真实值。
+    expect((await storedSettings()).hoverTranslate).toBe(false);
   });
 
   it('「去浏览器设置」开的是 chrome://extensions/shortcuts（快捷键不能由扩展代改）', async () => {
