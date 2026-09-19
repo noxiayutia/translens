@@ -17,7 +17,7 @@
 //
 // **已知代价（规格 §4.1 / §11，本轮不解决）**：两个设置页并排打开时，双方各自重读、各自
 // 整份写回，后写的一方仍然会覆盖前一方——这与改版前"点保存即覆盖"是同一性质。
-import { loadSettings, saveSettings, type Settings } from '../shared/settings';
+import { CURRENT_VERSION, loadSettings, mergeSettings, saveSettings, type Settings } from '../shared/settings';
 
 /** 读到存储之前为 null：这期间任何写请求都必须被拒绝，而不是拿一份空设置去覆盖存储。 */
 let snapshot: Settings | null = null;
@@ -105,7 +105,13 @@ export function patchSettings(patch: Partial<Settings>): Promise<void> {
   if (snapshot === null) return Promise.reject(new Error(NOT_LOADED));
   const run = queue.then(async () => {
     const latest = await loadSettings();
-    const next: Settings = { ...latest, ...patch };
+    // 合并后的设置先过一遍 `mergeSettings`：`saveSettings` 落盘的是**规范化后**的那一份
+    // （clampInt / pickXxx / 档案与术语表的逐项过滤），快照必须与落盘的那一份逐字段一致，
+    // 否则两个可观察量会分叉——设置页读 `currentSettings()` 拿"生效值"，而它其实只是"请求值"。
+    // 这不是理论风险：缓存的数字输入框靠读回生效值把越界的 999 回填成 8；少了这一步，
+    // 存储里是 8、快照与界面上却是 999（`tests/options/cache-section.test.ts` 的
+    // 「越界的数字被夹到允许范围」就是这条路径的读数）。
+    const next: Settings = mergeSettings({ ...latest, ...patch }, CURRENT_VERSION);
     await saveSettings(next);
     snapshot = next;
   });

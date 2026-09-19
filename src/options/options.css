@@ -368,6 +368,29 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   cursor: default;
 }
 
+/* 统计数字：一行三个，数字大、单位小（数字是重点，说明只是注脚）。
+   三个都是**服务端真值**：`—` 是"还没读出来"的占位，不是 0——数不出来时显示 0
+   等于在说"缓存是空的"（那条路径在 `refreshStats` 里单独写状态行）。 */
+.stat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 26px;
+  margin-bottom: 14px;
+}
+
+.stat div {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.stat b {
+  display: block;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
 /* ------------------------------------------------------------------ 成组设置（一块卡片 + 行间细线） */
 
 .group {

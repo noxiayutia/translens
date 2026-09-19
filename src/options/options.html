@@ -174,7 +174,16 @@
         <!-- 缓存与请求 -->
         <section class="sec" id="sec-cache" data-section="cache" aria-labelledby="sec-cache-title">
           <div class="sec-head"><h2 id="sec-cache-title">缓存与请求</h2></div>
+          <div class="stat">
+            <div><b id="stat-cached">—</b>已缓存段落</div>
+            <div><b id="stat-max">—</b>缓存上限</div>
+            <div><b id="stat-concurrency">—</b>并发请求</div>
+          </div>
           <div class="group">
+            <div class="field">
+              <label class="lab" for="cache-max-entries">缓存上限<small>条，超出后按最久未用淘汰</small></label>
+              <input id="cache-max-entries" type="number" min="100" max="50000" step="100" />
+            </div>
             <div class="grow2">
               <div class="lab">清除翻译缓存<span>同时清掉会话层与持久层，之后所有页面都要重翻一次</span></div>
               <button id="clear-cache" class="ghost tiny" type="button">清除</button>
@@ -184,6 +193,24 @@
             缓存里存的是原文与译文，不含 API Key。「清除」会<strong>同时清掉会话层与持久层</strong>两层缓存，
             清完后所有页面都要重新翻译一次（报出的条数是两层合计）。
           </p>
+          <details id="cache-advanced">
+            <summary>高级：批量与并发</summary>
+            <div class="group">
+              <div class="field">
+                <label class="lab" for="concurrency">并发请求数<small>1–8，接口限流严就调低</small></label>
+                <input id="concurrency" type="number" min="1" max="8" step="1" />
+              </div>
+              <div class="field">
+                <label class="lab" for="max-batch-chars">单批字符上限<small>200–8000</small></label>
+                <input id="max-batch-chars" type="number" min="200" max="8000" step="100" />
+              </div>
+              <div class="field">
+                <label class="lab" for="max-segments-per-batch">单批段数上限<small>1–50</small></label>
+                <input id="max-segments-per-batch" type="number" min="1" max="50" step="1" />
+              </div>
+            </div>
+            <p>这三项默认不用动。放在折叠里而不是删掉，是因为设置里已经有这些字段，藏起来比砍掉便宜。</p>
+          </details>
           <p id="cache-status" class="status" role="status" aria-live="polite"></p>
         </section>
 
