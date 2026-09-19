@@ -4,7 +4,7 @@
 // 「保存语言与显示」按钮随本轮改版一起消失。
 import { LANGUAGES } from '../../core/lang';
 import { DISPLAY_MODES, type DisplayMode, type Settings } from '../../shared/settings';
-import { fillSelect, setStatus } from '../dom';
+import { fillSelect } from '../dom';
 import type { Section, SectionContext } from '../section';
 
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;

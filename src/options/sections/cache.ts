@@ -1,7 +1,9 @@
 // src/options/sections/cache.ts
 //
-// §3.7 缓存与请求。本任务先落地「清除」这一半（行为与搬家前逐字相同：两层一起清、计数报两层合计），
-// 三个统计数字、缓存上限与「高级：批量与并发」折叠区在 Task 8 补齐。
+// §3.7 缓存与请求。**当前实现只覆盖「清除」这一半**：两层一起清、计数报两层合计，
+// 行为与搬家前逐字相同。三个统计数字、缓存上限与「高级：批量与并发」折叠区见 Task 8。
+// （这条注释说的是"这个文件现在实现到哪一步"，不是"哪一步先做的"——Task 8 换掉本文件时
+//   记得把这一段一起改掉，别让它变成一句过期的自我描述。）
 import { TranslationCache } from '../../core/cache';
 import { chromeArea } from '../../shared/chrome-area';
 import { runSafely, setStatus } from '../dom';

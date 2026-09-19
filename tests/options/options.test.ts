@@ -41,6 +41,7 @@ import {
   resetOptionsPage,
   rowOf,
   seedSettings,
+  settle,
   storedProfiles,
   storedSettings,
   waitFor,
@@ -196,8 +197,8 @@ describe('设置页：初始化与列表渲染', () => {
     //   ④ 反向钉住：那句不成立的旧说法不许回来；
     //   ⑤ 链接包裹只在「仅译文」模式发生——这个限定词丢了，双语用户就把①读成了对自己的承诺；
     //   ⑥ 真判据是「六成」，不是含糊的"大部分/文字占主"——少了它，判据改错也没人拦。
-    // 原来这里还有第 ⑤ 条「文案里那句『改完点下面的保存语言与显示』还是真的」。本任务把
-    // `#save` 连按钮一起删掉，那句话于是指向一个不存在的东西——这条断言**反过来**住进了
+    // 这里以前还有一条「文案里那句『保存语言与显示』还是真的」，**它已经不在这里了**：
+    // `#save` 连按钮一起删掉之后那句话指向一个不存在的东西，于是那条断言**反过来**住进了
     // 下面「语言与显示」那条用例（`not.toContain('保存语言与显示')`）。一句话只在一个地方改：
     // 这里不再留 `toContain`，那边也不重复留一份旧说法。
     const hint = pick<HTMLElement>('target-hint').textContent ?? '';
@@ -550,6 +551,64 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     // 在用的那行仍然带「使用中」。
     expect(rowOf('p-a').textContent).toContain('使用中');
   });
+
+  it('删除发现档案已不在、而刷新又失败时：如实说「列表刷新失败」，绝不说「列表已刷新」', async () => {
+    // 这条钉住的是一个真实存在过的 bug：`renderFromStorage` 的 catch 写完状态行**没有 return**，
+    // 于是它继续拿**旧快照**渲染（被删掉的那一行原样画回来），调用方又**无条件**写
+    // 「列表已刷新。」把刚写的失败原因覆盖掉——用户看到的最终结果是"列表没刷新，界面却说刷新了"。
+    //
+    // 现场：页面打开时 p-a 还在、版本正常；随后别处（弹窗/另一个设置页）把 p-a 从列表里删掉，
+    // 页面**自己还没重读过**（快照里仍有 p-a）。于是一点「删除档案」→ `handleDeleteProfile`
+    // 读存储发现目标已不在（走并发分支）→ 就在这一步、在它读完之后，存储被抬到本代码认不出的
+    // 版本高度 → `ctx.reload()` 撞上版本门禁而拒绝。
+    await seedSettings({ version: CURRENT_VERSION, engineId: 'p-a', profiles: [profileSeed({ label: '说没就没' })] });
+    await loadOptions();
+    expect(profileRows().map((row) => row.dataset.profileId)).toEqual(['p-a']);
+
+    // 让 p-a 从存储里消失，但页面快照不动（不触发任何重读）。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, engineId: 'p-a', profiles: [] } });
+
+    // 卡住 `loadSettings` 的**第一次读**（`handleDeleteProfile` 开头那次）：它一返回就把版本
+    // 抬到本代码认不出的高度，好让紧接着的那次重读（`ctx.reload()`）必然拒绝。
+    const realGet = chromeStub.storage.local.get.bind(chromeStub.storage.local);
+    let reads = 0;
+    chromeStub.storage.local.get = async (keys: string | string[] | null) => {
+      const result = await realGet(keys);
+      reads += 1;
+      if (reads === 1) {
+        await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1, profiles: [] } });
+      }
+      return result;
+    };
+    try {
+      expand('p-a');
+      actionButton(editorOf('p-a'), 'delete-profile').click();
+      // 等到**这条路径走完**（两条路都会写出下面这两句话之一），再断言最终留下的是哪一句。
+      // 不用 `waitFor(含「列表刷新失败」)`：那句话恰恰是 bug 会覆盖掉的东西，等它等于把
+      // "超时"当成失败信号——能红，但报出的是"条件始终不成立"，看不出真相。这里等的是
+      // "收尾已完成"，于是失败信息直指被覆盖掉的那句话。
+      const deadline = Date.now() + 1000;
+      while (Date.now() < deadline) {
+        const text = engineStatus().textContent ?? '';
+        if (text.includes('列表刷新失败') || text.includes('该档案已经不在了')) break;
+        await settle(1);
+      }
+    } finally {
+      chromeStub.storage.local.get = realGet;
+    }
+
+    // ① 如实报失败：最终留在状态行上的必须是失败原因本身。
+    //    把 `renderFromStorage` 的 `return false` 去掉 → 调用方会无条件写「…列表已刷新。」，
+    //    这句话被覆盖 → 这一条当场红（实测读数见交接报告）。
+    expect(engineStatus().dataset.kind).toBe('err');
+    expect(engineStatus().textContent).toContain('列表刷新失败');
+    // ② 更直接的那句谎话不许出现。
+    expect(engineStatus().textContent).not.toContain('列表已刷新');
+    // ③ 失败时**不许**拿旧快照重渲染：那一行还在（与 `store.ts` 那条"保留上一次成功读到的
+    //    快照"的有意降级一致），而不是被静默清空、也不是被"刷新"成别的样子。
+    expect(profileRows().map((row) => row.dataset.profileId)).toEqual(['p-a']);
+    expect(rowOf('p-a').textContent).toContain('说没就没');
+  });
 });
 
 describe('设置页：测试连接（按档案，测的是正在编辑的那一行）', () => {
@@ -643,9 +702,9 @@ describe('设置页：语言与显示（change 即存，没有保存按钮）', 
     expect(stored.engineId).toBe('p-a');
     expect((stored.profiles as Array<Record<string, unknown>>)[0].apiKey).toBe('sk-keep');
     expect(pick<HTMLElement>('language-status').dataset.kind).toBe('ok');
-    // Task 2 那条「文案里还有『保存语言与显示』」的断言在**这里反过来**：按钮已经随即时保存
-    // 删掉了，文案里不许再指着一个不存在的东西。Task 2 的 `toContain` 请**整条替换**成这一条
-    // （不要两处都留，也不要只删不换）。
+    // 这条与上面那条用例里的 `not.toContain('链接点不了')` 不是一回事：那条钉的是**旧说法
+    // 不许回来**，这条钉的是**文案不许指着一个已经不存在的东西**。原来的出处见上面那条用例的
+    // 注释（「保存语言与显示」按钮随 `#save` 一起删掉了）。
     expect(pick<HTMLElement>('target-hint').textContent ?? '').not.toContain('保存语言与显示');
   });
 

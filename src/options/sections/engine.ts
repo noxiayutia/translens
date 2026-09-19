@@ -10,6 +10,22 @@
 // 隐私硬规矩（与搬家前逐字相同）：档案编辑框的 API Key 输入框**永远从空开始、不回填**，
 // 留空保存 = 保留原 Key；密钥只进 `<input>.value` 属性的编辑会话，绝不写进行的任何文本，
 // 也不进任何 `title` / 文本节点。
+//
+// ⚠ **三处跨函数的耦合，拆这个文件之前先读这里**（都是"各留一份就会静默漂移"的东西）：
+// 1. `expandedId`（含 `NEW_DRAFT_ID` 这个草稿哨兵）是**列表渲染与编辑器共用**的状态：
+//    `renderProfiles` / `buildProfileRow` 读它决定展开哪一行，`bind` 里的事件委托改它，
+//    `handleSaveProfile` / `handleDeleteProfile` 也改它。要拆就把这个变量与 `NEW_DRAFT_ID`
+//    一起搬走（或显式传参），**不要在两处各留一份**——两份 `expandedId` 的症状是"点了没反应/
+//    展开的不是这一行"，而类型检查看不出来。
+// 2. `buildEditor` 造出来的控件 class（`.profile-label` / `.profile-base-url` /
+//    `.profile-model-name` / `.profile-api-key` / `.profile-provider` / `.profile-toggle-key`）
+//    是**契约**：`readEditor` / `validateProfileForm` / `applyProviderTemplate` /
+//    `toggleKeyVisibility` 与 `tests/options/options.test.ts` 的 `fieldOf(editor, …)` 全都按
+//    这组名字找控件。改名要四处一起改（含测试），否则运行时才炸、且是在"保存档案"那一刻才炸。
+// 3. 两个渲染函数的**数据来源不同，别混用**：`renderProfiles` 渲染的是**内存快照**
+//    （`ctx.settings()`，可能与存储已经不一致）；`renderFromStorage` 是"先 `ctx.reload()`
+//    重读存储、成功了再渲染"，并**返回是否真的刷新成功**。调用方只有在拿到 `true` 时才许宣称
+//    "列表已刷新"——这条没写下来的后果就是一个真出现过的 bug：刷新失败时列表没换、提示却说换了。
 import { getEngine, DEFAULT_ENGINE_ID } from '../../engines/registry';
 import { toEngineError } from '../../engines/types';
 import {
@@ -418,8 +434,12 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
   if (target === undefined) {
     // 别处已经删过（并发窗口）：如实说，并刷新到存储的真实列表，不静默"删除成功"。
     expandedId = null;
-    await renderFromStorage(ctx);
-    setStatus(engineStatus, 'err', '该档案已经不在了（可能在别处被删除），列表已刷新。');
+    // 刷新**可能失败**（存储版本高于本代码、读写失败）：只有真的刷新成功才许说"列表已刷新"，
+    // 否则界面会一边留着旧快照渲染出来的那一行、一边声称自己已经刷新过了。
+    const refreshed = await renderFromStorage(ctx);
+    if (refreshed) {
+      setStatus(engineStatus, 'err', '该档案已经不在了（可能在别处被删除），列表已刷新。');
+    }
     return;
   }
   const wasCurrent = latest.engineId === id;
@@ -444,18 +464,29 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
   );
 }
 
-/** 把界面刷成**存储里的真实样子**（别处已经删掉/改过这个档案时的并发窗口用）。 */
-async function renderFromStorage(ctx: SectionContext): Promise<void> {
+/**
+ * 把界面刷成**存储里的真实样子**（别处已经删掉/改过这个档案时的并发窗口用）。
+ *
+ * 返回**是否真的刷新成功**：失败时只写状态行并返回 `false`，**绝不继续渲染**。
+ * 为什么不继续渲染：`ctx.reload()` 失败时快照仍是上一份成功读到的（`store.ts` 里那条
+ * 有意为之的降级），拿它渲染出来的列表**已经不等于存储**——调用方若因此宣称"列表已刷新"，
+ * 界面就在撒谎；而且那一行"幽灵档案"会被重新画回页面上。
+ *
+ * **这条不变式就是曾经的一个真 bug**（删档案撞上并发窗口时列表没刷新、提示却说刷新了）。
+ */
+async function renderFromStorage(ctx: SectionContext): Promise<boolean> {
   // 读的入口只有存储层一处（`store.ts` 的 `reload`）：这里刻意不自己 `loadSettings()` 之后
   // 偷偷改快照——那是存储层的职责，两处各改一份就又多了一条漂移路径。
   try {
     await ctx.reload();
   } catch (raw) {
+    // 失败**就地消化**：原因写进状态行，然后 `return false` 让调用方闭嘴（不许说"已刷新"）。
     setStatus(engineStatus, 'err', `列表刷新失败：${describe(raw)}`);
-    return;
+    return false;
   }
   renderProfiles(ctx);
   renderEngineHint(ctx);
+  return true;
 }
 
 /** 显示 / 隐藏某个档案编辑区的 API Key。只改该行的 `type` 与按钮文案，值不动（更不会复制到别处）。 */

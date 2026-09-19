@@ -1,6 +1,6 @@
 // src/options/options.ts
 //
-// 设置页的装配层：读设置、把八个区块挂起来、把全局的失败兜成一句话。**这里不写业务逻辑**——
+// 设置页的装配层：读设置、把各区块挂起来、把全局的失败兜成一句话。**这里不写业务逻辑**——
 // 每一组设置的行为都在 `sections/<name>.ts` 里，写存储一律走 `store.ts`。
 //
 // 结构上刻意保持"两个阶段"：
@@ -18,8 +18,11 @@ import { currentSettings, loadSnapshot, patchSettings } from './store';
 import type { Settings } from '../shared/settings';
 
 /**
- * 八个区块，**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
+ * 区块清单，**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
  * `tests/options/search.test.ts` 有一条结构守卫钉住这件事）。导出是给测试用的。
+ *
+ * **这里刻意不写死数量**：本轮（Task 3）先落地 4 个（引擎/语言/缓存/隐私），Task 4~8 各插一项，
+ * 最终 8 个，顺序是 engine、language、shortcuts、glossary、site-rules、prompt、cache、privacy。
  */
 export const SECTIONS: readonly Section[] = [
   engineSection,

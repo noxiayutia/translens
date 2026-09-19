@@ -33,12 +33,34 @@ describe('设置页样式：令牌', () => {
     expect(dark['--surface']).toBe('#1c1f23');
     expect(dark['--text']).toBe('#e8eaed');
     expect(dark['--danger']).toBe('#f87171');
-    // 暗色块不许把亮色令牌漏一半：正文里出现的颜色令牌必须都在暗色块里有值。
+    // 暗色块不许把亮色令牌漏一半：正文里出现的**颜色**令牌必须都在暗色块里有值。
+    //
+    // 查的必须是 `dark`，不能是 `light`：按设计每个正文令牌在亮色 `:root` 里都有值，
+    // 拿 `light` 去查 `used` 的话 `missing` **恒为 `[]`**——实测把暗色块里 8 个彩色令牌
+    // 一次删光，7 条断言照样全绿。
     const body = stripCssComments(optionsCss);
     const used = new Set([...body.matchAll(/var\((--[a-z0-9-]+)\)/g)].map((match) => match[1] as string));
     const light = declarations(optionsCss, ':root');
-    const missing = [...used].filter((token) => light[token] === undefined);
-    expect(missing).toEqual([]);
+    // 下面这组是"**不是颜色**、因此不该在暗色块里重复定义"的令牌（少列一个就是一条假红）。
+    // 口径选的是"列例外"而不是"列颜色白名单"：白名单写不全会**静默漏掉**真正该抓的令牌
+    // （假绿，正是这条断言原本的病），列例外写不全会**响**（假红，当场就能看见并补上）。
+    // 两个方向都往严格一侧失败，但只有假红是安全的失败方向。
+    //
+    // `--border*` 故意**不**列进来：它们**是**颜色，且暗色块里确实各有自己的同名值
+    // （`rgba(255, 255, 255, …)`）——所以它们会被正常检查，不需要豁免。
+    const NOT_A_COLOR = new Set([
+      '--radius-sm',
+      '--radius-md',
+      '--radius-pill',
+      '--shadow-card',
+      // 强调色上的文字色，亮/暗都是 `#ffffff`：暗色下强调色仍是深蓝，白字照样可读。
+      // 这是设计上有据可查的例外，不是漏定义。
+      '--on-accent',
+    ]);
+    const darkMissing = [...used].filter(
+      (token) => light[token] !== undefined && dark[token] === undefined && !NOT_A_COLOR.has(token),
+    );
+    expect(darkMissing).toEqual([]);
   });
 });
 
