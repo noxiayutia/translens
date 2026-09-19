@@ -92,6 +92,26 @@ describe('设置页：快捷翻译', () => {
     expect(chromeStub.tabs.sent).toEqual([]);
   });
 
+  it('消息送达但页面没确认（旧内容脚本、没回 ok）时同样不谎称"即时生效"', async () => {
+    await seedSettings({ hoverTranslate: true });
+    await loadOptions();
+    chromeStub.tabs.activeTabs = [{ id: 7 }];
+    // **刻意不用 `rejectSendMessage`**：那条路走的是"没有接收方 → sendMessage 抛错"，
+    // 于是 `notifyAllTabs` 里那句 `reply?.ok === true` 根本不会被求值。把 `responder`
+    // 留成 null 时 sendMessage **兑现 undefined**——消息送达了、但没有任何页面确认，
+    // 这正是那句守卫唯一被真正判定的分支（把它改成无条件 `applied = true` 会恰好红在这里）。
+    expect(chromeStub.tabs.responder).toBe(null);
+
+    flip(hoverSwitch(), false);
+
+    await waitFor(async () => (await storedSettings()).hoverTranslate === false);
+    await waitFor(() => (status().textContent ?? '').includes('重新加载页面后生效'));
+    // "一个字都没回"**不算确认**：这里若说「即时生效」就是替页面许下一个它没做的承诺。
+    expect(status().textContent ?? '').not.toContain('即时生效');
+    expect(status().dataset.kind).toBe('ok');
+    expect(chromeStub.tabs.sent.length).toBe(1);
+  });
+
   it('「去浏览器设置」开的是 chrome://extensions/shortcuts（快捷键不能由扩展代改）', async () => {
     await seedSettings();
     await loadOptions();
