@@ -1249,6 +1249,8 @@ git commit -m "feat(engine): resolveEngine 在档案没有当前模型时返回�
 
 **1a. 新建 `tests/background/models.test.ts`**（纯 node 环境，不碰 `chrome`）：
 
+> ⚠ **超时那条用例只钉常量、不钉时序**（落地读数）：它是按**常量本身**推进定时器的（`advanceTimersByTimeAsync(MODELS_TIMEOUT_MS)`），所以把常量改成 `60_000` 会在断言处**直接红**（`expected 60000 to be 10000`），**不会**"等超时"。推论：这条用例**证明不了"abort 真的发生在 10 秒"**——把 `setTimeout(…, MODELS_TIMEOUT_MS)` 换成硬编码的别的数字，今天没有读数（行为由 abort 分支 + 那句超时文案共同覆盖）。可接受，但别把它当时序守卫；要真钉时序得用固定推进量（例如 `advanceTimersByTimeAsync(10_000)` 写死）+ 断言"10 秒前没有 abort"。
+
 ```ts
 // tests/background/models.test.ts
 /**
