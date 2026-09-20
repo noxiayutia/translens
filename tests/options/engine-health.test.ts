@@ -29,6 +29,7 @@ import {
   resetOptionsPage,
   rowOf,
   seedSettings,
+  setModel,
   settle,
   waitFor,
 } from './harness';
@@ -236,7 +237,7 @@ describe('状态点三态', () => {
     const editor = editorOf('__new__');
     fieldOf(editor, '.profile-label').value = '临时档案';
     fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
-    fieldOf(editor, '.profile-model-name').value = 'm';
+    setModel(editor, 'm');
     fieldOf(editor, '.profile-api-key').value = 'sk-draft';
     actionButton(editor, 'test-profile').click();
     await waitFor(() => status().dataset.kind === 'ok');

@@ -26,6 +26,11 @@
 //    （`ctx.settings()`，可能与存储已经不一致）；`renderFromStorage` 是"先 `ctx.reload()`
 //    重读存储、成功了再渲染"，并**返回是否真的刷新成功**。调用方只有在拿到 `true` 时才许宣称
 //    "列表已刷新"——这条没写下来的后果就是一个真出现过的 bug：刷新失败时列表没换、提示却说换了。
+//
+// ⚠ **临时状态（Task C1 引入、Task C4 清除）**：面板此刻仍是"一个模型名输入框"，由
+// `modelsFromSingleInput` 把它映射到 v4 的 `models` / `activeModel`。那层映射**有损**
+// （多模型清单会被压成一个），所以 C1 与 C4 之间**不许把本分支合进 release**。
+// C4 会把这个函数与那个输入框一起删掉，并有用例正面断言 `.profile-model-name` 不存在。
 import { getEngine, DEFAULT_ENGINE_ID } from '../../engines/registry';
 import { toEngineError, type EngineConfig, type Translator } from '../../engines/types';
 import {
@@ -125,6 +130,21 @@ function validateProfileForm(values: ProfileFormValues): string | null {
     return '接口地址必须用 https://；只有本机回环地址（localhost / 127.0.0.1 / ::1）可以用 http://';
   }
   return null;
+}
+
+/**
+ * **过渡读取映射**：单模型输入框里的那个模型名 = 整个清单。
+ *
+ * 存在的唯一理由：C1（数据模型 v4）与 C4（模型目录 UI）之间，既有的 12 处用例仍然按
+ * `.profile-model-name` 驱动面板。C4 把面板换成模型目录时，这个函数与那个输入框一起删掉。
+ *
+ * ⚠ **它是有损的**：档案里如果已经有多个模型，任何一次保存都会把它压成"输入框里那一个"。
+ * 所以 C1 **不许独立发布**（C4 落地前不许合进 release 分支）。
+ */
+function modelsFromSingleInput(value: string, existing: EngineProfile | undefined): { models: string[]; activeModel: string } {
+  const model = value.trim();
+  if (model.length === 0) return { models: [], activeModel: '' };
+  return { models: [model], activeModel: model };
 }
 
 interface HostPermissionResult {
@@ -248,7 +268,7 @@ function buildEditor(id: string, profile: EngineProfile | undefined): HTMLElemen
   modelField.append(element('span', 'lab', '模型名'), Object.assign(document.createElement('input'), {
     className: 'profile-model-name',
     type: 'text',
-    value: profile?.model ?? '',
+    value: profile?.activeModel ?? '',
     placeholder: 'gpt-4o-mini',
     autocomplete: 'off',
     spellcheck: false,
@@ -315,7 +335,7 @@ function buildProfileRow(ctx: SectionContext, id: string): HTMLElement {
   summary.dataset.action = 'toggle';
   summary.setAttribute('aria-expanded', String(expanded));
   const shownBaseUrl = profile !== undefined && profile.baseUrl.length > 0 ? profile.baseUrl : '未填接口地址';
-  const shownModel = profile !== undefined && profile.model.length > 0 ? profile.model : '未填模型名';
+  const shownModel = profile !== undefined && profile.activeModel.length > 0 ? profile.activeModel : '未选模型';
   const line = element('span', 'line');
   line.append(element('span', 'name', isNew ? '新档案（未保存）' : profile?.label ?? ''));
   if (!isNew && snapshot.engineId === id) {
@@ -449,13 +469,24 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
   let profiles: EngineProfile[];
   if (isNew) {
     savedId = createProfileId();
-    profiles = [...latest.profiles, { id: savedId, ...values }];
+    const lifted = modelsFromSingleInput(values.model, undefined);
+    profiles = [
+      ...latest.profiles,
+      { id: savedId, label: values.label, baseUrl: values.baseUrl, ...lifted, apiKey: values.apiKey },
+    ];
   } else {
     savedId = id;
     const existing = latest.profiles.find((profile) => profile.id === id);
     // Key 留空 = 保留存储里当前的那份（不是页面打开时的快照——整份覆盖的老坑同一个）。
     const apiKey = values.apiKey.trim().length > 0 ? values.apiKey : existing?.apiKey ?? '';
-    const nextProfile: EngineProfile = { id: savedId, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey };
+    const lifted = modelsFromSingleInput(values.model, existing);
+    const nextProfile: EngineProfile = {
+      id: savedId,
+      label: values.label,
+      baseUrl: values.baseUrl,
+      ...lifted,
+      apiKey,
+    };
     profiles = existing === undefined ? [...latest.profiles, nextProfile] : latest.profiles.map((p) => (p.id === id ? nextProfile : p));
   }
 
@@ -602,12 +633,20 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
   }
 
   // Key 输入框留空时测的是**存储里已存的**那份（和"保存"同一语义）；新草稿没存过就是空，
-  // 引擎会给出可行动的 AUTH 提示。
-  const storedKey = ctx.settings()?.profiles.find((profile) => profile.id === id)?.apiKey ?? '';
-  const apiKey = values.apiKey.trim().length > 0 ? values.apiKey : storedKey;
+  // 引擎会给出可行动的 AUTH 提示。取整个档案是因为清单也要从它推（见过渡映射）。
+  const storedProfile = ctx.settings()?.profiles.find((profile) => profile.id === id);
+  const apiKey = values.apiKey.trim().length > 0 ? values.apiKey : storedProfile?.apiKey ?? '';
   const { engine, config } = resolveEngine({
     engineId: id,
-    profiles: [{ id, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey }],
+    profiles: [
+      {
+        id,
+        label: values.label,
+        baseUrl: values.baseUrl,
+        ...modelsFromSingleInput(values.model, storedProfile),
+        apiKey,
+      },
+    ],
   });
 
   // 草稿行不落记录（`__new__` 既没有点可更新、也没有清理出口）：把 `null` 交给同一条路。
@@ -751,19 +790,34 @@ export const engineSection: Section = {
     profilesList.addEventListener('click', (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
-      if (target.classList.contains('profile-toggle-key')) {
-        toggleKeyVisibility(target);
+      // 动作要取自**最近的带 `data-action` 的祖先**，不能读 `event.target` 自己的：
+      // 行头是 `<button class="profile-summary">` **里面包着** `<span class="name">` /
+      // `<span class="meta">`，点在文字上时 target 是那些 span —— 读 target.dataset.action
+      // 会得到 undefined，于是"点名字没反应、只有点在按钮空白处才有反应"。
+      // 真机读数（临时探针，5 次点击）：4 次 `action="(none)"`，target 分别是
+      // `span.meta`/`span.grow`；页面只有 294 个节点、点一次 3~7ms，所以那不是性能问题。
+      //
+      // Key 显示/隐藏必须**先判**（它自己不带 `data-action`，但它整条支路都在这一个按钮上）：
+      // 交给 `toggleKeyVisibility` 的必须是那个按钮本身，不是它未来的子元素——文案与
+      // `aria-pressed` 写在按钮上，写到子元素上等于把按钮文字抹掉。
+      const keyToggle = target.closest<HTMLElement>('.profile-toggle-key');
+      if (keyToggle !== null) {
+        toggleKeyVisibility(keyToggle);
         return;
       }
+      const actionEl = target.closest<HTMLElement>('[data-action]');
+      const action = actionEl?.dataset.action ?? null;
       // 免费引擎那一行不在 `[data-profile-id]` 里，必须在行判断之前处理。
-      if (target.dataset.action === 'test-free') {
+      if (action === 'test-free') {
         runSafely(engineStatus, '测试连接失败', () => handleTestFreeEngine(ctx));
         return;
       }
       const row = target.closest('[data-profile-id]');
       if (!(row instanceof HTMLElement)) return;
+      // 动作元素必须落在这一行里，别让嵌套/无关的 `[data-action]` 串到别的行上。
+      if (actionEl === null || !row.contains(actionEl)) return;
       const id = row.dataset.profileId as string;
-      switch (target.dataset.action) {
+      switch (action) {
         case 'toggle':
           if (ctx.settings() === null) return;
           // 一次只展开一个：把上一个的编辑器摘掉这件事由 applyExpansion 做（就地，不重建列表）。

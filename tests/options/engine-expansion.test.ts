@@ -145,3 +145,62 @@ describe('展开就地更新：代价不随档案数增长', () => {
     expect(after[3].querySelector('.profile-editor')).not.toBeNull();
   });
 });
+
+/**
+ * 行头是 `<button class="profile-summary">` **里面包着** `<span class="name">` /
+ * `<span class="meta">` / `<span class="dot">`。用户点是点在**文字**上的，于是 `event.target`
+ * 是那些 span，不是按钮自己——动作必须从**最近的带 `data-action` 的祖先**上取。
+ *
+ * 真机读数（用户贴回来的临时探针，5 次点击）：
+ * ```
+ * target="span.meta"  action="(none)"  row="p-0a90…"  expandedBefore=1 expandedAfter=1 jsMs=0.3 frameMs=4.3
+ * target="span.grow"  action="(none)"  row="p-49e2…"  expandedBefore=1 expandedAfter=1 jsMs=0.3 frameMs=3.2
+ * target="span.meta"  action="(none)"  row="p-ccca…"  expandedBefore=1 expandedAfter=1 jsMs=0.4 frameMs=4.4
+ * target="span.meta"  action="(none)"  row="p-0a90…"  expandedBefore=1 expandedAfter=1 jsMs=0.3 frameMs=6.7
+ * target="button.profile-summary" action="toggle" row="p-ccca…" …nodes=294 layoutMs=0
+ * ```
+ * 5 次点击里 4 次 `action="(none)"`，页面只有 294 个节点、点一次 3~7ms——所以"很慢 / 有时候
+ * 没反应"**不是性能问题**：读 `target.dataset.action` 得到 `undefined`，`switch` 全部落空，
+ * 只有恰好点在按钮自己的空白边距（padding）上才生效。
+ */
+describe('点击委托：动作取自最近的 [data-action] 祖先，不是 event.target 自己', () => {
+  /** 行头里那块文字（`span.meta`）——真机上用户点的就是它。 */
+  function headTextOf(id: string): HTMLElement {
+    const text = rowOf(id).querySelector<HTMLElement>('.meta');
+    if (text === null) throw new Error(`档案行 ${id} 没有 .meta`);
+    return text;
+  }
+
+  it('点行头里的文字（span.meta）就展开——不是只有点在按钮空白处才有反应', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    const head = headTextOf('p-a');
+    // 先钉住"这确实是一次打在**子元素**上的点击"：它自己身上没有任何动作可读。
+    // 少了这两句，这条用例在有 bug 的实现下也可能因为"点到了别处"而变绿，读不出真东西。
+    expect(head.dataset.action).toBeUndefined();
+    expect(triggerOf('p-a').contains(head)).toBe(true);
+
+    head.click();
+    await settle();
+
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('连点行头文字两次 = 展开再收起（取值口径改了，toggle 语义不许跟着变）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    headTextOf('p-a').click();
+    await settle();
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+
+    // 第二次点在**同一个** span 上：展开后编辑器挂在行尾，行头结构没变，取法也不该变。
+    headTextOf('p-a').click();
+    await settle();
+    expect(editorOf('p-a')).toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');
+  });
+});

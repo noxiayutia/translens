@@ -29,6 +29,7 @@ import {
   bubble,
   chatResponse,
   chromeStub,
+  currentModel,
   editorOf,
   engineStatus,
   expand,
@@ -38,9 +39,11 @@ import {
   pick,
   profileRows,
   profileSeed,
+  profileWithModel,
   resetOptionsPage,
   rowOf,
   seedSettings,
+  setModel,
   settle,
   storedProfiles,
   storedSettings,
@@ -61,7 +64,7 @@ describe('设置页：初始化与列表渲染', () => {
       engineId: 'p-a',
       profiles: [
         profileSeed(),
-        profileSeed({ id: 'p-b', label: 'Ollama 本机', baseUrl: 'http://localhost:11434/v1', model: 'llama3' }),
+        profileWithModel('llama3', { id: 'p-b', label: 'Ollama 本机', baseUrl: 'http://localhost:11434/v1' }),
       ],
     });
     await loadOptions();
@@ -133,21 +136,31 @@ describe('设置页：初始化与列表渲染', () => {
     expect(key.value).toBe('sk-typed');
   });
 
-  it('展开已存在的档案不重放服务商模板：表单回填的是存过的地址与模型名', async () => {
+  it('展开已存在的档案不重放服务商模板：表单回填的是存过的地址与**当前选中的那个**模型名', async () => {
     // 名字里带「DeepSeek」、地址却是指向自建代理的档案。模板只该挂在下拉的 change 上：
     // 谁要是把 applyProviderTemplate() 挪进展开/渲染路径，用户手改的地址与模型名就会被
     // 悄悄覆盖回模板值——这里钉住"展开看到的就是存过的"。
+    //
+    // 清单**故意有两项且当前项不是第一项**（v4 的存储边界允许这种档案，C4 的模型目录也会造出它）：
+    // 面板回填的必须是 `activeModel` 那一个。只有一项、或两项恰好同序时，"读 activeModel" 与
+    // "读 models[0]" 的读数完全一样，这条守卫就成了恒真式（实测：把 `buildEditor` 的
+    // `profile?.activeModel ?? ''` 换成 `profile?.models[0] ?? ''`，对齐夹具下全绿）。
     await seedSettings({
       engineId: 'p-a',
       profiles: [
-        profileSeed({ label: '我的 DeepSeek', baseUrl: 'https://my-proxy.example/v1', model: 'deepseek-chat-selfhost' }),
+        profileSeed({
+          label: '我的 DeepSeek',
+          baseUrl: 'https://my-proxy.example/v1',
+          models: ['deepseek-chat', 'deepseek-chat-selfhost'],
+          activeModel: 'deepseek-chat-selfhost',
+        }),
       ],
     });
     await loadOptions();
 
     const editor = expand('p-a');
     expect(fieldOf(editor, '.profile-base-url').value).toBe('https://my-proxy.example/v1');
-    expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat-selfhost');
+    expect(currentModel(editor)).toBe('deepseek-chat-selfhost');
     // 展开不是"选模板"：下拉必须停在 custom，不许被按名字匹配翻成 deepseek。
     const provider = editor.querySelector('.profile-provider') as HTMLSelectElement;
     expect(provider.value).toBe('custom');
@@ -257,7 +270,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect(rowOf('__new__').textContent).toContain('新档案（未保存）');
     fieldOf(editor, '.profile-label').value = '我的接口';
     fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
-    fieldOf(editor, '.profile-model-name').value = 'gpt-4o';
+    setModel(editor, 'gpt-4o');
     fieldOf(editor, '.profile-api-key').value = 'sk-typed';
     actionButton(editor, 'save-profile').click();
 
@@ -267,7 +280,8 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
       id: expect.any(String),
       label: '我的接口',
       baseUrl: CUSTOM_BASE_URL,
-      model: 'gpt-4o',
+      models: ['gpt-4o'],
+      activeModel: 'gpt-4o',
       apiKey: 'sk-typed',
     });
     expect(typeof saved.id).toBe('string');
@@ -296,15 +310,14 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     provider.value = 'deepseek';
     provider.dispatchEvent(bubble('change'));
     expect(fieldOf(editor, '.profile-base-url').value).toBe('https://api.deepseek.com/v1');
-    expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat');
+    expect(currentModel(editor)).toBe('deepseek-chat');
     // 预设不越界：API Key 一个字符都不碰（那是用户自己的凭据）。
     expect(fieldOf(editor, '.profile-api-key').value).toBe('');
 
     // 用户手改模型名 → 下拉翻回 custom（别留着个说谎的「DeepSeek」），改动不会被预设覆盖。
-    fieldOf(editor, '.profile-model-name').value = 'deepseek-chat-v2';
-    fieldOf(editor, '.profile-model-name').dispatchEvent(bubble('input'));
+    setModel(editor, 'deepseek-chat-v2');
     expect(provider.value).toBe('custom');
-    expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat-v2');
+    expect(currentModel(editor)).toBe('deepseek-chat-v2');
 
     fieldOf(editor, '.profile-label').value = 'DeepSeek 备用';
     fieldOf(editor, '.profile-api-key').value = 'sk-ds';
@@ -313,7 +326,11 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect((await storedProfiles())[0]).toMatchObject({
       label: 'DeepSeek 备用',
       baseUrl: 'https://api.deepseek.com/v1',
-      model: 'deepseek-chat-v2',
+      // C1 的过渡映射是**有损的**：输入框里那一个模型名 = 整个清单，所以这里只剩一个。
+      // C4 把输入框换成模型目录后，"加一个模型"是**追加**，此处期望变成
+      // `['deepseek-chat', 'deepseek-chat-v2']`（形状变化由 C4 一并改）。
+      models: ['deepseek-chat-v2'],
+      activeModel: 'deepseek-chat-v2',
       apiKey: 'sk-ds',
     });
   });
@@ -326,11 +343,12 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     let editor = expand('p-a');
     expect(fieldOf(editor, '.profile-label').value).toBe('我的 DeepSeek');
     fieldOf(editor, '.profile-label').value = '改名了';
-    fieldOf(editor, '.profile-model-name').value = 'deepseek-reasoner';
+    setModel(editor, 'deepseek-reasoner');
     actionButton(editor, 'save-profile').click();
     await waitFor(async () => ((await storedProfiles())[0]?.label === '改名了'));
     let [stored] = await storedProfiles();
-    expect(stored.model).toBe('deepseek-reasoner');
+    expect(stored.activeModel).toBe('deepseek-reasoner');
+    expect(stored.models).toContain('deepseek-reasoner');
     // 核心隐私语义：留空不是"清空"，是"不动"——存储里必须还是原 Key。
     expect(stored.apiKey).toBe('sk-old');
 
@@ -381,7 +399,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     // 反面先行：公网 http:// 必须当场被拒。没有这半边，"一律放行 http"的实现也能让正面通过。
     fieldOf(editor, '.profile-label').value = '坏地址';
     fieldOf(editor, '.profile-base-url').value = 'http://example.com/v1';
-    fieldOf(editor, '.profile-model-name').value = 'm';
+    setModel(editor, 'm');
     actionButton(editor, 'save-profile').click();
     await waitFor(() => engineStatus().dataset.kind === 'err');
     expect(engineStatus().textContent).toContain('必须用 https://');
@@ -392,13 +410,14 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     // UI 层哪天误拒它，用户就没法在本机配模型——这里钉住"存得下去、落盘原样、不报错"。
     fieldOf(editor, '.profile-label').value = 'Ollama 本机';
     fieldOf(editor, '.profile-base-url').value = 'http://localhost:11434/v1';
-    fieldOf(editor, '.profile-model-name').value = 'qwen2.5';
+    setModel(editor, 'qwen2.5');
     actionButton(editor, 'save-profile').click();
     await waitFor(() => engineStatus().dataset.kind === 'ok');
     expect(engineStatus().textContent).not.toContain('必须用 https://');
     const [stored] = await storedProfiles();
     expect(stored.baseUrl).toBe('http://localhost:11434/v1');
-    expect(stored.model).toBe('qwen2.5');
+    expect(stored.activeModel).toBe('qwen2.5');
+    expect(stored.models).toEqual(['qwen2.5']);
     // 授权也按回环 origin 申请，恰好一次。
     expect(chromeStub.permissions.requests).toEqual([['http://localhost:11434/*']]);
   });
@@ -411,7 +430,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     let editor = editorOf('__new__');
     fieldOf(editor, '.profile-label').value = '例子';
     fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
-    fieldOf(editor, '.profile-model-name').value = 'm';
+    setModel(editor, 'm');
     fieldOf(editor, '.profile-api-key').value = 'sk-x';
     actionButton(editor, 'save-profile').click();
     await waitFor(() => engineStatus().dataset.kind === 'ok');
@@ -434,16 +453,16 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     await seedSettings({
       engineId: 'p-a',
       profiles: [
-        profileSeed({ id: 'p-a', label: '档案A', baseUrl: 'https://a1.example/v1', model: 'model-a', apiKey: 'sk-a' }),
-        profileSeed({ id: 'p-b', label: '档案B', baseUrl: 'https://b2.example/v1', model: 'model-b', apiKey: 'sk-b' }),
+        profileWithModel('model-a', { id: 'p-a', label: '档案A', baseUrl: 'https://a1.example/v1', apiKey: 'sk-a' }),
+        profileWithModel('model-b', { id: 'p-b', label: '档案B', baseUrl: 'https://b2.example/v1', apiKey: 'sk-b' }),
       ],
     });
     await loadOptions();
 
     const editor = expand('p-b');
-    fieldOf(editor, '.profile-model-name').value = 'model-b-edited';
+    setModel(editor, 'model-b-edited');
     actionButton(editor, 'save-profile').click();
-    await waitFor(async () => ((await storedProfiles())[1]?.model === 'model-b-edited'));
+    await waitFor(async () => ((await storedProfiles())[1]?.activeModel === 'model-b-edited'));
 
     expect(engineStatus().dataset.kind).toBe('ok');
     // 恰好一次、参数是 b2——不是 a1 的 origin，也不是两个都申请。
@@ -456,16 +475,16 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     await seedSettings({
       engineId: 'p-a',
       profiles: [
-        profileSeed({ id: 'p-a', label: '档案A', baseUrl: 'https://a1.example/v1', model: 'model-a', apiKey: 'sk-a' }),
-        profileSeed({ id: 'p-b', label: '档案B', baseUrl: 'https://b2.example/v1', model: 'model-b', apiKey: 'sk-b' }),
+        profileWithModel('model-a', { id: 'p-a', label: '档案A', baseUrl: 'https://a1.example/v1', apiKey: 'sk-a' }),
+        profileWithModel('model-b', { id: 'p-b', label: '档案B', baseUrl: 'https://b2.example/v1', apiKey: 'sk-b' }),
       ],
     });
     await loadOptions();
 
     const editor = expand('p-a');
-    fieldOf(editor, '.profile-model-name').value = 'model-a-edited';
+    setModel(editor, 'model-a-edited');
     actionButton(editor, 'save-profile').click();
-    await waitFor(async () => ((await storedProfiles())[0]?.model === 'model-a-edited'));
+    await waitFor(async () => ((await storedProfiles())[0]?.activeModel === 'model-a-edited'));
 
     expect(engineStatus().dataset.kind).toBe('ok');
     expect(chromeStub.permissions.requests).toEqual([['https://a1.example/*']]);
@@ -480,7 +499,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     const editor = editorOf('__new__');
     fieldOf(editor, '.profile-label').value = '例子';
     fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
-    fieldOf(editor, '.profile-model-name').value = 'm';
+    setModel(editor, 'm');
     fieldOf(editor, '.profile-api-key').value = 'sk-typed';
     actionButton(editor, 'save-profile').click();
 
@@ -647,14 +666,14 @@ describe('设置页：测试连接（按档案，测的是正在编辑的那一�
     vi.stubGlobal('fetch', fetchMock);
     chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
     await seedSettings({
-      profiles: [profileSeed({ apiKey: 'sk-stored', model: 'old-model' })],
+      profiles: [profileWithModel('old-model', { apiKey: 'sk-stored' })],
       engineId: 'p-a',
       targetLang: 'zh-Hans',
     });
     await loadOptions();
 
     const editor = expand('p-a');
-    fieldOf(editor, '.profile-model-name').value = 'new-model';
+    setModel(editor, 'new-model');
     actionButton(editor, 'test-profile').click();
     await waitFor(() => engineStatus().dataset.kind === 'ok');
 

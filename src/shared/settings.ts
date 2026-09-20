@@ -10,19 +10,27 @@ export interface SiteRule {
 }
 
 /**
- * 一份服务商档案 = 一个「OpenAI 兼容」接口的完整凭据（地址 + 模型 + Key）加一个用户自己起的名字。
+ * 一份服务商档案 = 一个「OpenAI 兼容」接口的完整凭据（地址 + **模型清单** + Key）加一个用户自己起的名字。
  *
  * 动机：设置里今天只有一份 `{apiKey, baseUrl, model}`，想同时用 DeepSeek、OpenAI、硅基流动、
  * Ollama 的人只能在三个框里来回改。改成档案列表后，弹窗的「翻译引擎」下拉直接按名字切换。
  *
+ * v4 起 `model: string` 变成 `models: string[]` + `activeModel: string`：同一家接口的两个模型
+ * 过去只能复制成两份档案（用户现在的档案里就有这种重复）。
+ *
  * `id` 是档案的**唯一引用键**（`engineId` 存的就是它）：新建时生成（{@link createProfileId}），
  * 之后不变。**不要拿 label 当 id**——名字是随便改的，改了名字不该把正在用的选择弄丢。
+ *
+ * `activeModel` 是**用户/界面明确选定**的那一个（不是"默认"）：它必须是 `models` 的成员或 `''`，
+ * 见 {@link pickProfile} 的读取边界。`''` = 还没选——此时翻译要给可读错误、**零请求**，
+ * 绝不允许读取层替用户挑一个（那等于"用户没选，插件选了，下一次翻译就用了它"）。
  */
 export interface EngineProfile {
   id: string;
   label: string;
   baseUrl: string;
-  model: string;
+  models: string[];
+  activeModel: string;
   apiKey: string;
 }
 
@@ -131,8 +139,8 @@ export interface Settings {
 
 export const SETTINGS_KEY = 'jinyi:settings';
 
-/** 当前设置 schema 版本；改动字段语义时递增。 */
-export const CURRENT_VERSION = 3;
+/** 当前设置 schema 版本；改动字段语义时递增。v4：`EngineProfile.model` → `models` + `activeModel`。 */
+export const CURRENT_VERSION = 4;
 
 /**
  * v2 → v3 迁移产物固定用这个 id（老 `engineId === 'openai-compat'` 也迁到它）。
@@ -253,6 +261,24 @@ function pickGlossary(value: unknown): Term[] {
 }
 
 /**
+ * 模型清单的读取：只收非空字符串、逐条 trim、按首次出现去重。
+ *
+ * **不截断**（没有条数上限）：有些网关的 `/models` 列几百个，截断等于替用户丢掉他的模型。
+ * 代价是清单可能很长——那是界面的事（可滚动），不是存储边界的事。
+ */
+function pickModels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'string') continue;
+    const name = raw.trim();
+    if (name.length === 0 || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out;
+}
+
+/**
  * 单个档案的读取：逐字段校验，坏条目丢掉而不是让整页崩掉（`pickSiteRules` 的老规矩）。
  *
  * - 没有合法 `id` 的条目**必须**丢：`engineId` 按 id 引用档案，没有 id 的档案无法被指向，
@@ -263,6 +289,11 @@ function pickGlossary(value: unknown): Term[] {
  *   （v2 时代单份配置的"非法退回默认值"策略在档案列表下不再成立：那时地址与 Key 的
  *   对应关系只有一份，现在每份 Key 都属于它自己那条地址。）
  * - label 空白按缺失处理，界面上才不会出现一排选不出名字的条目。
+ * - **`activeModel` 认不出来（不是 `models` 的成员 / 空 / 缺失 / 非字符串）时置 `''`**：
+ *   §3.1 的"取 `models` 最后一个"是**删除动作**的自愈（用户刚删掉当前模型，他显然还想用这个
+ *   档案）；读取边界不同——这里替用户挑一个，就是"他没选，插件选了"。这条不变量（
+ *   `activeModel === '' || models.includes(activeModel)`）因此在任何数据形状下都成立。
+ * - 旧字段 `model` **不再读**：真相只留一份（先例是 `engineConfig` / `providerPreset`）。
  */
 function pickProfile(value: unknown): EngineProfile | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -274,11 +305,14 @@ function pickProfile(value: unknown): EngineProfile | null {
     const trimmed = raw.baseUrl.trim();
     if (isAllowedBaseUrl(trimmed)) baseUrl = trimmed;
   }
+  const models = pickModels(raw.models);
+  const wanted = pickString(raw.activeModel, '').trim();
   return {
     id: raw.id,
     label: label.trim().length > 0 ? label : FALLBACK_PROFILE_LABEL,
     baseUrl,
-    model: pickString(raw.model, ''),
+    models,
+    activeModel: models.includes(wanted) ? wanted : '',
     apiKey: pickString(raw.apiKey, ''),
   };
 }
@@ -348,7 +382,9 @@ export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>)
   if (profile === undefined) return { engine: getEngine(settings.engineId), config: {} };
   return {
     engine: getEngine(OPENAI_COMPAT_ENGINE_ID),
-    config: { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.model },
+    // 送给引擎的仍然是 `EngineConfig.model`（引擎层不必知道"清单"这件事）；
+    // 它取的是**用户选定的那一个**。空串时引擎自己会在发请求前抛出可行动的 AUTH。
+    config: { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.activeModel },
   };
 }
 
@@ -401,9 +437,11 @@ function resolveArea(area?: StorageArea): StorageArea {
  *
  * **v2 → v3：单份 `engineConfig` 折成一个档案。**见 `foldLegacyEngineConfig`。
  *
- * 迁移按 `storedVersion` 分支、**只在 `loadSettings` 里发生**：v3 数据从版本闸门
- * （`storedVersion >= CURRENT_VERSION`）直接原样返回，不会被重复折叠——幂等性靠的就是
- * 这一道闸门加上"折叠只在 v2 形状上发生"。
+ * **v3 → v4：每个档案的单 `model` 抬起成 `models` + `activeModel`。**见 `liftProfileModels`。
+ *
+ * 迁移按 `storedVersion` 分支、**只在 `loadSettings` 里发生**：v4 数据从版本闸门
+ * （`storedVersion >= CURRENT_VERSION`）直接原样返回，不会被重复抬起——幂等性靠的就是
+ * 这一道闸门加上"每一步只在它自己那一版及更老的形状上发生"。
  */
 function migrate(raw: unknown, storedVersion: number): unknown {
   if (storedVersion >= CURRENT_VERSION) return raw;
@@ -415,7 +453,35 @@ function migrate(raw: unknown, storedVersion: number): unknown {
   if (storedVersion < 3) {
     record = foldLegacyEngineConfig(record);
   }
+  if (storedVersion < 4) {
+    record = liftProfileModels(record);
+  }
   return record;
+}
+
+/**
+ * v3 → v4 的抬起：每个档案的单 `model` 变成 `models: [model]` + `activeModel: model`；
+ * 空 / 缺失 → `models: []` + `activeModel: ''`。
+ *
+ * 两条刻意的做法：
+ * 1. **旧字段 `model` 从产物里删掉**（与 `foldLegacyEngineConfig` 删 `engineConfig` /
+ *    `providerPreset` 同一条纪律）：`mergeSettings` 本来也不读它，但存储里留着会让"下次迁移"
+ *    的判据变含糊，而 `saveSettings` 是整份覆盖写——残留字段会被一直带着走。
+ * 2. **v2 数据也走这里**：`foldLegacyEngineConfig` 产出的档案带的是 `model`，所以 v1/v2/v3 三条
+ *    路径都在这一步收敛到同一形状（v1/v2 先折叠、再抬起，顺序由 `migrate` 保证）。
+ */
+function liftProfileModels(record: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(record.profiles)) return record;
+  return {
+    ...record,
+    profiles: record.profiles.map((raw) => {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+      const lifted = { ...(raw as Record<string, unknown>) };
+      const model = typeof lifted.model === 'string' ? lifted.model.trim() : '';
+      delete lifted.model;
+      return { ...lifted, models: model.length > 0 ? [model] : [], activeModel: model };
+    }),
+  };
 }
 
 /**

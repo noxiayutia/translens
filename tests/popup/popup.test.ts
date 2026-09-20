@@ -226,7 +226,7 @@ describe('弹窗初始化', () => {
       targetLang: 'ja',
       engineId: 'p-deep',
       profiles: [
-        { id: 'p-deep', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-test' },
+        { id: 'p-deep', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat'], activeModel: 'deepseek-chat', apiKey: 'sk-test' },
       ],
     });
     await loadPopup();
@@ -471,7 +471,8 @@ describe('引擎提示区（判据看的是 resolveEngine 解析出来的那一�
       id: 'p-1',
       label: '我的接口',
       baseUrl: 'https://api.test.example/v1',
-      model: 'm',
+      models: ['m'],
+      activeModel: 'm',
       apiKey: 'sk-test',
       ...over,
     };
@@ -588,8 +589,8 @@ describe('语言与引擎选择的持久化', () => {
     await seedSettings({
       engineId: 'google',
       profiles: [
-        { id: 'p-a', label: 'A 家', baseUrl: 'https://a.example/v1', model: 'ma', apiKey: 'sk-keep-a' },
-        { id: 'p-b', label: 'B 家', baseUrl: 'https://b.example/v1', model: 'mb', apiKey: 'sk-keep-b' },
+        { id: 'p-a', label: 'A 家', baseUrl: 'https://a.example/v1', models: ['ma'], activeModel: 'ma', apiKey: 'sk-keep-a' },
+        { id: 'p-b', label: 'B 家', baseUrl: 'https://b.example/v1', models: ['mb'], activeModel: 'mb', apiKey: 'sk-keep-b' },
       ],
     });
     await loadPopup();

@@ -164,7 +164,7 @@ describe('runtime.onMessage 消息路由', () => {
     const configFor = (apiKey: string) => ({
       engineId: 'p-open',
       profiles: [
-        { id: 'p-open', label: '我的 OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey },
+        { id: 'p-open', label: '我的 OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o-mini'], activeModel: 'gpt-4o-mini', apiKey },
       ],
     });
 
@@ -198,7 +198,8 @@ describe('runtime.onMessage 消息路由', () => {
       id,
       label: id,
       baseUrl: 'https://api.example.com/v1',
-      model,
+      models: [model],
+      activeModel: model,
       apiKey,
     });
 
@@ -242,7 +243,7 @@ describe('runtime.onMessage 消息路由', () => {
     await useSettings({
       engineId: 'p-new',
       profiles: [
-        { id: 'p-new', label: '新伙伴', baseUrl: 'https://never-granted.example/v1', model: 'm', apiKey: 'sk-x' },
+        { id: 'p-new', label: '新伙伴', baseUrl: 'https://never-granted.example/v1', models: ['m'], activeModel: 'm', apiKey: 'sk-x' },
       ],
     });
 
@@ -267,7 +268,7 @@ describe('runtime.onMessage 消息路由', () => {
     await useSettings({
       engineId: 'p-open',
       profiles: [
-        { id: 'p-open', label: '我的 OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: '' },
+        { id: 'p-open', label: '我的 OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o-mini'], activeModel: 'gpt-4o-mini', apiKey: '' },
       ],
     });
 

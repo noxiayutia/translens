@@ -22,7 +22,8 @@ function profile(over: Partial<EngineProfile> = {}): EngineProfile {
     id: 'p1',
     label: '我的 DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
+    models: ['deepseek-chat'],
+    activeModel: 'deepseek-chat',
     apiKey: 'sk-keep',
     ...over,
   };
@@ -108,11 +109,11 @@ describe('mergeSettings', () => {
       expect(mergeSettings({ profiles: [profile({ label: 42 as unknown as string })] }).profiles[0].label).toBe('我的接口');
     });
 
-    it('apiKey / model 缺失或脏值补空串，不会凭空长出一个 Key', () => {
+    it('apiKey 缺失或脏值补空串；旧 model 字段不再读，v4 的 models / activeModel 都补空', () => {
       const merged = mergeSettings({
         profiles: [{ id: 'p', apiKey: null, model: 7 }] as unknown as EngineProfile[],
       });
-      expect(merged.profiles[0]).toEqual({ id: 'p', label: '我的接口', baseUrl: '', model: '', apiKey: '' });
+      expect(merged.profiles[0]).toEqual({ id: 'p', label: '我的接口', baseUrl: '', models: [], activeModel: '', apiKey: '' });
     });
   });
 
@@ -123,6 +124,20 @@ describe('mergeSettings', () => {
     } as unknown as Record<string, unknown>);
     expect('engineConfig' in merged).toBe(false);
     expect('providerPreset' in merged).toBe(false);
+  });
+
+  it('v4 起 model 不再是档案字段：脏输入里出现也不会被带出来', () => {
+    const merged = mergeSettings({
+      profiles: [{ id: 'p', model: 'ghost', models: ['real'], activeModel: 'real' }],
+    });
+    expect(merged.profiles[0]).toEqual({
+      id: 'p',
+      label: '我的接口',
+      baseUrl: '',
+      models: ['real'],
+      activeModel: 'real',
+      apiKey: '',
+    });
   });
 
   it('版本号必须能原样读回（迁移要靠它判断来源版本）', () => {
@@ -254,7 +269,7 @@ describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + �
   it('多档案时各解析各的：命中的那份胜出，不混字段', () => {
     const { engine, config } = resolveEngine({
       engineId: 'p2',
-      profiles: [profile(), profile({ id: 'p2', apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' })],
+      profiles: [profile(), profile({ id: 'p2', apiKey: 'sk-b', baseUrl: 'https://b.example/v1', models: ['m2'], activeModel: 'm2' })],
     });
     expect(engine.id).toBe('openai-compat');
     expect(config).toEqual({ apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' });
@@ -278,6 +293,14 @@ describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + �
     await expect(
       engine.translate({ texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal }, config),
     ).rejects.toThrow(/API Key/);
+  });
+
+  it('config.model 取的是 activeModel，不是清单里的其它项', () => {
+    const { config } = resolveEngine({
+      engineId: 'p1',
+      profiles: [profile({ models: ['a', 'b', 'c'], activeModel: 'b' })],
+    });
+    expect(config.model).toBe('b');
   });
 });
 
@@ -306,7 +329,8 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
         id: LEGACY_PROFILE_ID,
         label: 'DeepSeek',
         baseUrl: 'https://api.deepseek.com/v1',
-        model: 'deepseek-chat',
+        models: ['deepseek-chat'],
+        activeModel: 'deepseek-chat',
         apiKey: 'sk-ds',
       },
     ]);
@@ -351,7 +375,7 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
     await area.set({ [SETTINGS_KEY]: { version: 2, engineId: 'openai-compat', engineConfig: null } });
     const settings = await loadSettings(area);
     expect(settings.profiles).toEqual([
-      { id: LEGACY_PROFILE_ID, label: '我的接口', baseUrl: '', model: '', apiKey: '' },
+      { id: LEGACY_PROFILE_ID, label: '我的接口', baseUrl: '', models: [], activeModel: '', apiKey: '' },
     ]);
     expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
   });
@@ -374,7 +398,8 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
         id: LEGACY_PROFILE_ID,
         label: 'OpenAI',
         baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4o-mini',
+        models: ['gpt-4o-mini'],
+        activeModel: 'gpt-4o-mini',
         apiKey: 'sk-oai',
       },
     ]);
@@ -402,13 +427,32 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
       [SETTINGS_KEY]: {
         version: 3,
         engineId: 'p-a',
-        profiles: [profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })],
+        // ⚠ 这里**必须**是 v3 字面量（单 `model`），不能用顶部那个 v4 形状的 `profile()` 夹具。
+        // `profile()` 产出的是带 `models` / `activeModel`、**没有** `model` 的档案；拿它种一份
+        // `version: 3` 的数据等于伪造一份"v3 里不可能存在"的形状——`liftProfileModels` 会照实
+        // 读成"这个档案没有模型"，于是这条用例仍会绿，但它想钉住的"残留 engineConfig 不再折叠"
+        // 已经被 v3 → v4 的抬起改写成另一件事了（旧写法实测读数：`activeModel: ''` / `models: []`）。
+        profiles: [
+          { id: 'p-a', label: '手工档案', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-a' },
+        ],
         engineConfig: { apiKey: 'sk-ghost', baseUrl: 'https://ghost.example/v1', model: 'ghost' },
         providerPreset: 'ollama',
       },
     });
     const settings = await loadSettings(area);
-    expect(settings.profiles).toEqual([profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })]);
+    // v3 的档案读出来就是 v4 形状：单 model 抬成清单 + 当前模型，Key / 地址 / 名字一字不差。
+    // 幽灵 engineConfig 若被折叠，这里会变成一份 label 为「Ollama（本机）」、Key 为 `sk-ghost`
+    // 的 legacy 档案——那才是这条用例真正守着的东西。
+    expect(settings.profiles).toEqual([
+      {
+        id: 'p-a',
+        label: '手工档案',
+        baseUrl: 'https://api.deepseek.com/v1',
+        models: ['deepseek-chat'],
+        activeModel: 'deepseek-chat',
+        apiKey: 'sk-a',
+      },
+    ]);
     expect(settings.engineId).toBe('p-a');
   });
 
@@ -430,6 +474,145 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
     expect(settings.displayMode).toBe('bilingual');
     expect(settings.concurrency).toBe(5);
     expect(settings.glossary).toEqual([{ from: 'DSH', to: 'DeepSeek Harness' }]);
+  });
+});
+
+describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
+  /**
+   * 种一份 v3 形状的设置再按当前代码读出来。
+   * 注意 `MemoryStorage` 的构造参数是**配额选项**，不是初始数据——种数据一律走 `area.set`。
+   *
+   * ⚠ **这里不能给 `model` 写默认参数**（计划原文是 `model: unknown = 'deepseek-chat'`，逐字跑
+   * 实测红）：默认参数会把 `loadV3(undefined)` 悄悄换回 `'deepseek-chat'`，于是"整个缺失"那
+   * 一半永远种不进去——它测的还是"有 model"，只是看起来像在测缺失。缺省值由调用方显式传。
+   *
+   * `undefined` = **不写 `model` 键**（标题里的"整个缺失"），不是"写一个 undefined 进去"。
+   */
+  async function loadV3(model: unknown) {
+    const stored: Record<string, unknown> = {
+      id: 'p1',
+      label: '我的 DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-keep',
+    };
+    if (model !== undefined) stored.model = model;
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 3,
+        engineId: 'p1',
+        profiles: [stored],
+      },
+    });
+    return { area, loaded: await loadSettings(area) };
+  }
+
+  it('model 有值 → models:[model] + activeModel:model，且 Key / 地址 / 名字一字不差', async () => {
+    const { loaded } = await loadV3('deepseek-chat');
+
+    expect(loaded.profiles[0]).toEqual({
+      id: 'p1',
+      label: '我的 DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      models: ['deepseek-chat'],
+      activeModel: 'deepseek-chat',
+      apiKey: 'sk-keep',
+    });
+    // 读完被标成当前版本（迁移标记），但存储里那份**没被动过**：迁移只发生在读的那一刻。
+    expect(loaded.version).toBe(CURRENT_VERSION);
+  });
+
+  it('model 是空串或整个缺失 → models:[] + activeModel:""（不是"没有这两个字段"）', async () => {
+    for (const model of ['', undefined]) {
+      const { loaded } = await loadV3(model);
+      expect([model, loaded.profiles[0].models, loaded.profiles[0].activeModel]).toEqual([model, [], '']);
+    }
+  });
+
+  it('model 首尾空白被 trim 掉再进清单（与 pickModels 同一判据）', async () => {
+    const { loaded } = await loadV3('  deepseek-chat  ');
+    expect(loaded.profiles[0].models).toEqual(['deepseek-chat']);
+    expect(loaded.profiles[0].activeModel).toBe('deepseek-chat');
+  });
+
+  it('v1 数据一次走三步：displayMode 冻结值迁移 + 折叠 + 抬起（三条路径收敛到同一形状）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 1,
+        displayMode: 'bilingual',
+        engineId: 'openai-compat',
+        providerPreset: 'deepseek',
+        engineConfig: { apiKey: 'sk-ds', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+      },
+    });
+    const loaded = await loadSettings(area);
+
+    expect(loaded.displayMode).toBe('translated-only');
+    expect(loaded.engineId).toBe(LEGACY_PROFILE_ID);
+    expect(loaded.profiles).toEqual([
+      {
+        id: LEGACY_PROFILE_ID,
+        label: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        models: ['deepseek-chat'],
+        activeModel: 'deepseek-chat',
+        apiKey: 'sk-ds',
+      },
+    ]);
+  });
+
+  it('幂等：v4 数据读回不再变，而且写回存储后**没有 model 字段**（旧字段不残留）', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        engineId: 'p1',
+        // 脏输入里塞一个旧字段：`pickProfile` 不读它，`saveSettings` 也不该把它带回存储。
+        profiles: [{ ...profile(), model: 'ghost' }],
+      },
+    });
+    const loaded = await loadSettings(area);
+    expect(loaded.profiles[0]).toEqual(profile());
+
+    await saveSettings(loaded, area);
+    const raw = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY] as { profiles: Array<Record<string, unknown>> };
+    expect(Object.keys(raw.profiles[0]).sort()).toEqual(['activeModel', 'apiKey', 'baseUrl', 'id', 'label', 'models']);
+  });
+});
+
+describe('models / activeModel 的反序列化边界', () => {
+  /** 种一份 v4 形状（`version` 就是当前版本，所以不触发任何迁移）。 */
+  async function loadWith(value: Record<string, unknown>) {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: CURRENT_VERSION,
+        engineId: 'p1',
+        profiles: [{ id: 'p1', label: 'x', baseUrl: 'https://a.example/v1', apiKey: 'sk', ...value }],
+      },
+    });
+    return loadSettings(area);
+  }
+
+  it('models 非数组当空；条目里的非字符串 / 空串 / 重复项一律丢掉，首尾空白 trim', async () => {
+    const loaded = await loadWith({ models: ['  a  ', 'a', '', 7, null, 'b', 'b', {}], activeModel: 'a' });
+    expect(loaded.profiles[0].models).toEqual(['a', 'b']);
+    // 非数组当空（同一判据的另一半）。
+    expect((await loadWith({ models: 'a,b' })).profiles[0].models).toEqual([]);
+  });
+
+  it('activeModel 不是成员（含空串 / 缺失 / 非字符串）→ 置空，**不替用户挑一个**', async () => {
+    for (const activeModel of ['c', '', undefined, 7]) {
+      const loaded = await loadWith({ models: ['a', 'b'], activeModel });
+      // 关键的一半：不许退化成 `models` 的最后一项——那是"用户没选、插件替他选了"。
+      expect([activeModel, loaded.profiles[0].activeModel]).toEqual([activeModel, '']);
+    }
+  });
+
+  it('activeModel 是成员时原样保留（正面半边）', async () => {
+    const loaded = await loadWith({ models: ['a', 'b'], activeModel: 'b' });
+    expect(loaded.profiles[0].activeModel).toBe('b');
   });
 });
 
@@ -500,7 +683,7 @@ describe('loadUiSettings（内容脚本的投影）', () => {
       expect(item).not.toHaveProperty('apiKey');
     }
     // 其余字段照常带出（弹窗/内容脚本要看 label、id、地址、模型）。
-    expect(ui.profiles[1]).toEqual({ id: 'p2', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' });
+    expect(ui.profiles[1]).toEqual({ id: 'p2', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat'], activeModel: 'deepseek-chat' });
     expect(ui.engineId).toBe('p2');
     expect(ui.targetLang).toBe(DEFAULT_SETTINGS.targetLang);
     const json = JSON.stringify(ui);

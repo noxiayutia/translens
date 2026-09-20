@@ -40,9 +40,40 @@ export function resetOptionsPage(): void {
   chromeStub = installChromeStub();
 }
 
-/** 档案的种子形状；用例只覆盖自己在意的那几个字段。 */
+/** 档案的种子形状（v4）；用例只覆盖自己在意的那几个字段。 */
 export function profileSeed(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return { id: 'p-a', label: '我的 DeepSeek', baseUrl: CUSTOM_BASE_URL, model: 'deepseek-chat', apiKey: 'sk-a', ...over };
+  return {
+    id: 'p-a',
+    label: '我的 DeepSeek',
+    baseUrl: CUSTOM_BASE_URL,
+    models: ['deepseek-chat'],
+    activeModel: 'deepseek-chat',
+    apiKey: 'sk-a',
+    ...over,
+  };
+}
+
+/** 带一个指定模型的档案种子（绝大多数字段用例只关心"这个档案用哪个模型"）。 */
+export function profileWithModel(model: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return profileSeed({ models: [model], activeModel: model, ...over });
+}
+
+/**
+ * 把某一行的模型设成 `model`——**编辑面板里"改模型"这件事的唯一夹具入口**。
+ *
+ * 为什么要有这层：模型 UI 在单元 C 里换过一次形状（C1 还是"一个模型名输入框"，C4 换成模型目录
+ * 清单），而十几条既有用例要表达的是同一件事——"把这一行的模型改成 X"。形状写在十几处，
+ * 形状一换就是十几处一起改、而且很容易顺手改弱断言；写在一处，C4 只改这一个函数的实现。
+ */
+export function setModel(editor: Element, model: string): void {
+  const input = fieldOf(editor, '.profile-model-name');
+  input.value = model;
+  input.dispatchEvent(bubble('input'));
+}
+
+/** 读回"这一行现在的模型"（C1：输入框的值；C4：清单里带 `data-current` 的那一项）。 */
+export function currentModel(editor: Element): string {
+  return fieldOf(editor, '.profile-model-name').value;
 }
 
 export function pick<T extends HTMLElement>(id: string): T {
