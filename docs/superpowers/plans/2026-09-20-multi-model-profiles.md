@@ -144,6 +144,7 @@
     - `runSafely`：`src/options/dom.ts:62` / `src/popup/popup.ts:270`；
     - `fillSelect`：`src/options/dom.ts:37` / `src/popup/popup.ts:46`。
     写法示例："**弹窗的** `renderEngineHint`（`src/popup/popup.ts:230`）"。片段块的首行标记本来就带路径，但**正文里**提到时也要带——正文才是执行者读的那一层。
+16. **改一个控件名 = 一次全仓文案排查。** 把按钮从「保存档案」改成「保存」之后，**两处别处的文案变成了指向不存在控件的假话**（`src/options/options.html` 隐私区那句、`src/options/sections/engine.ts` 的 `deniedHint` 里"再点一次「保存档案」"）。仓里对此有明文纪律（`options.test.ts` 里那条"文案不许指着一个已经不存在的东西"）。做法：改名前先跑一次 `git grep -n '「旧名字」'`（含 `src/options/options.html`、各 `sections/*.ts` 的状态行与提示语、README），改完再跑一次确认清零；**注释里也顺手改**（不强制，但别留在同一个函数旁边）。这条是本单元真踩过的：`deniedHint` 那句话是**用户真会看到**的提示。
 
 ### 附：DOM 身份断言盲区的清理账（`e9f7dd5`，写在这里防止后人夸大）
 
@@ -214,7 +215,9 @@
 >
 > **落地实测（`35488b2`，本 Task 已实现并提交）**：三条用例与本节代码一致；实现者另加了一条**纯加强**的身份断言（`after.slice(0, 3).map((row, index) => row === before[index])` → `[true, true, true]`），并把本节原来那句"前三行还是原来那三个节点"的**期望红**纠正成真报文。**本节已按落地现实改过**（Step 1 的注释、Step 2 的期望红、Step 6 的两行变异机制），改的就是同一件事：**身份读数只能来自 `toBe` / `===`，`toEqual` 对 DOM 元素是结构比较**（已写进「硬规矩」）。下面「落地读数表」里 C0 那两行仍以命令输出为准。
 >
-> **后续落地（`7991539`，真机缺陷修复，也落在 `engine-expansion.test.ts`）**：用户真机复测报"点档案行头里的文字没反应"——行头是 `<button class="profile-summary">` 里包着 `span.name` / `span.meta` / `.dot`，点在文字上时 `event.target` 是那些 span，读 `target.dataset.action` 得到 `undefined`、`switch` 全部落空。修复把 click 委托的动作来源改成 `target.closest('[data-action]')`，并加了一道 `row.contains(actionEl)` 闸（防动作元素串到别的行）。该提交另加**两条用例**（点 `.meta` 就展开；连点 `.meta` 两次 = 展开再收起），变异读数：退回 `target.dataset.action` → **恰好这两条红**，其余展开用例仍绿。**所以这个测试文件现在不止三条用例**，而 **Task C4 的 click 委托片段必须沿用这个口径**（见 C4 Step 3m 的警告）——否则会把真机修好的 bug 改回去，而红的正是那两条新用例。
+> **后续落地（`7991539`，真机缺陷修复，也落在 `engine-expansion.test.ts`）**：用户真机复测报"点档案行头里的文字没反应"——行头是 `<button class="profile-summary">` 里包着 `span.name` / `span.meta` / `.dot`，点在文字上时 `event.target` 是那些 span，读 `target.dataset.action` 得到 `undefined`、`switch` 全部落空。修复把 click 委托的动作来源改成 `target.closest('[data-action]')`，并加了一道 `row.contains(actionEl)` 闸（防动作元素串到别的行）。该提交另加**两条用例**（点 `.meta` 就展开；连点 `.meta` 两次 = 展开再收起），变异读数：退回 `target.dataset.action` → **恰好这两条红**，其余展开用例仍绿。
+>
+> ⚠ **但 C4 把这两条用例的形态改掉了（`f687e6a`）**：新版式里折叠行不再是"一个按钮包着行头"，`.meta` 不在任何 `[data-action]` 里——**"点 `.meta` 就展开"在新版式下是假话**。落地的处理是：把其中一条**如实反成**「点行头文字**不再**展开——展开开关是右侧的「编辑」」（并保留 `expect(triggerOf('p-a').contains(head)).toBe(false)` 作为"整行不再是按钮"的版式守卫），口径本身改由**两条新写的**用例守住（见 C4 Step 3s 的完整代码）。所以：**找那两条旧名字的用例会找不到**——它们现在是「……**不再**展开」+「点按钮**里面的**文字就展开」+「连点那块文字两次 = 展开再收起」。**本测试文件现在共 6 条用例**，而 **Task C4 的 click 委托片段必须沿用 `closest('[data-action]')` 的口径**（见 C4 Step 3m 的警告）。
 >
 > **一处行为增量（C0 引入 → 契约已在 C4 定死）**：草稿行展开着时去点真档案的展开按钮——旧实现把草稿行**整行抹掉**，新实现**行留在列表里、只是收起**。
 > **直接读数已经取到（探针跑完已删）**：新实现 `ids=["p-a","__new__"]`、`draftRowExists=true`，但**切回草稿行四个字段全空**；旧实现 `ids=["p-a"]`、`draftRowExists=false`。而且**真档案行一样丢**（收起再展开回落到存储值）——编辑器由 `buildEditor` 从快照重建，DOM 里敲的字没有任何人接，这是**既有行为**，不是 C0 引入的。
@@ -1977,6 +1980,7 @@ git commit -m "feat(background): /models 拉取 + problem 的第一处接线（�
 - Modify: `src/options/sections/engine.ts`（大改；**删掉 C1 的过渡映射与 `.profile-model-name`**）
 - Modify: `src/options/options.html`、`src/options/options.css`
 - Modify: `tests/options/harness.ts`（`setModel` / `currentModel` 换实现 + 新增 `rowButton`）
+- Modify: `tests/options/engine-expansion.test.ts`（**第三个被改文件**：`7991539` 的委托守卫按新版式改写 —— Step 3s）
 - Create: `tests/options/engine-models.test.ts`
 - Modify: `tests/options/options.test.ts`、`tests/options/engine-health.test.ts`（20 处契约迁移）
 
@@ -2528,11 +2532,13 @@ describe('未保存输入的暂存：隐式收起保住它，取消丢弃它（�
     expect((await storedProfiles())[0]?.label).toBe('我的 DeepSeek');
   });
 
-  it('草稿保存成功后清掉草稿暂存：再点「新增档案」是一张白纸，不是上一次那份草稿', async () => {
-    // 为什么存在：草稿保存后 id 会从 `__new__` 变成一个**新生成的**档案 id。所以"保存后清暂存"
-    // 这件事只在草稿这一支上**可观察**——残留的 `__new__` 那条会在下一次"新增档案"时把旧草稿
-    // 预填回去。（同档案保存后的清理**不可观察**：保存后 `renderProfiles` 会按新快照重建那一行，
-    // DOM 本来就不是旧草稿。别为不可观察的那半编一条断言。）
+  it('草稿保存成功后：再点「新增档案」是一张白纸（**这条不是"清暂存"的读数**，见下）', async () => {
+    // ⚠ **落地实测把这条用例的身份改了**：它**不是**"保存后清暂存"的见证——把
+    // `editorDrafts.delete(NEW_DRAFT_ID)` 删掉，**全量 1043 条仍全绿（变异存活）**。
+    // 机理：`bind` 先把 `expandedId` 落成 `NEW_DRAFT_ID`，`buildProfileRow` 因此**直接造好编辑器**，
+    // `applyExpansion` 见 `existing !== null` 就**不走** `restoreEditor` —— 残留的那一格永远读不到。
+    // 所以"草稿保存后暂存清空"= **不可观察**，与 `delete(savedId)` 并列进「复盘记录 › 4. 有行为、无读数」。
+    // 这条用例仍然要留着：它守的是"新草稿是干净的"这个**用户可见**的结果（无论靠哪条路径达成）。
     await seedSettings({ engineId: 'google' });
     await loadOptions();
 
@@ -2852,15 +2858,29 @@ function buildEditor(id: string, profile: EngineProfile | undefined): HTMLElemen
 
 **3e. 触发按钮的文案与 `aria-expanded`**（加在 `buildEditor` 之前；`buildProfileRow` 与 `applyExpansion` 共用）：
 
+> ⚠ **照抄旧写法会撞 C0 的代价读数**（落地实测，变异 M26）：写成 `trigger.textContent = label` 时，
+> **「单次展开的 DOM 改动量在 N=5/20/50 下都一样」会读到 `[5, 6, 5]`**（期望 `[5, 1, 0]`）——
+> 赋 `textContent` 会把原来的文本节点**删掉再造一个新的**，于是每次展开的 `childList` 改动量
+> **随档案数增长**，与 C0 那条"与 N 无关"的读数**直接矛盾**（成因⑥：计划两半互相不满足）。
+> 落地改成**就地改文本节点的 `nodeValue`**（节点数不动、只改内容），`MutationObserver` 的
+> `childList` 记录因此仍是"插 1 / 插 1 删 1"。**这就是"就地更新"这条不变量在按钮文案上的落点。**
+
 ```ts
 // src/options/sections/engine.ts（片段：applyTriggerState）
 /**
  * 触发按钮的两种状态：文案与 `aria-expanded` **一起**设（分开写就会出现"文案说编辑、
  * 屏幕阅读器说已展开"这种自相矛盾）。`buildProfileRow` 与 `applyExpansion` 都走它。
+ *
+ * ⚠ **文本必须就地改，不许重写 `textContent`**：后者会增删子节点，把"单次展开的 DOM 改动量
+ * 与档案数无关"这条读数破坏掉（实测 `[5,6,5]`，期望 `[5,1,0]`——见 C0 的代价用例）。
+ * `firstChild` 不是文本节点时（例如将来给按钮加了图标）回落到重写一次，那是一次性代价。
  */
 function applyTriggerState(trigger: Element, expanded: boolean): void {
   trigger.setAttribute('aria-expanded', String(expanded));
-  trigger.textContent = expanded ? '收起' : '编辑';
+  const label = expanded ? '收起' : '编辑';
+  const text = trigger.firstChild;
+  if (text !== null && text.nodeType === Node.TEXT_NODE) text.nodeValue = label;
+  else trigger.textContent = label;
 }
 ```
 
@@ -3110,13 +3130,19 @@ function handleRemoveModel(id: string, name: string): void {
  * 就是两件事——**删掉这一行的暂存**，再把编辑器从行里摘掉（`applyExpansion` 做后者）。
  * 少了"删暂存"那一句，收起时写的暂存会在下次展开时把刚被取消的草稿填回来（用例当场红）。
  *
+ * ⚠ **清暂存必须排在 `applyExpansion` 之后**（落地实测，变异 M27）：摘编辑器会**先写一次暂存**
+ * （那是"隐式收起"的语义），所以写在前面会被那次 `stashEditor` **立刻填回来**——计划自己的用例
+ * 当场红（重开编辑器读到 `改过的名字`，而存储里是 `原名字`）。"取消"的定义是**丢弃**，
+ * 它因此是这条路径的**最后一句话**。
+ *
  * 它也不可能顺手把别的行、别的字段一起丢掉。
- * 草稿行没有存储里对应的东西：取消它就把整行移除（否则会留下一个收起的空壳），并清掉它的暂存。
+ * 草稿行没有存储里对应的东西：取消它就把整行移除（否则会留下一个收起的空壳），并清掉它的暂存
+ *（草稿那一支不经过 `applyExpansion`，所以清暂存放前面即可）。
  */
 function handleCancelProfile(ctx: SectionContext, id: string): void {
-  // 这一句是"取消"与"隐式收起"的分界：隐式收起**保留**暂存，取消**清掉**它。
-  editorDrafts.delete(id);
   if (id === NEW_DRAFT_ID) {
+    // 草稿行没有存储里对应的东西：取消它就把整行移除（否则会留下一个收起的空壳），并清掉它的暂存。
+    editorDrafts.delete(id);
     expandedId = null;
     rowById(NEW_DRAFT_ID)?.remove();
     setStatus(engineStatus, 'ok', '已取消这个新档案，它没有被保存过。');
@@ -3124,6 +3150,9 @@ function handleCancelProfile(ctx: SectionContext, id: string): void {
   }
   if (expandedId === id) expandedId = null;
   applyExpansion(ctx);
+  // 这一句是"取消"与"隐式收起"的分界：隐式收起**保留**暂存，取消**清掉**它。
+  // ⚠ 它必须排在 `applyExpansion` **之后**（上面那段注释：收起那一刻会先写一次暂存）。
+  editorDrafts.delete(id);
   setStatus(engineStatus, 'ok', '已取消这次编辑，存储里的内容一个字节都没动。');
 }
 ```
@@ -3309,7 +3338,14 @@ function handleCancelFetched(id: string): void {
 
 **3m. `bind`：click 委托 + input 委托**（整体替换这两段）：
 
-> ⚠ **口径必须与 `7991539` 落地的那一版一致**（这一节原来是照 C0 时的旧口径写的）：动作要从**最近的 `[data-action]` 祖先**取，不是读 `event.target.dataset.action`。旧口径在真机上表现为"点档案行头里的文字没反应、只有点在按钮自己的空白边距上才有反应"（行头是 `<button class="profile-summary">` 里包着 `<span class="name">` / `<span class="meta">` / `.dot`，点在文字上时 `target` 是那些 span）。**照旧口径整体替换 = 把真机上刚修好的 bug 改回去**，而 `engine-expansion.test.ts` 里那两条新用例（点 `.meta` 就展开、连点两次展开再收起）会红——那两条就是它的守卫。`row.contains(actionEl)` 那道闸今天**没有任何用例杀得死**（`[data-action]` 只出现在行内），如实记在「复盘记录 › 有行为、无读数」里，**不许**为它编一条恒真用例。
+> ⚠ **口径必须与 `7991539` 落地的那一版一致**（这一节原来是照 C0 时的旧口径写的）：动作要从**最近的 `[data-action]` 祖先**取，不是读 `event.target.dataset.action`。旧口径在真机上表现为"点档案行头里的文字没反应、只有点在按钮自己的空白边距上才有反应"（当时行头是 `<button class="profile-summary">` 里包着 `<span class="name">` / `<span class="meta">` / `.dot`）。
+>
+> **⚠ 落地的现实与本节原来的警告不同（要紧，别照旧说法找用例）**：C4 的版式改动让"行头文字够得到 `[data-action]`"这件事**结构上不可能**（`.grow` 与 `.row-actions` 并排，所有 `[data-action]` 控件都是**叶子按钮**），所以"点 `.meta` 就展开"那两条旧用例在 C4 里被**改写**了（`f687e6a`）：
+> - 一条**如实反成**「点行头文字**不再**展开」（+ `expect(triggerOf('p-a').contains(head)).toBe(false)` 的版式读数）；
+> - 口径本身改由**两条自己造形状**的用例守住——`nestedTextOf(button)` 把按钮文字包进 `.probe-inner` 再点它（那正是旧版式的形状、也是**将来给按钮加图标/文案子元素**时的形状）。变异退回 `target.dataset.action` → 恰好这两条红（1041 条里只红 2 条）。
+> - **如实标注（别夸大）**：真机那个缺陷在新版式里**结构上已不可达**；这两条如今守的是**将来某个按钮再长个子元素**，不是"真机 bug 的守卫"。
+>
+> `row.contains(actionEl)` 那道闸今天**没有任何用例杀得死**（`[data-action]` 只出现在行内），如实记在「复盘记录 › 有行为、无读数」里，**不许**为它编一条恒真用例。**它的完整代码见 Step 3s**（含 `nestedTextOf` 辅助函数与三条用例）。
 
 ```ts
 // src/options/sections/engine.ts（片段：bind 的 click 委托，整体替换；口径与 7991539 一致）
@@ -3479,6 +3515,95 @@ import { MSG, type FetchModelsResponse } from '../../shared/messages';
   renderProfiles(ctx);
   renderEngineHint(ctx);
 ```
+
+**3s. `tests/options/engine-expansion.test.ts` 的委托守卫按新版式改写**（C4 的**第三个**被改文件；`f687e6a` 落地）：
+
+> **为什么必须改**：`7991539` 那两条用例（「点 `.meta` 就展开」「连点 `.meta` 两次」）成立的前提是**旧版式**——行头包在 `<button class="profile-summary">` 里，`.meta` 因此够得到那颗按钮的 `[data-action]`。C4 之后 `.grow` 与 `.row-actions` **并排**，行头文字不在任何 `[data-action]` 里，"点 `.meta` 就展开"**在新版式下是假话**。
+> **如实定性（别夸大）**：真机那个缺陷在新版式里**结构上已不可达**（所有 `[data-action]` 控件都是叶子按钮）——这两条守卫如今守的是**将来某个按钮再长个子元素**（加图标、包一层文案 span 时的形状），不是"真机 bug 的守卫"。
+> **口径本身没有现成落点**：每个 `[data-action]` 都是叶子按钮时，`target.dataset.action` 与 `closest('[data-action]')` 读数完全相同——所以后两条**自己造出那个形状**（`nestedTextOf` 把按钮文字包进 `.probe-inner` 再点它）。变异退回旧口径 → **恰好这两条红**（1041 条里只红 2 条）。
+
+```ts
+// tests/options/engine-expansion.test.ts（片段：新增一个 describe，替换 7991539 加的那两条用例）
+describe('点击委托：动作取自最近的 [data-action] 祖先，不是 event.target 自己', () => {
+  /** 行头里那块文字（`span.meta`）——旧版式里真机上用户点的就是它。 */
+  function headTextOf(id: string): HTMLElement {
+    const text = rowOf(id).querySelector<HTMLElement>('.meta');
+    if (text === null) throw new Error(`档案行 ${id} 没有 .meta`);
+    return text;
+  }
+
+  /**
+   * 把触发按钮的文字包进一个子元素并返回它：点它就是"点在按钮**里面的**文字上"。
+   * 每次都现造一个（展开 / 收起时按钮文案会变，旧的那个子元素已经不在 DOM 里了）。
+   */
+  function nestedTextOf(button: HTMLButtonElement): HTMLElement {
+    const inner = document.createElement('span');
+    inner.className = 'probe-inner';
+    inner.textContent = button.textContent ?? '';
+    button.textContent = '';
+    button.append(inner);
+    return inner;
+  }
+
+  it('点行头里的文字（span.meta）**不再**展开——整行不是按钮，展开开关是右侧的「编辑」', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    const head = headTextOf('p-a');
+    // 先钉住"这确实是一次打在**子元素**上的点击"：它自己身上没有任何动作可读。
+    expect(head.dataset.action).toBeUndefined();
+    // 版式读数：行头文字**不在**触发按钮里（旧版式里它在）——所以它够不到任何动作。
+    // 这一句就是"整行不再是按钮"在委托这一层的读数（`row` 本身也不再是按钮）。
+    expect(triggerOf('p-a').contains(head)).toBe(false);
+
+    head.click();
+    await settle();
+    expect(editorOf('p-a')).toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');
+
+    // 新契约的另一半：展开开关是那颗按钮，点它照常展开（点不动的东西才是回归）。
+    triggerOf('p-a').click();
+    await settle();
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('点按钮**里面的**文字就展开——不是只有点在按钮空白处才有反应', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    const inner = nestedTextOf(triggerOf('p-a'));
+    // 这条点击打的是**子元素**：它自己身上没有任何动作可读，只有祖先（那个按钮）有。
+    // 少了这两句，这条用例在退回 `target.dataset.action` 的实现下也可能因为"点到了别处"而变绿。
+    expect(inner.dataset.action).toBeUndefined();
+    expect(triggerOf('p-a').contains(inner)).toBe(true);
+
+    inner.click();
+    await settle();
+
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('连点那块文字两次 = 展开再收起（取值口径改了，toggle 语义不许跟着变）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    nestedTextOf(triggerOf('p-a')).click();
+    await settle();
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+
+    // 第二次点的是**新造的那个**子元素：按钮的文案在展开时已经换成「收起」，取法不该跟着变。
+    nestedTextOf(triggerOf('p-a')).click();
+    await settle();
+    expect(editorOf('p-a')).toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');
+  });
+});
+```
+
+> 这个文件里**别处**的用例名也要跟着版式走：C0 那三条留在原处不动（代价曲线 / A→B / 新增档案就地追加），`7991539` 那两条已被上面这个 describe 取代。**当前共 6 条用例**（3 + 这个 describe 的 3）。
 
 - [ ] **Step 4: 实现（`src/options/options.html` 的引擎区块文案）**
 
@@ -3669,7 +3794,7 @@ Expected: 全绿。三条分别管着：CSS 令牌纪律（新规则只用 `--te
 | 变异 | 期望红在哪一条 |
 | --- | --- |
 | 折叠行保留 `.profile-summary`（整行仍是按钮） | 「折叠行：…整行不再是按钮」——`row.querySelector('.profile-summary')` 不为 null |
-| **click 委托退回旧口径 `target.dataset.action`**（即把 `7991539` 的真机修复改回去） | `tests/options/engine-expansion.test.ts` 里那**两条**新用例红（「点行头里的 `.meta` 就展开」「连点 `.meta` 两次 = 展开再收起」——`expected null not to be null`）。⚠ 这条**不在 C4 自己的测试文件里**：步 3m 是整体替换那段委托，所以替换时必须照抄 `closest('[data-action]')` 的口径；照旧口径写就是"本地全绿、真机复发" |
+| **click 委托退回旧口径 `target.dataset.action`**（即把 `7991539` 的真机修复改回去） | `tests/options/engine-expansion.test.ts` 里**新写的两条**红：「点按钮**里面的**文字就展开——不是只有点在按钮空白处才有反应」与「连点那块文字两次 = 展开再收起」（实测：1041 条里**恰好这 2 条**红）。⚠ **别照旧名字找**：`7991539` 原来那两条（「点 `.meta` 就展开」）已被 C4 改写成「点行头里的文字（span.meta）**不再**展开」（见 Step 3s）。这条变异**不在 C4 自己的测试文件里**（步 3m 是整体替换那段委托）：照旧口径写就是"本地全绿、真机复发" |
 | `isPresetProfile` 改成 `profile.models.length > 0`（判据换成清单） | 「「自定义」徽章…」——`p-b`（DeepSeek 地址 + 预设模型）**也**长出徽章 |
 | `isPresetProfile` 恒返回 false（人人都是自定义） | 同一条——`p-b` / `p-c` 上冒徽章 |
 | `metaTextOf` 的占位写成 `''` | 「次级 meta 的占位」红（读到 `' · '`） |
@@ -3688,7 +3813,7 @@ Expected: 全绿。三条分别管着：CSS 令牌纪律（新规则只用 `--te
 | `restoreEditor` 里恢复 `.profile-api-key` 那一行删掉 | 「切走再切回真档案行…」——`value` 是 `''` 而不是 `sk-typed-here` |
 | `stashEditor` / `restoreEditor` 的 key 从 `id` 改成处处用 `NEW_DRAFT_ID`（**对称性破坏**：所有行共用一格） | **两条用例各红一处**：「切走再切回真档案行…」——切到 p-b 时它读到 p-a 的草稿（`fieldOf(other, '.profile-label')` 是 `改了一半` 而不是 `B 家`）；「切走再切回草稿行…」——切回草稿行读到 p-a 的值（`我的 DeepSeek` 而不是 `临时档案`）。⚠ 机理：`applyExpansion` 按 **DOM 顺序**遍历，上一次调用留下的那一格会被下一行读走——所以**必须**有"切过去那一行看不到别人的草稿"这条断言，只比较"切回自己那一行"抓不住它 |
 | `handleCancelProfile` 开头那行 `editorDrafts.delete(id)` 删掉 | 「取消：改名字 + 加模型后取消…」——再展开读到 `改过的名字` 与 `another-model`（**这条用例现在还守着"取消清暂存"**） |
-| `handleSaveProfile` 里 `editorDrafts.delete(NEW_DRAFT_ID)` 删掉 | 「草稿保存成功后清掉草稿暂存：再点「新增档案」是一张白纸…」——新草稿被上一次的值预填 |
+| `handleSaveProfile` 里 `editorDrafts.delete(NEW_DRAFT_ID)` 删掉 | **不可观察（实测：全量 55 files / 1043 passed 仍全绿，变异存活）**。机理：`bind` 先把 `expandedId` 落成 `NEW_DRAFT_ID`，`buildProfileRow` 因此**直接造好编辑器**，`applyExpansion` 见 `existing !== null` 就**不走** `restoreEditor`——残留的那一格永远读不到（落地已把这条写进代码注释）。**所以「草稿保存成功后…」那条用例不是它的杀手**（已改用例名与注释），它归入「复盘记录 › 4. 有行为、无读数」，与 `delete(savedId)` 并列。**不许**为它编一条"绕过 `insertDraftRow`"的用例凑读数 |
 | `handleSaveProfile` 里 `editorDrafts.delete(savedId)` 删掉 | **不设此变异（已核实不可观察）**：保存成功后 `renderProfiles` 会按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor`，所以残留的那一格在正常流程里读不到。留着这一行是"暂存不活得比编辑会话更久"的对称性，不是守卫。写在这里是记录"查过、没有读数"，不是待办 |
 | 零自动拉取：在 `buildEditor` 里直接发一次拉取消息（模拟"展开就拉"） | 「打开设置页 / 展开档案 / 聚焦输入框都不发请求…」——`sentMessages` 不为空 |
 | `handleFetchModels` 的消息体加上 `apiKey: profile.apiKey` | 「打开设置页 / 展开档案 / 聚焦输入框都不发请求…」——`sentMessages` 精确相等当场红。**这一行是验收项 5（"消息体不含 apiKey"）唯一的守卫**：C3 侧那条同类断言已删（它手里的是自己的字面量，恒真） |
@@ -3700,10 +3825,11 @@ Expected: 全绿。三条分别管着：CSS 令牌纪律（新规则只用 `--te
 
 ```bash
 git add -- tests/options/engine-models.test.ts
-git commit -m "feat(options): 档案行与编辑面板改成图二布局（模型目录 + 暂存 + 取消 + 零自动拉取）" -- src/options/sections/engine.ts src/options/options.html src/options/options.css tests/options/harness.ts tests/options/engine-models.test.ts tests/options/options.test.ts tests/options/engine-health.test.ts
+git commit -m "feat(options): 档案行与编辑面板改成图二布局（模型目录 + 暂存 + 取消 + 零自动拉取）" -- src/options/sections/engine.ts src/options/options.html src/options/options.css tests/options/harness.ts tests/options/engine-expansion.test.ts tests/options/engine-models.test.ts tests/options/options.test.ts tests/options/engine-health.test.ts
 ```
 
 > 第一行处理**未跟踪的新测试文件**（硬规矩 14）。
+> ⚠ **路径清单必须覆盖所有被改动的测试文件**——本 Task 改**三个**测试文件（`harness.ts` / `engine-expansion.test.ts` / `engine-health.test.ts` / `options.test.ts`）+ 新建一个（`engine-models.test.ts`）。计划上一版**漏了 `tests/options/engine-expansion.test.ts`**（Step 3s 要改它），照那版提交会让仓库**在那个提交上就是红的**（新版式 + 旧守卫 = 那两条用例红）。**提交前自检**：`git status --porcelain -uall` 里出现的每个 `tests/**` 路径都要在 `--` 清单里（落地提交 `f687e6a` 是 8 个路径，含 `tests/options/engine-expansion.test.ts` ✓）。
 
 ## Task C5: 弹窗模型下拉（仅 > 1 项）+ 记住上次用的模型 + 换模型提示
 
@@ -4351,12 +4477,13 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 
 ### 4. 有行为、无读数（**不许**为它们编一条恒真用例）
 
-本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这四处都没有任何用例杀得死：
+本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这**五**处都没有任何用例杀得死：
 
 | 代码 | 为什么今天杀不死 | 谁能杀它 / 留着它的理由 |
 | --- | --- | --- |
 | `if (actionEl === null || !row.contains(actionEl)) return;`（C4 Step 3m，`7991539` 引入） | `[data-action]` 今天只出现在行内，构造不出"动作元素在别的行里"的 DOM | 只有"把 `[data-action]` 挪进行内的嵌套结构、或让两行互相包含"的形状才杀得死——那种形状在真机上不存在。留着是**防御**（嵌套/无关元素串行） |
-| `editorDrafts.delete(savedId)`（C4 Step 3p） | 保存成功后 `renderProfiles` 按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor` | 草稿那一格（`NEW_DRAFT_ID`）**有**读数（「草稿保存成功后清掉草稿暂存」那条）；这一格留着是**对称性**（"暂存不活得比编辑会话更久"） |
+| `editorDrafts.delete(savedId)`（C4 Step 3p） | 保存成功后 `renderProfiles` 按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor` | 草稿那一格（`NEW_DRAFT_ID`）**同样不可观察**（见下一行）；这一格留着是**对称性**（"暂存不活得比编辑会话更久"） |
+| `editorDrafts.delete(NEW_DRAFT_ID)`（C4 Step 3p） | **实测全绿（55 files / 1043 passed，变异存活）**：`bind` 先把 `expandedId` 落成 `NEW_DRAFT_ID`，`buildProfileRow` 因此**直接造好编辑器**，`applyExpansion` 见 `existing !== null` 就**不走** `restoreEditor`——残留的那一格永远读不到 | 要杀它得让"新增档案"那条路径**先插空行再展开**（两次 `applyExpansion`）；那种形状今天不存在。留着是**对称性 + 防御**（万一将来 `insertDraftRow` 改成"先插收起行、再统一展开"）。⚠ 「草稿保存成功后：再点「新增档案」是一张白纸」那条用例**不是**它的杀手（它守的是用户可见的结果），别把它写成"这条变异的读数" |
 | `liftProfileModels` 里的 `delete lifted.model` | 见上表 M3：`pickProfile` 重建 + 版本闸门短路 | 改 `pickProfile`（让它透传旧键）才杀得死。留着是**防御**（防止将来 `pickProfile` 不再重建时旧键漏进存储） |
 | `fetchModels` 里 `if (pattern === undefined) return { ok: false, message: '接口地址不是合法的 URL…' }`（C3 Step 4） | **在消息路径上不可达**：`loadSettings → mergeSettings/pickProfile` 已经把非法 `baseUrl` 归一化成**空串**，所以 `handleFetchModels` 永远先命中"这个档案还没填接口地址"那一支，走不到"不是合法的 URL"。只有**直接调 `fetchModels` 的单测**可达（`tests/background/models.test.ts` 的「地址不是合法 URL：也不发请求…」就是直连） | 它是**防御性分支**：将来若有人把 `pickProfile` 的地址归一化去掉、或给 `fetchModels` 加别的调用方，它就活了。⚠ **不许**为它编一条"绕过边界"的用例来凑读数 |
 
@@ -4383,9 +4510,25 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **D′（M9 落点）** | `config.model = models[0]` 的落点写成端到端缓存用例 | 按实测改成"在 `resolveEngine` 层红 2 条"，端到端那条的归属写死到 C3 Step 1d | C2 Step 5 的变异表 + C3 Step 7 |
 | **F（不设的变异）** | 未提及 | C3 Step 7 加一行为"不设此变异（已核实构造不出）"留痕 | C3 Step 7 |
 | **边界措辞冲突（第五轮）** | C3 的 Files 要改 `tests/shared/messages.test.ts`，而派单写了"不许碰 `tests/shared/**`"——**两者字面冲突**（执行者按计划做了并如实报告，处理是对的） | C3 的 Files 与 Step 8 现在写清"**只改 `tests/shared/messages.test.ts` 这一个文件**；同目录其它文件 `settings.test.ts` 属 C2"，并说明整目录禁令的本意是"别动 C2 的文件" | C3 的 Files + Step 8 |
+| **G1（控件改名的连带文案，第六轮）** | 计划把「保存档案」改成「保存」，**没提别处引用它的文案** | 落地修了两处**用户真会看到**的假话：`src/options/options.html` 隐私区那句、`src/options/sections/engine.ts` 的 `deniedHint`（现在写"再点一次「保存」"）。**另有两处注释仍提旧名**（`src/options/sections/engine.ts:25` 与 `:151`）——不上屏，不阻塞，下次顺手改 | 硬规矩 16 + 本表 |
+| **G2（照抄必红的三处计划片段，第六轮）** | ① `applyTriggerState` 写 `textContent = …` ② `handleCancelProfile` 把清暂存放开头 ③ Step 3m 说"旧口径会让 `7991539` 那两条红" | ① 改**就地改文本节点**（否则 C0 的代价读数变 `[5,6,5]`）② 清暂存挪到 `applyExpansion` **之后** ③ 那两条守卫按新版式**改写**成三条（Step 3s），并如实标注"真机缺陷在新版式下结构上不可达" | C4 Step 3e / 3i / 3m / **3s** |
+
+### 6. 过程规矩：接手"崩溃后的在制品"（第六轮实撞到的）
+
+**发生了什么**：C4 的实现在收尾前崩溃，留下**未提交的在制品**（799 行）。控制器**没有直接重做**，而是先**分诊**：
+
+1. `npx tsc --noEmit -p tsconfig.json` → **exit 0**（类型面完好 ⇒ 不是"半成品编译不过"）；
+2. `npx vitest run tests/options/` → **15 files / 173 全绿**（定向套件全绿 ⇒ 已写的那部分是对的）；
+3. 结论：**实现面 100% 完成、只差验证与提交** ⇒ 派"**审计 + 收口**"而不是重做。
+
+**收益（可核）**：省下 **1387 行**重做（该提交最终的规模是 8 文件 +1387/−172）。收口代理做的正是"审计 + 补验证"：跑完 30 轮变异、全量、typecheck、build，并按计划产出**三列清单**。
+
+**规矩**（写下来，下次直接照用）：
+- **崩溃/中断后先分诊，再在"重做 / 收口"之间选**：分诊两刀 = **类型**（`tsc --noEmit`）+ **定向套件**（`vitest run <受影响的目录>`）。两刀都绿 ⇒ 默认**收口**（审计 + 补验证 + 提交），**不要**重做——重做会丢一个已经能过的实现，还会把并发中的其它任务拖长。
+- **收口代理的第一件事**是对照计划产出**三列清单**：**已实现 / 未实现 / 与计划不同**。"与计划不同"那一列最有价值——它正是本轮 A1–A4 那几处"计划片段照抄会红"的来源。
+- **未提交的在制品不许整树 `git stash` / `reset`**（硬规矩 12）：收口要**就地接管**，别想着"清干净再来一遍"。
 
 ## 落地读数表（执行者填，交付时与投影并列）
-
 | 读数 | 投影 | 实测 |
 | --- | --- | --- |
 | 开工基线 `npm test` | 单元 B 收口时 52 files / 983 passed（**以命令输出为准**） | |
@@ -4403,6 +4546,9 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **C3 变异轮的文件还原（可核）** | —— | G3 临时改过 `src/shared/settings.ts`、G4 临时改过 `src/background/scheduler.ts`（都按 Step 7 点名），**已按 SHA256 还原**：`src/shared/settings.ts` = `479AB5D5…`、`src/background/scheduler.ts` = `7673DD29…`（前缀；完整值以执行者报告为准）。**"变异已还原"因此是可核的**，而不是一句口头保证 |
 | **C3 全量读数（落地实测）** | 以命令输出为准 | **54 files / 1020 passed**；`typecheck` exit 0；`build` exit 0 |
 | **C3 成对用例的正向半边（落地加强）** | 计划只写了 `expect(calls).toEqual([{ model: 'm-1' }])` | 执行者补了 `expect(cacheEntries('local')).toHaveLength(1)` 与 `expect(cacheEntries('session')).toHaveLength(1)`——**使负向那条"两层缓存没留下条目"不可能是恒真**（取错层 / 取错前缀时它本来会永远绿）。已收进 C3 Step 1d 的代码块 |
+| **C4 落地提交 `f687e6a`（8 文件 +1387/−172）与它的 30 轮变异** | 计划只点了少数几条变异 | **M2（计划指定那条）→ 恰好 2 红**；**M26/M27 证明计划两处片段"照抄必红"**（`applyTriggerState` 的 `textContent` 写法让 C0 代价读数变 `[5,6,5]`；`handleCancelProfile` 的清暂存放前面会被 `stashEditor` 填回来）；**M20 存活**（`delete(NEW_DRAFT_ID)`，已改标"不可观察"）；**M20b 存活**（`row.contains` 那道闸，计划已注明"不设此变异"）。**30 轮里只有这两处存活**，且都在"有行为、无读数"表里有账 |
+| **"没有放松断言"的机器核对（第六轮）** | 计划反复写"只增不减" | 可核读数：`git diff f85e019 HEAD -- tests/` 的 **39 个 `-` 行里只有 2 行含 `expect(`**——① `expect(triggerOf('p-a').contains(head)).toBe(true)` **反向**成 `.toBe(false)`（新版式下的**替代**守卫，不是删除）② `expect(stored.models).toEqual(['qwen2.5'])` 改成 `['m','qwen2.5']`（**更强**：同时钉住"加模型是追加"与"那次被拒的保存留下的模型还在"）。另外 `waitFor(` **删 5 增 15**：删除的 5 条全换成更具体的条件（例如 `dataset.kind === 'ok'` 会被 `setModel` 自己写的那句状态抢先兑现 = 成因④的现场） |
+| **C4 收口规模（过程读数）** | —— | 接手时在制品 **799 行**（未提交、无报告）；收口后该提交 **8 文件 +1387/−172**；分诊两刀 = `tsc --noEmit` exit 0 + `npx vitest run tests/options/` **15 files / 173 全绿** ⇒ 判定"只差验证与提交"，省下 1387 行重做（见复盘 §6） |
 | 收口 `npm test` | 以命令输出为准 | |
 | 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
 | `sync-plan-code.mjs` | `已同步 0 个代码块` | |
