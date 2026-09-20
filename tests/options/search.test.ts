@@ -299,6 +299,15 @@ describe('区块清单与页面结构一一对应', () => {
       .map((node) => [node.dataset.section as string, node.getAttribute('aria-labelledby') as string] as const)
       .filter(([, id]) => document.getElementById(id) === null);
     expect(missing).toEqual([]);
+    // 上面那条**只覆盖区块元素**（`[data-section]`），所以引用完整性要单独查一遍：收紧之前这里
+    // 遍历的是**全部**带该属性的元素（配一个"总数 >= 8"的判据），收紧之后非区块元素上的悬挂引用
+    // 就没人管了——实测：给 `#search` 加一个指向不存在 id 的 `aria-labelledby`，全文件 15 条一度
+    // 全绿。分工因此是：**逐项对齐**钉住区块清单（会漂的全称数不用），**全文档检查**钉住引用完整性
+    // （只查"指得到吗"，不数个数，所以页面将来多几个引用也不会变脆）。
+    const dangling = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'))
+      .map((node) => [node.dataset.section ?? node.id, node.getAttribute('aria-labelledby') as string] as const)
+      .filter(([, id]) => document.getElementById(id) === null);
+    expect(dangling).toEqual([]);
     // 反向也查一遍：CSS 里引用的每个 `#sec-*` 都得在页面里存在（就是那四个死选择器的守卫）。
     const cssIds = new Set([...readFileSync(CSS_PATH, 'utf-8').matchAll(/#(sec-[a-z-]+)/g)].map((match) => match[1] as string));
     const cssMissing = [...cssIds].filter((id) => document.getElementById(id) === null);
