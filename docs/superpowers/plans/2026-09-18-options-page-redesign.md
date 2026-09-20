@@ -18,7 +18,7 @@
 
 0. **执行前提：实现者从「仓库 + 本 Task 的小节」出发工作，不必重读整个计划。** 计划里的代码块已经落在磁盘上的（例如 Task 3 写完的 `src/options/sections/engine.ts`）应当**直接读文件**；只有**本 Task 要新建/新建后修改**的文件才需要照本 Task 的代码块写。Task 10 是唯一跨 Task 改文件的地方（`sections/engine.ts` 在 Task 3 就已存在），它给出的每一处改动都**引足了上下文**（能唯一定位到那几行），不靠"把某一段改掉"这种指代。
 1. **基线：867 个测试 / 40 files 全绿**（`npm test` 实测，2026-09-18，分支 `feat/core-translation`，工作树干净）——**这是本单元的起点**。单元 A 已落地：`src/core/site-rules.ts` 的 `matchSiteRule` / `isNeverTranslate`、内容脚本拦截、弹窗状态与一键解除，全都有测试。
-   **滚动实测（每落地一个 Task 就更新这一行，执行者开工前先看它）**：Task 3 后 **887 / 44** → Task 5 后 **911 / 46** → **Task 6 后 933 / 48**。所以后面几个任务**不要**再拿 867/40 当基线——那是单元 A 时期的数字。
+   **滚动实测（每落地一个 Task 就更新这一行，执行者开工前先看它）**：Task 3 后 **887 / 44** → Task 5 后 **911 / 46** → **Task 6 后 933 / 48**。所以后面几个任务**不要**再拿 867/40 当基线——那是单元 A 时期的数字。→ **收口终账（2026-09-20，Task 11 Step 4 亲跑）：52 files / 983 passed**；`tests/options` 终账 13 files / 145 passed（本行此后封板，口径与差额构成见 Task 11 Step 4 的落地读数段）。
 2. **测试契约是契约属性名，不是查询细节**（逐条 grep 过 `tests/options/options.test.ts`，见下表）。`#save` 随即时保存移除，依赖它的 4 条用例改写（Task 3 Step 13）。
 3. **`options.html` 是测试的真实输入**：`options.test.ts` 用 `DOMParser` 加载它，然后把 `parsed.body.innerHTML` 塞进 `document.body`。所以页面骨架必须留在 HTML 里，JS 只填内容与挂行为。
 4. **被测模块在 import 时就跑 `init()`**：模块顶层按 id 取元素（DOM 必须先就位），`init()` 同步挂监听器，然后才 `await loadSettings()`。测试的顺序固定为「装替身 → 写存储 → 装 DOM → `await import(...)` → `settle()`」，且 `vi.resetModules()` 每个用例重置一次。
@@ -292,6 +292,28 @@ describe('设置页存储层：单字段写回', () => {
     expect(store.currentSettings()?.targetLang).toBe('zh-Hans');
   });
 
+  it('快照必须是存储里真正生效的值：越界写入被夹后，快照与存储一致', async () => {
+    // 这条是"快照 = 落盘"这条不变式的**直接**读数：快照是设置页所有区块读"生效值"的地方，
+    // 它一旦拿的是"请求值"，界面就会显示一个没生效的数字。此前这条不变式只有一条**间接**
+    // 读数（`cache-section.test.ts` 的「越界的数字被夹到允许范围」——它经由区块的输入框回填
+    // 才看得见夹取）：实测把 `store.ts` 的 `mergeSettings` 那一步还原成 `{ ...latest, ...patch }`
+    // 之后，那一条**也会红**。但那条红在区块那一层（先被怀疑的是回填逻辑，不是存储层），
+    // 所以这里把同一个不变式直接钉在存储层：少一步规范化，红在这里。
+    await seed({ concurrency: 3 });
+    await store.loadSnapshot();
+
+    // 999 越界：`mergeSettings` 的 clampInt 会把它夹到并发允许范围的上限 8。
+    await store.patchSettings({ concurrency: 999 });
+
+    // ① 存储里是生效值，不是提交上来的那个请求值。
+    expect((await stored()).concurrency).toBe(8);
+    // ② 快照与存储同一个值：读快照的地方（各区块的 `settings()`）拿到的就是生效值。
+    expect(store.currentSettings()?.concurrency).toBe(8);
+    // ③ 重新读一遍存储，快照与它逐字段一致：上一步的快照不是"另写了一份看起来对的数字"。
+    const reloaded = await store.loadSnapshot();
+    expect(reloaded).toEqual(store.currentSettings());
+  });
+
   it('成功加载之后再加载失败：保留上一次成功的快照，写仍可用（失败原因是版本，不是还没读出来）', async () => {
     // 这条把 `loadSnapshot` 的**失败语义**从"碰巧"变成"契约"：它的两种失败后果不同。
     // 首次失败必须留下 null（否则拿空设置覆盖存储，见上一条用例）；**已经加载过之后**失败
@@ -361,7 +383,7 @@ Expected: FAIL —— 模块解析失败：`Cannot find module`（跟着解析�
 //
 // **已知代价（规格 §4.1 / §11，本轮不解决）**：两个设置页并排打开时，双方各自重读、各自
 // 整份写回，后写的一方仍然会覆盖前一方——这与改版前"点保存即覆盖"是同一性质。
-import { loadSettings, saveSettings, type Settings } from '../shared/settings';
+import { CURRENT_VERSION, loadSettings, mergeSettings, saveSettings, type Settings } from '../shared/settings';
 
 /** 读到存储之前为 null：这期间任何写请求都必须被拒绝，而不是拿一份空设置去覆盖存储。 */
 let snapshot: Settings | null = null;
@@ -449,7 +471,13 @@ export function patchSettings(patch: Partial<Settings>): Promise<void> {
   if (snapshot === null) return Promise.reject(new Error(NOT_LOADED));
   const run = queue.then(async () => {
     const latest = await loadSettings();
-    const next: Settings = { ...latest, ...patch };
+    // 合并后的设置先过一遍 `mergeSettings`：`saveSettings` 落盘的是**规范化后**的那一份
+    // （clampInt / pickXxx / 档案与术语表的逐项过滤），快照必须与落盘的那一份逐字段一致，
+    // 否则两个可观察量会分叉——设置页读 `currentSettings()` 拿"生效值"，而它其实只是"请求值"。
+    // 这不是理论风险：缓存的数字输入框靠读回生效值把越界的 999 回填成 8；少了这一步，
+    // 存储里是 8、快照与界面上却是 999（`tests/options/cache-section.test.ts` 的
+    // 「越界的数字被夹到允许范围」就是这条路径的读数）。
+    const next: Settings = mergeSettings({ ...latest, ...patch }, CURRENT_VERSION);
     await saveSettings(next);
     snapshot = next;
   });
@@ -884,12 +912,34 @@ describe('设置页样式：令牌', () => {
     expect(dark['--surface']).toBe('#1c1f23');
     expect(dark['--text']).toBe('#e8eaed');
     expect(dark['--danger']).toBe('#f87171');
-    // 暗色块不许把亮色令牌漏一半：正文里出现的颜色令牌必须都在暗色块里有值。
+    // 暗色块不许把亮色令牌漏一半：正文里出现的**颜色**令牌必须都在暗色块里有值。
+    //
+    // 查的必须是 `dark`，不能是 `light`：按设计每个正文令牌在亮色 `:root` 里都有值，
+    // 拿 `light` 去查 `used` 的话 `missing` **恒为 `[]`**——实测把暗色块里 8 个彩色令牌
+    // 一次删光，7 条断言照样全绿。
     const body = stripCssComments(optionsCss);
     const used = new Set([...body.matchAll(/var\((--[a-z0-9-]+)\)/g)].map((match) => match[1] as string));
     const light = declarations(optionsCss, ':root');
-    const missing = [...used].filter((token) => light[token] === undefined);
-    expect(missing).toEqual([]);
+    // 下面这组是"**不是颜色**、因此不该在暗色块里重复定义"的令牌（少列一个就是一条假红）。
+    // 口径选的是"列例外"而不是"列颜色白名单"：白名单写不全会**静默漏掉**真正该抓的令牌
+    // （假绿，正是这条断言原本的病），列例外写不全会**响**（假红，当场就能看见并补上）。
+    // 两个方向都往严格一侧失败，但只有假红是安全的失败方向。
+    //
+    // `--border*` 故意**不**列进来：它们**是**颜色，且暗色块里确实各有自己的同名值
+    // （`rgba(255, 255, 255, …)`）——所以它们会被正常检查，不需要豁免。
+    const NOT_A_COLOR = new Set([
+      '--radius-sm',
+      '--radius-md',
+      '--radius-pill',
+      '--shadow-card',
+      // 强调色上的文字色，亮/暗都是 `#ffffff`：暗色下强调色仍是深蓝，白字照样可读。
+      // 这是设计上有据可查的例外，不是漏定义。
+      '--on-accent',
+    ]);
+    const darkMissing = [...used].filter(
+      (token) => light[token] !== undefined && dark[token] === undefined && !NOT_A_COLOR.has(token),
+    );
+    expect(darkMissing).toEqual([]);
   });
 });
 
@@ -931,6 +981,12 @@ describe('设置页样式：键盘与窄窗口', () => {
     const nav = declarations(optionsCss, '.nav', NARROW);
     expect(wrap['display']).toBe('block');
     expect(nav['position']).toBe('static');
+  });
+
+  it('`hidden` 有强制规则兜底：导航项是 flex，没有它就藏不住（搜索全靠这个属性）', () => {
+    // jsdom 没有布局，`element.hidden = true` 在测试里永远"看起来生效"——真正的显隐
+    // 靠这条 CSS。删掉它，搜索结果在真机上会「全都显示、只是变了颜色」。
+    expect(declarations(optionsCss, '[hidden]')['display']).toBe('none !important');
   });
 });
 ```
@@ -1655,14 +1711,78 @@ const sources = collect('src/options');
 
 const FORBIDDEN = /\b(?:innerHTML|outerHTML|insertAdjacentHTML)\b/;
 
+/**
+ * 顶层（`src/options/*.ts`）里必须被扫到的模块。断言"集合**包含**这几个"，
+ * 而不是"恰好几个"或"至少几个"：
+ *
+ * - 写成 `toBe(REQUIRED_PATHS.length)` 会在每加一个模块时变红（那是正常增长，不是回归）；
+ * - 写成 `toBeGreaterThanOrEqual(REQUIRED_PATHS.length)`（今天 7，**恰好等于**实测的顶层
+ *   模块总数）今天什么也抓不住：实测递归口径扫到 15 个（顶层 7 + `sections/` 8），
+ *   只扫顶层也有 7 个，两种口径都 ≥ 7；而下界只会说"总数够不够"，
+ *   **说不出缺的是哪一个模块**。
+ *
+ * 列路径是"对增长稳健、又抓得住遍历器坏掉"的形态：下面每一条钉住一个具体模块，
+ * 少扫到任何一个就红；将来新增文件不影响它——**所以这份清单是下限、不是穷举**，
+ * 与下面 `REQUIRED_SECTION_PATHS` 同一条口径。
+ *
+ * 这份清单长期只有 4 条（`options` / `store` / `dom` / `section`），于是 `rule-pattern.ts`、
+ * `search.ts` 以及后来新建的 `engine-health.ts` 一直处在"会被扫到、却没被任何断言钉住"的
+ * 状态：遍历器不认清单、照常扫它们，漏列也就没有一条会红。这一轮按实测把顶层 7 个**全部**
+ * 列上——"扫到了"与"被清单钉住"是两件事：前者是遍历器当下的行为，后者才是"遍历器哪天坏在
+ * 这一层"的见证。新增顶层模块时仍要顺手加一行（见下一条清单里那条纪律）。
+ */
+const REQUIRED_PATHS = [
+  'src/options/options.ts',
+  'src/options/store.ts',
+  'src/options/dom.ts',
+  'src/options/section.ts',
+  'src/options/engine-health.ts',
+  'src/options/rule-pattern.ts',
+  'src/options/search.ts',
+];
+
+/**
+ * 递归那一层（`sections/`）里**今天存在的每一个区块模块都必须在清单上**。它们全是渲染
+ * 用户输入的代码（档案名、语言标签、缓存计数），漏扫任何一个都等于守卫在那一块上是瞎的。
+ *
+ * **这份清单是下限，不是穷举**：断言只说"必须包含这些"，将来新增文件不影响它；反过来说，
+ * `npm run build` 不会因为这里漏列一个新文件而变红——所以它靠的是**新增文件时顺手加一行**
+ * 这条纪律（写在这里，就是为了让纪律有个落点）。**纪律不是修辞**：实测顶层那份清单就这么
+ * 漏过 3 个模块（`rule-pattern.ts` / `search.ts` / `engine-health.ts`），直到补上之前，
+ * 那三个文件在守卫眼里只是"顺便被扫到"，不是"被钉住"（见 `REQUIRED_PATHS`）。
+ *
+ * 为什么仍然逐个列路径，而不是只写一句"`sections/` 至少扫到一个"：
+ * - 写成 `toBe(REQUIRED_SECTION_PATHS.length)` 会在每加一个区块时变红（那是正常增长，不是回归）；
+ * - 写成 `toBeGreaterThanOrEqual(REQUIRED_SECTION_PATHS.length)`（今天 8）确实抓得住"`sections/`
+ *   整个目录被漏掉"这一种——实测把 `collect` 的递归那一行去掉后只剩顶层 7 个，`>= 8` 为 false、
+ *   当场红——但它**说不出缺的是哪一个模块**：今天区块正好 8 个，少扫到一个会跌破下界；将来涨到
+ *   9 个之后再少扫到一个（总数仍 ≥ 8）它就看不见了。
+ *
+ * 逐个列路径是"对增长稳健、又抓得住遍历器坏掉"的形态：下面每一条钉住一个具体模块，
+ * 少扫到任何一个就红。（这四个是 Task 4~7 新建的区块：`shortcuts.ts` `5160200`、`glossary.ts`
+ * `b85513e`、`site-rules.ts` `7cc8080`、`prompt.ts` `ca90981`；清单自 Task 3 之后一直没跟着补，
+ * 直到 `7f7a2dd` 一次补齐。别再写成"`shortcuts.ts` 在 Task 3 时就存在"——那句话与 `git log` 不符。）
+ */
+const REQUIRED_SECTION_PATHS = [
+  'src/options/sections/engine.ts',
+  'src/options/sections/language.ts',
+  'src/options/sections/shortcuts.ts',
+  'src/options/sections/glossary.ts',
+  'src/options/sections/site-rules.ts',
+  'src/options/sections/prompt.ts',
+  'src/options/sections/privacy.ts',
+  'src/options/sections/cache.ts',
+];
+
 describe('设置页源码守卫：用户数据一律走 textContent', () => {
-  it('至少扫到 8 个文件（防止路径写错导致空扫描假通过）', () => {
-    // 8 = 本任务落地后 `src/options` 下的模块数（options/store/dom/section + 4 个区块）。
-    // 后面每个任务还会往 `sections/` 里加文件，这个下界不会再动。
-    expect(sources.length).toBeGreaterThanOrEqual(8);
+  it('扫到的文件里必须含这些已知模块（防止遍历器坏掉/路径写错导致空扫描假通过）', () => {
+    const paths = sources.map((file) => file.path);
+    expect(paths).toEqual(expect.arrayContaining([...REQUIRED_PATHS, ...REQUIRED_SECTION_PATHS]));
+    // 只扫顶层时上面每一条都会红；这一条是"递归那一层确实被走到"的最短见证。
+    expect(paths.some((path) => path.startsWith('src/options/sections/'))).toBe(true);
   });
 
-  it('不出现 innerHTML / outerHTML / insertAdjacentHTML', () => {
+  it('这些文件里不出现 HTML 注入面的那三个标识符（清单见 FORBIDDEN 正则）', () => {
     const hits: string[] = [];
     for (const file of sources) {
       file.text.split('\n').forEach((line, index) => {
@@ -1928,7 +2048,15 @@ Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task
 
 export type StatusKind = 'ok' | 'err' | 'pending';
 
-/** 状态行的唯一出口：`data-kind` 决定颜色，文案一律 `textContent`（规格 §7：用户数据不许走 HTML 解析）。 */
+/**
+ * 写入状态行的**唯一手段**：`data-kind` 与文案永远一起设（分开写就会出现"颜色是绿的、
+ * 文案还是上一次那句"的中间态）。文案一律 `textContent`——用户数据不许走 HTML 解析（规格 §7）。
+ *
+ * ⚠ **本文件里不许写出那三个 HTML 注入面的标识符**（`tests/options/no-innerhtml.test.ts`
+ * 顶部 `FORBIDDEN` 正则里那三个）：该守卫按**裸标识符**扫源码文本、**连注释一起扫**
+ * （口径是有意的"往严格一侧失败"），所以想提这件事只能用描述性说法——**这段注释自己就是
+ * 一次实例**：第一版把它写了出来，守卫当场红了。别"顺手补全"它。
+ */
 export function setStatus(element: HTMLElement, kind: StatusKind, message: string): void {
   element.dataset.kind = kind;
   element.textContent = message;
@@ -1989,12 +2117,19 @@ Expected: PASS —— **4 条用例**
 ```ts
 // src/options/section.ts
 //
-// 设置页的区块契约。八个区块各一个模块，`options.ts` 只负责把它们装配起来。
+// 设置页的区块契约。每个区块一个模块，`options.ts` 只负责把它们装配起来。
+// （本轮 Task 3 先落地 4 个区块；`SectionId` 里那八个值就是全集，Task 4~8 逐个补齐。）
 //
 // `bind` 与 `mount` 必须分成两段：**监听器要在第一个 `await` 之前挂好**。`loadSnapshot()`
 // 有明确的拒绝路径（存储里是更高版本、存储读写失败），等读完再挂的话，那些拒绝会让界面变成
 // 一个"看着能点、其实没有任何监听器"的死页面，连重试都点不了（`options.ts` 里那条注释
 // 与 `tests/options/options.test.ts` 的版本闸门用例都是这件事的见证）。
+//
+// ⚠ **`SectionContext` 接口全文只在本文件里定义这一处**（`settings()` / `reload()` / `save()`
+// 三个成员，一个都不能少）。**不要在任何地方再抄第二份**：一份带 `reload`、一份不带的重复
+// 定义迟早会让某个调用点拿到错的那份，而 `npm run typecheck` 只会在下游炸
+// （`Property 'reload' does not exist`），排查成本远高于删掉几行。`options.ts` 里那个
+// `const context: SectionContext` 因此必须把三个成员都实现。
 import type { Settings } from '../shared/settings';
 
 export type SectionId =
@@ -2060,8 +2195,24 @@ export interface Section {
 // 隐私硬规矩（与搬家前逐字相同）：档案编辑框的 API Key 输入框**永远从空开始、不回填**，
 // 留空保存 = 保留原 Key；密钥只进 `<input>.value` 属性的编辑会话，绝不写进行的任何文本，
 // 也不进任何 `title` / 文本节点。
+//
+// ⚠ **三处跨函数的耦合，拆这个文件之前先读这里**（都是"各留一份就会静默漂移"的东西）：
+// 1. `expandedId`（含 `NEW_DRAFT_ID` 这个草稿哨兵）是**列表渲染与编辑器共用**的状态：
+//    `renderProfiles` / `buildProfileRow` 读它决定展开哪一行，`bind` 里的事件委托改它，
+//    `handleSaveProfile` / `handleDeleteProfile` 也改它。要拆就把这个变量与 `NEW_DRAFT_ID`
+//    一起搬走（或显式传参），**不要在两处各留一份**——两份 `expandedId` 的症状是"点了没反应/
+//    展开的不是这一行"，而类型检查看不出来。
+// 2. `buildEditor` 造出来的控件 class（`.profile-label` / `.profile-base-url` /
+//    `.profile-model-name` / `.profile-api-key` / `.profile-provider` / `.profile-toggle-key`）
+//    是**契约**：`readEditor` / `validateProfileForm` / `applyProviderTemplate` /
+//    `toggleKeyVisibility` 与 `tests/options/options.test.ts` 的 `fieldOf(editor, …)` 全都按
+//    这组名字找控件。改名要四处一起改（含测试），否则运行时才炸、且是在"保存档案"那一刻才炸。
+// 3. 两个渲染函数的**数据来源不同，别混用**：`renderProfiles` 渲染的是**内存快照**
+//    （`ctx.settings()`，可能与存储已经不一致）；`renderFromStorage` 是"先 `ctx.reload()`
+//    重读存储、成功了再渲染"，并**返回是否真的刷新成功**。调用方只有在拿到 `true` 时才许宣称
+//    "列表已刷新"——这条没写下来的后果就是一个真出现过的 bug：刷新失败时列表没换、提示却说换了。
 import { getEngine, DEFAULT_ENGINE_ID } from '../../engines/registry';
-import { toEngineError } from '../../engines/types';
+import { toEngineError, type EngineConfig, type Translator } from '../../engines/types';
 import {
   hasHostPermission,
   originPattern,
@@ -2077,7 +2228,18 @@ import {
   type EngineProfile,
   type Settings,
 } from '../../shared/settings';
-import { describe, element, fillSelect, requireWithin, runSafely, setStatus } from '../dom';
+import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';
+// 状态点的记录（§4.3）：独立于 `store.ts` 的会话内记忆，见 `engine-health.ts` 顶部的说明。
+import {
+  FREE_ENGINE_HEALTH_KEY,
+  forgetEngineHealth,
+  loadEngineHealth,
+  profileHealthKey,
+  profileIdFromHealthKey,
+  redactSecret,
+  saveEngineHealth,
+  type EngineHealth,
+} from '../engine-health';
 // 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 import type { Section, SectionContext } from '../section';
@@ -2101,6 +2263,12 @@ const TEST_TIMEOUT_MS = 20_000;
 
 /** 当前展开编辑的档案 id（或 NEW_DRAFT_ID）；null = 全部收起。一次只展开一个。 */
 let expandedId: string | null = null;
+
+/**
+ * 状态点的记录（§4.3）。三态里"从没测过"是**没有记录**，所以这里只存有结果的那些。
+ * `mount` 时从 `chrome.storage.session` 读一次，之后每次测试连接就地更新。
+ */
+let health: Record<string, EngineHealth> = {};
 
 /** 档案编辑表单的原始值。保存与测试连接共用它，保证两条路走的是同一份输入。 */
 interface ProfileFormValues {
@@ -2174,6 +2342,56 @@ function deniedHint(result: HostPermissionResult): string {
 }
 
 /* ------------------------------------------------------------------ 渲染 */
+
+/**
+ * 三态：绿 = 最近一次测试连接通过；**灰 = 从没测过（不代表可用）**；红 = 最近一次失败。
+ * 刻意**不**做"填了 Key 就点绿"——填了 Key 不代表能用（模型名写错就是 HTTP 400）。
+ */
+function applyDot(dot: HTMLElement, record: EngineHealth | undefined): void {
+  if (record === undefined) {
+    dot.dataset.state = 'idle';
+    dot.title = '从没测过（不代表可用）';
+    return;
+  }
+  if (record.state === 'ok') {
+    dot.dataset.state = 'ok';
+    dot.title = '最近一次测试连接通过';
+    return;
+  }
+  dot.dataset.state = 'bad';
+  dot.title = `最近一次测试连接失败：${record.detail}`;
+}
+
+/**
+ * 内置免费引擎那一行：名字 + 内置徽章 + 状态点 + 测试连接。
+ * **没有删除、没有编辑**（§3.1：内置免费引擎不可删，也没有可编辑的配置）。
+ * 它不带 `data-profile-id`：既有用例的 `profileRows()` 只数真实档案。
+ *
+ * 状态点读的是引擎键 `FREE_ENGINE_HEALTH_KEY`。它与档案键（`p:<id>`）按构造不可能相等，
+ * 所以免费行与档案行**不会互相点亮**（见 `engine-health.ts` 里那两个键空间）。这一行也没有
+ * 任何取自 `ctx` 的东西（配置是零配置、状态点来自会话记录），所以不接区块上下文。
+ */
+function buildFreeEngineRow(): HTMLElement {
+  const engine = getEngine(DEFAULT_ENGINE_ID);
+  const row = element('div', 'item');
+  row.dataset.engineFree = '';
+
+  const line = element('span', 'line');
+  line.append(element('span', 'name', engine.name), element('span', 'badge', '内置'));
+  const dot = element('span', 'dot');
+  applyDot(dot, health[FREE_ENGINE_HEALTH_KEY]);
+  line.append(dot);
+
+  const grow = element('span', 'grow');
+  grow.append(line, element('span', 'meta', '无需 API Key'));
+  row.append(grow);
+
+  const test = element('button', 'ghost tiny', '测试连接');
+  test.type = 'button';
+  test.dataset.action = 'test-free';
+  row.append(test);
+  return row;
+}
 
 function buildEditor(id: string, profile: EngineProfile | undefined): HTMLElement {
   const editor = element('div', 'profile-editor');
@@ -2288,6 +2506,12 @@ function buildProfileRow(ctx: SectionContext, id: string): HTMLElement {
   if (!isNew && snapshot.engineId === id) {
     line.append(element('span', 'badge', '使用中'));
   }
+  if (!isNew) {
+    // 草稿行没有 id，也就没有"最近一次测试"可言——不给它一个永远灰的点。
+    const dot = element('span', 'dot');
+    applyDot(dot, health[profileHealthKey(id)]);
+    line.append(dot);
+  }
   const grow = element('span', 'grow');
   grow.append(
     line,
@@ -2314,6 +2538,8 @@ function renderProfiles(ctx: SectionContext): void {
   if (expandedId === NEW_DRAFT_ID) {
     profilesList.append(buildProfileRow(ctx, NEW_DRAFT_ID));
   }
+  // 内置免费引擎永远排在最后（§3.1：它不可删），每次重绘都跟着列表一起画。
+  profilesList.append(buildFreeEngineRow());
 }
 
 /** 档案区顶部的说明：当前在用哪一档（选择器的真相在弹窗，这里如实指路）。 */
@@ -2394,6 +2620,109 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
 }
 
 /**
+ * 真发一次极短请求并上报结果——档案与内置免费引擎**走同一条路**。
+ * 抽出来的理由不是"少写几行"：状态点的记录、超时、错误码展开这三件事必须两处一致，
+ * 各写一份必然漂移。
+ *
+ * `healthKey` 为 `null` = **这次测试不落记录**（只有草稿行走这条：见 `recordHealth`）；
+ * 其余调用方交的是 `profileHealthKey(id)` 或免费引擎的 `FREE_ENGINE_HEALTH_KEY`。
+ */
+async function runConnectionTest(
+  ctx: SectionContext,
+  healthKey: string | null,
+  engine: Translator,
+  config: EngineConfig,
+  label: string,
+): Promise<void> {
+  setStatus(engineStatus, 'pending', `正在用${label}翻译一次「${TEST_TEXT}」…`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
+  try {
+    const [translation] = await engine.translate(
+      {
+        texts: [TEST_TEXT],
+        from: 'auto',
+        to: ctx.settings()?.targetLang ?? DEFAULT_SETTINGS.targetLang,
+        signal: controller.signal,
+      },
+      config,
+    );
+    // 成功路径也过一遍脱敏：状态行与记录一样，都不该出现那把 Key（返回的"译文"由服务商决定）。
+    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${redactSecret(translation ?? '', config.apiKey)}`);
+    await recordHealth(healthKey, { state: 'ok', detail: '' }, 'ok');
+  } catch (raw) {
+    // 错误码要显示出来（AUTH / RATE_LIMIT / NETWORK……）：它是用户判断"该改 Key 还是
+    // 该稍后重试"的唯一依据，只给一句自然语言会把这两件事混在一起。
+    const error = toEngineError(raw);
+    // 详情来自服务商正文时可能回显请求内容（含 Key）：**显示与持久化是两条路径，两条都要脱敏**，
+    // 所以在这一处把消息抹干净，下面两句共用它（`redactSecret` 见 `engine-health.ts`）。
+    const message = redactSecret(error.message, config.apiKey);
+    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${message}`);
+    await recordHealth(healthKey, { state: 'bad', detail: `${error.code}：${message}` }, 'err');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 记录键 → 该去哪一行找点。**两个键空间的划分只有这一处**：引擎键 → 免费引擎那一行；
+ * 档案键（`p:<id>`）→ 按 `data-profile-id` 找 `<id>` 那一行。
+ *
+ * 为什么这里不需要"键序"：键自带前缀，前缀决定去哪一行，**按构造**不存在"一个字符串既可能
+ * 是档案 id、又可能是引擎键"的形状。旧写法（先 `rowById(id)`、找不到再回落免费行）正是被
+ * 档案 id 抢先的那条路：一条 id 恰好等于引擎键的档案会把免费行的结果接到自己那一行上。
+ * 不认识的键返回 `null` 是防御性的一支（本函数只接调用方刚拼出来的键）；老构建写下的裸 id
+ * 也根本到不了这里——所有读取处一律按新键取，这正是"不写迁移"的口径。唯一会被老键命中的形状
+ * 是 `p:<id>` 那种（只能来自手改存储）：读取处按 `p:<id>` 取值，id 对上的档案行就会认领它；
+ * 例外与取舍的完整说明在 `engine-health.ts` 的迁移那一段。
+ */
+function rowForKey(key: string): HTMLElement | null {
+  if (key === FREE_ENGINE_HEALTH_KEY) {
+    return profilesList.querySelector<HTMLElement>('[data-engine-free]');
+  }
+  const id = profileIdFromHealthKey(key);
+  return id === null ? null : rowById(id);
+}
+
+/**
+ * 找某一行的状态点。档案行走 `data-profile-id`；**内置免费引擎那一行刻意没有 id**
+ * （见 `buildFreeEngineRow`），所以只能按它自己的标记找（`rowForKey` 分派）。
+ */
+function healthDot(key: string): HTMLElement | null {
+  return rowForKey(key)?.querySelector<HTMLElement>('.dot') ?? null;
+}
+
+/**
+ * 记下这次测试的结果，并**就地**更新那一行的点（不整表重绘：重绘会把用户正在编辑的表单丢掉）。
+ * 记录写不进去时，把原因**追加**在刚才那句话后面——本次测试的结果是真的，不该被它改掉颜色。
+ *
+ * `key === null` = **这次测试不落记录**，只有草稿行走这条（调用方见 `handleTestProfile`）：
+ * 草稿行刻意**没有状态点**（`buildProfileRow` 不给它画点），也**没有清理出口**——只有真档案
+ * 被删除才会 `forgetEngineHealth`，而草稿永远删不掉。给它写一条记录就是留下一条谁也认领不了、
+ * 也没人清理的幽灵键（实测改前：草稿点一次「测试连接」，会话存储里就多一条 `{"__new__":…}`）。
+ * 连接结果本身照常写在状态行上，那才是用户当场要看的东西。
+ *
+ * 交进来的 `key` 是**已经分好键空间**的记录键（`profileHealthKey` / `FREE_ENGINE_HEALTH_KEY`），
+ * 不再兼作 DOM 上的档案 id：行由 `rowForKey` 从键推出来（键 → 行只有一处判断）。
+ */
+async function recordHealth(
+  key: string | null,
+  record: EngineHealth,
+  kind: StatusKind,
+): Promise<void> {
+  if (key === null) return;
+  health = { ...health, [key]: record };
+  const dot = healthDot(key);
+  if (dot !== null) applyDot(dot, record);
+  try {
+    await saveEngineHealth(key, record);
+  } catch (raw) {
+    setStatus(engineStatus, kind, `${engineStatus.textContent ?? ''}（测试结果没能记住：${describe(raw)}）`);
+  }
+}
+
+/**
  * 测试连接：**真的发一次翻译请求**，走的是生产引擎代码本身。测的是**这一行正在编辑的
  * 档案**（表单当前值，未保存也算），不是全局某份配置——多个档案时代"测一下"必须说得清测的是谁。
  */
@@ -2425,30 +2754,23 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
     profiles: [{ id, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey }],
   });
 
-  setStatus(engineStatus, 'pending', `正在用档案「${values.label}」翻译一次「${TEST_TEXT}」…`);
+  // 草稿行不落记录（`__new__` 既没有点可更新、也没有清理出口）：把 `null` 交给同一条路。
+  // 其余情况交的是**档案键**（不是裸 id）——键空间的分法只有 `engine-health.ts` 一处。
+  await runConnectionTest(
+    ctx,
+    id === NEW_DRAFT_ID ? null : profileHealthKey(id),
+    engine,
+    config,
+    `档案「${values.label}」`,
+  );
+}
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
-  try {
-    const [translation] = await engine.translate(
-      {
-        texts: [TEST_TEXT],
-        from: 'auto',
-        // 目标语言取当前快照（即时保存之后，下拉里选的就是存储里的那一份）。
-        to: ctx.settings()?.targetLang ?? DEFAULT_SETTINGS.targetLang,
-        signal: controller.signal,
-      },
-      config,
-    );
-    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${translation ?? ''}`);
-  } catch (raw) {
-    // 错误码要显示出来（AUTH / RATE_LIMIT / NETWORK……）：它是用户判断"该改 Key 还是
-    // 该稍后重试"的唯一依据，只给一句自然语言会把这两件事混在一起。
-    const error = toEngineError(raw);
-    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${error.message}`);
-  } finally {
-    clearTimeout(timer);
-  }
+/** 内置免费引擎的测试连接：没有表单值可读，配置就是空的（免费接口零配置）。 */
+async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
+  const { engine, config } = resolveEngine({ engineId: DEFAULT_ENGINE_ID, profiles: [] });
+  // 记录写在**引擎键**上，不是档案那一格（见 `engine-health.ts` 的两个键空间）：
+  // 就算某个档案的 id 恰好等于这个键，它的记录键也是 `p:` 开头的另一个字符串。
+  await runConnectionTest(ctx, FREE_ENGINE_HEALTH_KEY, engine, config, `免费引擎「${engine.name}」`);
 }
 
 /**
@@ -2468,8 +2790,12 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
   if (target === undefined) {
     // 别处已经删过（并发窗口）：如实说，并刷新到存储的真实列表，不静默"删除成功"。
     expandedId = null;
-    await renderFromStorage(ctx);
-    setStatus(engineStatus, 'err', '该档案已经不在了（可能在别处被删除），列表已刷新。');
+    // 刷新**可能失败**（存储版本高于本代码、读写失败）：只有真的刷新成功才许说"列表已刷新"，
+    // 否则界面会一边留着旧快照渲染出来的那一行、一边声称自己已经刷新过了。
+    const refreshed = await renderFromStorage(ctx);
+    if (refreshed) {
+      setStatus(engineStatus, 'err', '该档案已经不在了（可能在别处被删除），列表已刷新。');
+    }
     return;
   }
   const wasCurrent = latest.engineId === id;
@@ -2492,20 +2818,44 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
       ? `已删除当前在用的档案「${target.label}」，引擎已回落到「${getEngine(DEFAULT_ENGINE_ID).name}」，请在弹窗里重新选择。`
       : `已删除档案「${target.label}」。`,
   );
+  // 它的测试记录一并清掉。内存里的那份**立刻**扔掉（在 `try` 之前）：否则界面下一次重绘
+  // 还可能画出它的点。存储里那份删不掉只影响下次打开设置页，如实说一句就够。
+  // 删的必须是它的**档案键**（`p:<id>`）：留空或删裸 id 都会让它下次重绘时又亮起来。
+  delete health[profileHealthKey(id)];
+  try {
+    await forgetEngineHealth(profileHealthKey(id));
+  } catch (raw) {
+    setStatus(
+      engineStatus,
+      'ok',
+      `${engineStatus.textContent ?? ''}（它的测试记录没清掉：${describe(raw)}）`,
+    );
+  }
 }
 
-/** 把界面刷成**存储里的真实样子**（别处已经删掉/改过这个档案时的并发窗口用）。 */
-async function renderFromStorage(ctx: SectionContext): Promise<void> {
+/**
+ * 把界面刷成**存储里的真实样子**（别处已经删掉/改过这个档案时的并发窗口用）。
+ *
+ * 返回**是否真的刷新成功**：失败时只写状态行并返回 `false`，**绝不继续渲染**。
+ * 为什么不继续渲染：`ctx.reload()` 失败时快照仍是上一份成功读到的（`store.ts` 里那条
+ * 有意为之的降级），拿它渲染出来的列表**已经不等于存储**——调用方若因此宣称"列表已刷新"，
+ * 界面就在撒谎；而且那一行"幽灵档案"会被重新画回页面上。
+ *
+ * **这条不变式就是曾经的一个真 bug**（删档案撞上并发窗口时列表没刷新、提示却说刷新了）。
+ */
+async function renderFromStorage(ctx: SectionContext): Promise<boolean> {
   // 读的入口只有存储层一处（`store.ts` 的 `reload`）：这里刻意不自己 `loadSettings()` 之后
   // 偷偷改快照——那是存储层的职责，两处各改一份就又多了一条漂移路径。
   try {
     await ctx.reload();
   } catch (raw) {
+    // 失败**就地消化**：原因写进状态行，然后 `return false` 让调用方闭嘴（不许说"已刷新"）。
     setStatus(engineStatus, 'err', `列表刷新失败：${describe(raw)}`);
-    return;
+    return false;
   }
   renderProfiles(ctx);
   renderEngineHint(ctx);
+  return true;
 }
 
 /** 显示 / 隐藏某个档案编辑区的 API Key。只改该行的 `type` 与按钮文案，值不动（更不会复制到别处）。 */
@@ -2547,6 +2897,11 @@ export const engineSection: Section = {
       if (!(target instanceof HTMLElement)) return;
       if (target.classList.contains('profile-toggle-key')) {
         toggleKeyVisibility(target);
+        return;
+      }
+      // 免费引擎那一行不在 `[data-profile-id]` 里，必须在行判断之前处理。
+      if (target.dataset.action === 'test-free') {
+        runSafely(engineStatus, '测试连接失败', () => handleTestFreeEngine(ctx));
         return;
       }
       const row = target.closest('[data-profile-id]');
@@ -2599,7 +2954,14 @@ export const engineSection: Section = {
     });
   },
 
-  mount(ctx: SectionContext): void {
+  async mount(ctx: SectionContext): Promise<void> {
+    try {
+      health = await loadEngineHealth();
+    } catch (raw) {
+      // 读不出来不是致命错误：所有点回到"从没测过"，但要如实说一句。
+      health = {};
+      setStatus(engineStatus, 'err', `读取上次的测试结果失败：${describe(raw)}`);
+    }
     renderProfiles(ctx);
     renderEngineHint(ctx);
   },
@@ -2622,7 +2984,7 @@ export const engineSection: Section = {
 // 「保存语言与显示」按钮随本轮改版一起消失。
 import { LANGUAGES } from '../../core/lang';
 import { DISPLAY_MODES, type DisplayMode, type Settings } from '../../shared/settings';
-import { fillSelect, setStatus } from '../dom';
+import { fillSelect } from '../dom';
 import type { Section, SectionContext } from '../section';
 
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
@@ -2728,7 +3090,7 @@ export const privacySection: Section = {
 ```ts
 // src/options/options.ts
 //
-// 设置页的装配层：读设置、把八个区块挂起来、把全局的失败兜成一句话。**这里不写业务逻辑**——
+// 设置页的装配层：读设置、把各区块挂起来、把全局的失败兜成一句话。**这里不写业务逻辑**——
 // 每一组设置的行为都在 `sections/<name>.ts` 里，写存储一律走 `store.ts`。
 //
 // 结构上刻意保持"两个阶段"：
@@ -2739,19 +3101,34 @@ export const privacySection: Section = {
 import { describe, runSafely, setStatus } from './dom';
 import { engineSection } from './sections/engine';
 import { languageSection } from './sections/language';
+import { shortcutsSection } from './sections/shortcuts';
+import { glossarySection } from './sections/glossary';
+import { siteRulesSection } from './sections/site-rules';
+import { promptSection } from './sections/prompt';
 import { cacheSection } from './sections/cache';
 import { privacySection } from './sections/privacy';
 import type { Section, SectionContext } from './section';
+import { createSearch } from './search';
 import { currentSettings, loadSnapshot, patchSettings } from './store';
 import type { Settings } from '../shared/settings';
 
 /**
- * 八个区块，**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
- * `tests/options/search.test.ts` 有一条结构守卫钉住这件事）。导出是给测试用的。
+ * 区块清单：**顺序就是页面顺序与导航顺序**（搜索索引、导航项、`[data-section]` 三者一一对应，
+ * 且顺序必须一致）。导出是给测试用的。
+ *
+ * 守卫在 `tests/options/search.test.ts` 里：它按这个数组逐项核对导航项、`[data-section]` 元素与
+ * 别名表——"加了一个区块却忘了配导航项"会当场红（删掉任何一个 `data-nav` 也一样）。
+ *
+ * 顺序就是下面这个数组的顺序，这里不复述一份（复述出来的那份清单必然有一次会漂）；
+ * 也不写死数量（写死的数字每加一项就过期一次）。
  */
 export const SECTIONS: readonly Section[] = [
   engineSection,
   languageSection,
+  shortcutsSection,
+  glossarySection,
+  siteRulesSection,
+  promptSection,
   cacheSection,
   privacySection,
 ];
@@ -2792,8 +3169,29 @@ async function start(): Promise<void> {
   for (const section of SECTIONS) await section.mount(context);
 }
 
+/** 搜索框：只过滤区块与字段标签，不改 DOM 结构（规格 §4.2）。 */
+function bindSearch(): void {
+  // 带类型参数取（`getElementById` 只给 `HTMLElement`，要用 `.value` 就得再来一次
+  // `as HTMLInputElement`——那正是这里要拿掉的东西），然后**如实判空**，而不是把"可能为
+  // null"抹掉：这个函数跑在 `runSafely` **之外**（见 `init()`：区块 `bind` → 这里 → 兜底），
+  // null 会在 `addEventListener` 上抛，`init()` 当场中断——后面所有区块的监听器都挂不上，
+  // 页面停在文件顶部那段注释点名要防的死状态。少了搜索框只该是"搜索不可用"，不该是整页不可用。
+  // （这一行与计划里 Task 9 Step 3 的逐字片段不同，属主动偏离，记账见提交信息。）
+  // 静态 HTML 里 `#search` 恒在，所以这条分支今天在真实页面上不可达；读数在
+  // `tests/options/search.test.ts` 的"页面里没有 #search"那条：把搜索框摘掉再加载设置页，
+  // 不抛、且悬停翻译开关照常存得下去（摘掉之前那条以
+  // `Cannot read properties of null (reading 'addEventListener')` 拒绝）。
+  const input = document.querySelector<HTMLInputElement>('#search');
+  if (input === null) return;
+  const search = createSearch(SECTIONS);
+  input.addEventListener('input', () => {
+    search.apply(input.value);
+  });
+}
+
 function init(): void {
   for (const section of SECTIONS) section.bind(context);
+  bindSearch();
   runSafely(engineStatus, '设置读取失败', start);
 }
 
@@ -3111,6 +3509,54 @@ describe('设置页：快捷翻译', () => {
     expect(chromeStub.tabs.sent).toEqual([]);
   });
 
+  it('消息送达但页面没确认（旧内容脚本、没回 ok）时同样不谎称"即时生效"', async () => {
+    await seedSettings({ hoverTranslate: true });
+    await loadOptions();
+    chromeStub.tabs.activeTabs = [{ id: 7 }];
+    // **刻意不用 `rejectSendMessage`**：那条路走的是"没有接收方 → sendMessage 抛错"，
+    // 于是 `notifyAllTabs` 里那句 `reply?.ok === true` 根本不会被求值。把 `responder`
+    // 留成 null 时 sendMessage **兑现 undefined**——消息送达了、但没有任何页面确认，
+    // 这正是那句守卫唯一被真正判定的分支（把它改成无条件 `confirmed = true` 会恰好红在这里）。
+    expect(chromeStub.tabs.responder).toBe(null);
+
+    flip(hoverSwitch(), false);
+
+    await waitFor(async () => (await storedSettings()).hoverTranslate === false);
+    await waitFor(() => (status().textContent ?? '').includes('重新加载页面后生效'));
+    // "一个字都没回"**不算确认**：这里若说「即时生效」就是替页面许下一个它没做的承诺。
+    expect(status().textContent ?? '').not.toContain('即时生效');
+    expect(status().dataset.kind).toBe('ok');
+    expect(chromeStub.tabs.sent.length).toBe(1);
+  });
+
+  it('先成功写过一次、之后写失败：回拨用的是**那一次成功**留下的值（不是别的开关、也不是默认值）', async () => {
+    // 这条钉住 `applied[field] = next;`——它删不掉（`applied[field] ?? false` 那个回拨要用），
+    // 但前 6 条用例一条都没约束它：把它改成 `!next` 全绿。真正需要它的是**同一个开关
+    // "先成功一次、再失败一次"**（跨开关的构造测不到它：`applied` 是**分键**的，A 的写永远
+    // 读不到 B；而且那种构造里两次保存都失败，这一行根本没执行）。
+    await seedSettings({ hoverTranslate: true, selectionTranslate: true });
+    await loadOptions();
+
+    // ① 先成功写一次 false：走完 `applied.hoverTranslate = false`。
+    flip(hoverSwitch(), false);
+    await waitFor(async () => (await storedSettings()).hoverTranslate === false);
+
+    // ② 模拟另一个上下文写入更高版本：此后每次写都被版本门禁拒绝（`store.ts` 的重读会撞上它）。
+    const stored = await storedSettings();
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { ...stored, version: 99 } });
+
+    // ③ 再拨到 true：这次写失败，界面必须回到**①那一次成功**的 false。
+    //    若 `applied` 没被①更新过（仍是 null），回拨同样落到 false —— 所以这条用例区分不出
+    //    "null 回落"与"记忆生效"；它区分的是 `applied[field] = !next` 那种记反了的写法。
+    flip(hoverSwitch(), true);
+
+    await waitFor(() => status().dataset.kind === 'err');
+    expect(hoverSwitch().checked).toBe(false);
+    expect(status().textContent ?? '').toContain('保存悬停翻译失败');
+    // 写失败不许污染存储：第一次那笔仍是存储里的真实值。
+    expect((await storedSettings()).hoverTranslate).toBe(false);
+  });
+
   it('「去浏览器设置」开的是 chrome://extensions/shortcuts（快捷键不能由扩展代改）', async () => {
     await seedSettings();
     await loadOptions();
@@ -3205,8 +3651,16 @@ const SHORTCUTS_URL = 'chrome://extensions/shortcuts';
 type FeatureField = 'hoverTranslate' | 'selectionTranslate';
 
 /**
- * 上一次**确认生效**的取值。回滚要用它——`change` 触发时控件已经被用户拨过了，
+ * 上一次**确认写入成功**的那一档。回拨要用它——`change` 触发时控件已经被用户拨过了，
  * 手里必须有一份"改之前是什么"的记忆。`mount` 时按存储填，每次保存成功后更新。
+ *
+ * ⚠ **别把它读成"真正生效的那一档"**：设置从没读出来过时它是 null（`mount` 在那条路径上
+ * 直接 return），此时的回拨值取 `false`（理由见 `bindSwitch` 里那句注释），而**内容脚本
+ * 那一侧是按 `DEFAULT_SETTINGS` 挂的监听**（`hoverTranslate` / `selectionTranslate` 都是
+ * `true`，见 `shared/settings.ts` 的 `DEFAULT_SETTINGS` 与 `content/index.ts` 的
+ * `initFeatureSettings` 失败分支）。也就是说那条路径上**界面是 off、页面行为是 on**。
+ * 本模块改不了这个不一致（它由内容脚本自己的读失败兜底决定）——这里只是不许把 `false`
+ * 说成"生效值"。
  */
 const applied: Record<FeatureField, boolean | null> = { hoverTranslate: null, selectionTranslate: null };
 
@@ -3215,6 +3669,9 @@ const applied: Record<FeatureField, boolean | null> = { hoverTranslate: null, se
  *
  * 逐个 `try/catch`：没有内容脚本的标签（`chrome://`、扩展商店、还没注入的页面）
  * 一定会拒绝，那是正常情况，不该让整条链断掉，也不该被当成"全部失败"。
+ *
+ * **路标：它现在住在本文件，别 import 它**——第二个需要广播的区块出现时才搬，搬到新模块或
+ * `shared/`（**不是 `dom.ts`**：那里的职责是不碰存储与 `chrome` 的纯 DOM 工具）；搬之前先读这里。
  */
 async function notifyAllTabs(payload: {
   hoverTranslate: boolean;
@@ -3222,19 +3679,23 @@ async function notifyAllTabs(payload: {
   targetLang: string;
 }): Promise<boolean> {
   const tabs = await chrome.tabs.query({});
-  let applied = false;
+  // 叫 `confirmed` 而不是 `applied`：模块级那个 `applied` 是"上一次写入成功的值"（Record），
+  // 同名会把这里误读成"在更新那个记忆"。**它只表示"至少有一个页面回了 ok"**，不是逐标签结论。
+  let confirmed = false;
   for (const tab of tabs) {
     if (tab.id === undefined) continue;
     try {
       const reply = (await chrome.tabs.sendMessage(tab.id, { type: MSG.APPLY_SETTINGS, payload })) as
         | { ok?: unknown }
         | undefined;
-      if (reply?.ok === true) applied = true;
+      if (reply?.ok === true) confirmed = true;
     } catch {
-      // 这个标签没有接收方（chrome:// 页、没注入内容脚本的页面）。继续下一个。
+      // 拒绝的原因在 sendMessage 兑现那一刻已经拿不到了（`raw` 被丢在这里），所以别指定单一原因：
+      // 多半是这个标签没有接收方（chrome:// 页、没注入内容脚本），也可能是在飞期间端口关了。
+      // 两种情况处理相同——继续下一个，不影响"至少一个确认"的判据。
     }
   }
-  return applied;
+  return confirmed;
 }
 
 function bindSwitch(ctx: SectionContext, input: HTMLInputElement, field: FeatureField, label: string): void {
@@ -3243,8 +3704,12 @@ function bindSwitch(ctx: SectionContext, input: HTMLInputElement, field: Feature
       const next = input.checked;
       const ok = await ctx.save(status, `保存${label}失败`, { [field]: next } as Partial<Settings>);
       if (!ok) {
-        // 写失败就把开关拨回**真正生效**的那一档：停在用户刚拨的值上等于界面撒谎。
-        // `applied` 还没填过（设置没读出来就拨）时回落到 false —— 那也是 HTML 里的初始值。
+        // 写失败就把开关拨回**上一次确认写入成功**的那一档：停在用户刚拨的值上等于界面撒谎。
+        //
+        // `applied` 还没填过（设置从没读出来过）时回落到 `false`——**注意它与内容脚本那一侧
+        // 的兜底不一致**：`DEFAULT_SETTINGS` 两个字段都是 `true`，读失败的内容脚本照样按
+        // `true` 挂监听，于是这里显示 off 而页面行为是 on。**仍然取 `false`**：`true` 会宣称
+        // "恢复到了开启"，而这条路径上没有任何东西确认过开启；取显示侧的保守值，别替内容脚本许诺。
         input.checked = applied[field] ?? false;
         return;
       }
@@ -3263,10 +3728,13 @@ function bindSwitch(ctx: SectionContext, input: HTMLInputElement, field: Feature
         setStatus(status, 'err', `已保存，但通知已打开的页面失败：${describe(raw)}`);
         return;
       }
+      // 确认分支只说"**收到通知的**页面"：判据是"至少一个确认"（被丢弃/休眠的标签可能永远不回应，
+      // 所以不能要求全部确认，否则常见情况会退化成"重新加载后生效"）。混合结果下——一个正常页
+      // 回 `ok`、一个旧内容脚本页什么都不回——"已打开的页面都即时生效"是超出证据的说法。
       setStatus(
         status,
         'ok',
-        appliedToPages ? `${label}已更新，已打开的页面即时生效。` : `${label}已保存；已打开的页面需要重新加载后生效。`,
+        appliedToPages ? `${label}已更新，收到通知的页面即时生效。` : `${label}已保存；重新加载页面后生效。`,
       );
     })();
   });
@@ -3386,7 +3854,7 @@ git commit -m "feat(options): 快捷翻译区块（悬停/划词开关即时保�
  * §3.4 术语表：一行一条、虚线添加、失焦保存、空行不写存储、用户输入不进 HTML。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, storedSettings, waitFor } from './harness';
+import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, settle, storedSettings, waitFor } from './harness';
 
 interface StoredTerm {
   from: string;
@@ -3502,6 +3970,10 @@ describe('设置页：术语表', () => {
     input.value = 'half';
     input.dispatchEvent(bubble('input'));
     input.dispatchEvent(bubble('keyup'));
+    // 这一路**本来就不该调 save**：`input` / `keyup` 上没有监听器（术语表只在 `change` 上写）。
+    // 先让写队列排空再读数：万一哪天它改成会写，写也是"排队 + 好几次 await"才落盘的——
+    // 不 flush 就查存储等于在写落地之前抢跑，下面这句"存储没被动过"读到旧值、恒真。
+    await settle();
     // §10.3：边打字边写存储既吵又没必要。
     expect(await storedGlossary()).toEqual([]);
 
@@ -3604,6 +4076,10 @@ describe('设置页：术语表', () => {
 
     from.value = 'serverless';
     from.dispatchEvent(bubble('change')); // = 用户按 Tab 离开 from
+    // handler 会跑到这一行，但半填的草稿行**不该落进写分支**。先让写队列排空再读数：
+    // 万一哪天它落进去了，写是"排队 + 好几次 await"才落盘的——抢跑读到旧值，会让
+    // "半行被写进存储"这个缺陷在这条断言上隐形（下面那句状态行断言同理）。
+    await settle();
     expect(await storedGlossary()).toEqual([]);
     expect(rows()).toHaveLength(1);
     expect(inputOf(rowAt(0), '.glossary-from').value).toBe('serverless');
@@ -4243,7 +4719,7 @@ Expected: PASS —— **11 条用例**（Task 8 落地后实测复核：`npx vit
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CURRENT_VERSION } from '../../src/shared/settings';
-import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, storedSettings, waitFor } from './harness';
+import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, settle, storedSettings, waitFor } from './harness';
 
 interface StoredRule {
   pattern: string;
@@ -4349,6 +4825,11 @@ describe('设置页：站点规则（写入侧）', () => {
 
     input.value = 'exa';
     input.dispatchEvent(bubble('input'));
+    // 这一路**本来就不该调 save**：`input` 上没有监听器（域名只在 `change` 上写）。
+    // 先让写队列排空再读数：万一哪天它改成会写（例如监听从 `change` 挪到 `input`），写也是
+    // "排队 + 好几次 await"才落盘的——不 flush 就查存储等于在写落地之前抢跑，
+    // 下面这句"存储没被动过"读到旧值、恒真。
+    await settle();
     expect(await storedRules()).toEqual([]);
   });
 
@@ -4509,8 +4990,18 @@ describe('设置页：站点规则（写入侧）', () => {
     pick<HTMLButtonElement>('add-rule').click();
     commit(rowAt(1), '');
 
+    // handler 会跑到这一行（草稿行的域名是空的），但这一支必须**完全静默**：不写存储、
+    // 连状态行都不许碰。先让写队列排空再读数——万一哪天它落进写分支，抢跑时读到的是
+    // "还没来得及写"，不是"没写"；下面那行状态行文案的比对同理。
+    await settle();
+
     expect(status().textContent).toBe(textBefore);
     expect(status().dataset.kind).toBe(kindBefore);
+    // ⚠ 这一句**守不住**"空域名被写进存储"这类变异，写在这里是为了别让人以为它守住了：
+    // 归一化发生在**写路径**上——`saveSettings` 落盘前先过 `mergeSettings` → `pickSiteRules`
+    // （`shared/settings.ts`，那里滤掉 `pattern.length === 0`），所以哪怕产品真的把空规则写
+    // 进去，存储里也不会多出那一条（内存快照里会，界面于是多一行），这句断言照样绿。
+    // 这一支**真正的读数**是上面那两行状态行（先红的那处）与下面那行行数。
     expect(await storedRules()).toEqual([{ pattern: 'keep.me', action: 'never' }]);
     expect(rows()).toHaveLength(2);
   });
@@ -4831,7 +5322,7 @@ git commit -m "feat(options): 站点规则写入侧（增删规则 + 域名规�
  * §3.6 自定义提示词：多行文本、失焦才写、留空即内置。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, storedSettings, waitFor } from './harness';
+import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, settle, storedSettings, waitFor } from './harness';
 
 function textarea(): HTMLTextAreaElement {
   return pick<HTMLTextAreaElement>('system-prompt');
@@ -4859,7 +5350,15 @@ describe('设置页：自定义提示词', () => {
 
     textarea().value = '语气正式一点';
     textarea().dispatchEvent(bubble('input'));
+    // 这一路**本来就不该调 save**：`input` 上没有监听器（文本控件只在 `change` 上写）。
+    // 先让写队列排空再读数：万一哪天它改成会写（例如监听从 `change` 挪到 `input`），写也是
+    // "排队 + 好几次 await"才落盘的——不 flush 就查存储等于在写落地之前抢跑，下面两句
+    // （存储仍是旧的、`dataset.kind` 还没被设过）就都会读到旧状态而恒真。
+    // 实测：监听从 `change` 改成 `input`，不加这句这条用例仍然绿。
+    await settle();
     expect((await storedSettings()).systemPrompt).toBe('');
+    // 第二个见证：打字这一路上**一次保存都不该发生过**——状态行的 data-kind 还从没被设过。
+    expect(status().dataset.kind).toBeUndefined();
 
     textarea().dispatchEvent(bubble('change'));
     await waitFor(async () => (await storedSettings()).systemPrompt === '语气正式一点');
@@ -4905,6 +5404,15 @@ describe('设置页：自定义提示词', () => {
     await waitFor(() => status().dataset.kind === 'err');
     expect(status().textContent).toContain('保存提示词失败');
     expect((await storedSettings()).systemPrompt).toBe('');
+  });
+
+  it('界面上如实说明「留空即使用内置提示词」——用户可见的承诺，不只是装饰', async () => {
+    // 独立成例而不是并进上面某条：这句话住在静态 HTML 里，**没有前置条件**，
+    // 并进别的用例只会让它的读数被那一条的前置挡在前面（本单元反复踩过的坑）。
+    await seedSettings({ systemPrompt: '' });
+    await loadOptions();
+
+    expect(pick<HTMLElement>('sec-prompt').textContent ?? '').toContain('留空即使用内置提示词');
   });
 });
 ```
@@ -4957,6 +5465,13 @@ Expected: FAIL —— `options.html 里没有 #system-prompt`
 //
 // **留空即内置**：存储里存空串，消费者（`engines/openai-compat.ts` 的 buildMessages）
 // 用 `systemPrompt.trim().length > 0` 判断要不要追加，所以用户清空之后行为自动回到内置。
+//
+// 但 `trim` **不是纯装饰**，也**不只管"要不要追加"**：`systemPrompt` 的**原文**还进缓存键
+// （设置被原样交给 `background/scheduler.ts`，那里 `hashString(deps.systemPrompt ?? '')`
+// 进 `buildCacheKey`）。于是 `'abc'` 与 `'  abc  '` 送给模型的提示**一模一样**、却是两个键：
+// 只改了前后空白，同样的段落也会重翻一遍。这是"存原文（不 trim）"这个决定的**代价**——
+// 多一个键、多翻一次；可接受（界面上也如实说了"提示词是缓存键的一部分，改过之后同样的段落
+// 会重新翻译一次"），但必须写在这里，别让后来者以为 trim 只是显示层的事。
 import type { Section, SectionContext } from '../section';
 
 const promptArea = document.getElementById('system-prompt') as HTMLTextAreaElement;
@@ -5062,10 +5577,25 @@ git commit -m "feat(options): 自定义提示词区块（失焦保存、留空�
  *
  * §3.7 缓存与请求：三个统计数字、缓存上限、高级折叠里的并发与批量。
  * 「清除」按钮本身的既有用例在 `options.test.ts`（文案与两层语义一字不改），这里补的是新增部分。
+ *
+ * 数字控件的保存时机是**提交（失焦 / 回车）**，不是每次敲键：`change` 原生只在提交时触发。
+ * 计划里把这条写成"天然满足、不需要额外规则"，所以它没有对应的用例；下面单独补了一条
+ * 「打字过程中存储一个字节都不变」，把这条纪律变成有读数的断言（原来只有人肉约定）。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CURRENT_VERSION, mergeSettings } from '../../src/shared/settings';
-import { bubble, chromeStub, loadOptions, pick, resetOptionsPage, seedSettings, storedSettings, waitFor } from './harness';
+import {
+  bubble,
+  chromeStub,
+  loadOptions,
+  mountOptionsHtml,
+  pick,
+  resetOptionsPage,
+  seedSettings,
+  settle,
+  storedSettings,
+  waitFor,
+} from './harness';
 
 interface NumberFieldCase {
   id: string;
@@ -5081,8 +5611,14 @@ const NUMBER_FIELDS: NumberFieldCase[] = [
   { id: 'max-segments-per-batch', field: 'maxSegmentsPerBatch', min: 1, max: 50 },
 ];
 
+/** 四个数字控件都是 `<input type="number">`，统一按数字输入框取。 */
 function inputOf(id: string): HTMLInputElement {
   return pick<HTMLInputElement>(id);
+}
+
+/** 「清除」按钮：同一页里还有别的 `<button>`，按 id 取更稳。 */
+function buttonOf(id: string): HTMLButtonElement {
+  return pick<HTMLButtonElement>(id);
 }
 
 function status(): HTMLElement {
@@ -5120,7 +5656,7 @@ describe('设置页：缓存与请求', () => {
     await loadOptions();
     await waitFor(() => pick<HTMLElement>('stat-cached').textContent === '1');
 
-    pick<HTMLButtonElement>('clear-cache').click();
+    buttonOf('clear-cache').click();
 
     await waitFor(() => (status().textContent ?? '').includes('已清除 1 条翻译缓存'));
     await waitFor(() => pick<HTMLElement>('stat-cached').textContent === '0');
@@ -5133,8 +5669,33 @@ describe('设置页：缓存与请求', () => {
     commitNumber(inputOf('cache-max-entries'), '9000');
 
     await waitFor(async () => (await storedSettings()).cacheMaxEntries === 9000);
+    // `waitFor` 是"存储已经写进去了"，而界面回填发生在**那次 await 之后**的同一个续跑里；
+    // 这里再让排队的微任务跑完，读的才是界面稳态（不是"等它，等不到就绿"）。
+    await settle();
     expect(pick<HTMLElement>('stat-max').textContent).toBe('9000');
     expect(inputOf('cache-max-entries').value).toBe('9000');
+  });
+
+  it('打字过程中存储一个字节都不变；只有提交（change）才落盘', async () => {
+    await seedSettings({ concurrency: 3 });
+    await loadOptions();
+    const before = await storedSettings();
+
+    // 逐字敲入的过程：只派发 `input`，不派发 `change`（真实打字就是这样）。
+    const input = inputOf('concurrency');
+    for (const typed of ['5', '50', '500']) {
+      input.value = typed;
+      input.dispatchEvent(bubble('input'));
+      // 让排队的微任务跑完：若监听挂在 `input` 上，这里已经足够它写进存储。
+      await settle();
+      expect((await storedSettings()).concurrency).toBe(3);
+    }
+    // 逐字段比整份存储：任何一次写入都会同时动 version 或 value，两个维度都盖上。
+    expect(await storedSettings()).toEqual(before);
+
+    // 提交那一下才写，并且写的是提交时输入框里的值。
+    commitNumber(input, '5');
+    await waitFor(async () => (await storedSettings()).concurrency === 5);
   });
 
   it('越界的数字被夹到允许范围：存储里是生效值，输入框回填生效值，并说清实际生效多少', async () => {
@@ -5144,28 +5705,37 @@ describe('设置页：缓存与请求', () => {
     commitNumber(inputOf('concurrency'), '999');
 
     await waitFor(async () => (await storedSettings()).concurrency === 8);
+    await settle();
     // 界面不许继续显示 999：那是个没生效的数字。
     expect(inputOf('concurrency').value).toBe('8');
     expect(status().textContent).toContain('实际生效 8');
     expect(pick<HTMLElement>('stat-concurrency').textContent).toBe('8');
   });
 
-  it('清空或乱填：拨回存储里真正生效的值并报错，不写存储', async () => {
+  it('清空：拨回存储里真正生效的值并报错，不写存储', async () => {
+    // 这里原来还有半条「乱填 `'abc'`」，是**空转**：`<input type="number">` 的取值净化先把
+    // `'abc'` 变成 `''`（jsdom 30.0.1 实测），于是第二次提交走的是与「清空」**逐字相同**
+    // 的那一支，那两行断言在调用之前就已经成立——实测把 `sections/cache.ts` 里
+    // `!Number.isFinite(parsed)` 那一半去掉，这份文件里**没有一条**会红。删的是这条恒真的
+    // 断言，不是放松：「清空」这一支仍有牙，把非法输入的回拨那一支删掉，这条当场红
+    // （输入框变成夹取后的 200、状态行说"已保存"）。
+    // 「非空但不是数字」这条路今天进不来，原因与读数见 `sections/cache.ts` 里 `commitNumber`。
     await seedSettings({ maxBatchChars: 1000 });
     await loadOptions();
 
     commitNumber(inputOf('max-batch-chars'), '');
 
     await waitFor(() => status().dataset.kind === 'err');
+    await settle();
     expect(inputOf('max-batch-chars').value).toBe('1000');
     expect((await storedSettings()).maxBatchChars).toBe(1000);
-
-    commitNumber(inputOf('max-batch-chars'), 'abc');
-    await waitFor(() => (status().textContent ?? '').includes('要填一个数字'));
-    expect(inputOf('max-batch-chars').value).toBe('1000');
   });
 
-  it('四个数字的 min/max 与存储层的夹取范围同源（两处各写了一份，这是防漂移的那条断言）', () => {
+  it('四个数字的 min/max 与存储层的夹取范围同源（两处各写了一份，这是防漂移的那条断言）', async () => {
+    // 夹具的顺序是"装 DOM → import → 等初始化"：这条断言查的是**静态属性**，不依赖
+    // 设置读没读出来，但元素本身得先在 DOM 里（这一步不写存储、只挂 DOM 与监听器）。
+    await loadOptions();
+
     for (const entry of NUMBER_FIELDS) {
       const input = inputOf(entry.id);
       expect(`${entry.id} min=${input.min}`).toBe(`${entry.id} min=${entry.min}`);
@@ -5191,6 +5761,66 @@ describe('设置页：缓存与请求', () => {
     await waitFor(async () => (await storedSettings()).maxSegmentsPerBatch === 20);
   });
 
+  it('数不出缓存条数时显示占位符并报错，绝不显示成 0（「读不出来」不是「缓存是空的」）', async () => {
+    await seedSettings();
+    await chromeStub.storage.local.set({ 'jt:a': { v: '一', t: 1 } });
+    // DOM 先在位：区块模块在 import 时就按 id 取元素（与页面同一条路径）。
+    mountOptionsHtml();
+    const { cacheSection } = await import('../../src/options/sections/cache');
+    const { currentSettings, loadSnapshot } = await import('../../src/options/store');
+    await loadSnapshot();
+
+    // 只让**接下来第一次**按 key 取值失败：数条数先枚举键、再按 key 取值，枚举照旧可用，
+    // 所以这一支只需要挂在取值上；再往后恢复，免得下面的直读断言自己也撞在同一处。
+    const realGet = chromeStub.storage.local.get.bind(chromeStub.storage.local);
+    let failed = false;
+    chromeStub.storage.local.get = async (keys) => {
+      if (Array.isArray(keys) && !failed) {
+        failed = true;
+        throw new Error('存储读取失败');
+      }
+      return realGet(keys);
+    };
+
+    // 跑这一区块的挂载：`refreshStats` 是挂载与清除共用的那一个，这就是分支的入口。
+    await cacheSection.mount({ settings: currentSettings } as never);
+    await settle();
+
+    expect(pick<HTMLElement>('stat-cached').textContent).toBe('—');
+    // 0 是"缓存是空的"，`—` 才是"没数出来"：两者的区别正是这条用例守的东西。
+    // 原因本身也要留在状态行里：只说"失败"等于把存储给出的那条线索丢掉，
+    // 用户和排查的人都拿不到"为什么没数出来"（`describe` 把 Error 摊成 message）。
+    expect(status().textContent).toContain('读取缓存条数失败：存储读取失败');
+    // 数不出来没有副作用：条目还在（不能被顺手删掉）。
+    expect((await chromeStub.storage.local.keys()).filter((key) => key.startsWith('jt:'))).toEqual(['jt:a']);
+  });
+
+  it('设置还没读出来就提交数字控件：如实说一句，不写存储', async () => {
+    // `bind` 在第一个 `await` 之前就把监听器挂好了（`section.ts` 那条纪律），所以设置读失败时
+    // 这些控件照样能提交——`commitNumber` 里 `current === null` 这一支此前没有任何读数：
+    // 把它换成哨兵，存量用例里**没有一条**会因此变红（实测）。形态与上一条同款：装 DOM、
+    // import 区块模块，**不调** `loadSnapshot()`，快照因此一直是 null。
+    await seedSettings();
+    const before = await storedSettings();
+    mountOptionsHtml();
+    const { cacheSection } = await import('../../src/options/sections/cache');
+    const { NOT_LOADED } = await import('../../src/options/store');
+    cacheSection.bind({ settings: () => null } as never);
+
+    // 5 是个真会落盘的值（会被夹到 min 200）——但**别把这条用例的牙读成"存储会不会变"**：
+    // 删掉这一支，`store.patchSettings` 自己那条 null 守卫（`store.ts:105`）照样会把写拒掉，
+    // 存储一个字节都不动（实测）。这一支真正决定的是**状态行说哪句话**——下面 `toBe(NOT_LOADED)`
+    // 要的是那一句原文（少了它就会变成「保存单批字符上限失败：设置还没读出来…」），那才是读数；
+    // `toEqual(before)` 只是防御。
+    commitNumber(inputOf('max-batch-chars'), '5');
+    await settle();
+
+    // 文案取自 `store.ts` 导出的常量本身，不在这里抄第二份字面量。
+    expect(status().textContent).toBe(NOT_LOADED);
+    // 「还没读出来」的唯一正确副作用是**什么都不写**：一个字节都不许动。
+    expect(await storedSettings()).toEqual(before);
+  });
+
   it('写入被拒时把输入框拨回真正生效的值并报错', async () => {
     await seedSettings({ concurrency: 3 });
     await loadOptions();
@@ -5201,6 +5831,7 @@ describe('设置页：缓存与请求', () => {
     commitNumber(inputOf('concurrency'), '5');
 
     await waitFor(() => status().dataset.kind === 'err');
+    await settle();
     expect(status().textContent).toContain('保存并发请求数失败');
     expect(inputOf('concurrency').value).toBe('3');
   });
@@ -5330,7 +5961,16 @@ const NUMBER_FIELDS: ReadonlyArray<{ input: HTMLInputElement; field: NumberField
   { input: maxSegmentsInput, field: 'maxSegmentsPerBatch', label: '单批段数上限' },
 ];
 
-/** 显式逐个构造增量：计算属性 `{ [field]: value }` 会被 TS 放宽成 `{[x: string]: number}`。 */
+/**
+ * 显式逐个构造增量，而不是 `{ [field]: value }`：计算属性会退化成字符串索引签名
+ * `{[x: string]: number}`，而 `Settings` 里还有字符串与数组字段——**那个类型在说谎**
+ * （实测 `const patch = { [field]: value }` 之后 `patch.targetLang` 就是 `number`；
+ * 把它当字符串用，`tsc` 当场报 TS2322）。
+ *
+ * ⚠ 退化类型**不是"编译不过"**（那句话曾经写在这里，是错的）：把它交给 `Partial<Settings>`，
+ * 返回位置与 `ctx.save(…)` 的参数位置实测 `npx tsc --noEmit` 都不报错，`sections/shortcuts.ts:79`
+ * 还有一个 `as Partial<Settings>` 的先例。逐个写出来，类型就是它字面的样子，也不必靠断言压住。
+ */
 function patchFor(field: NumberField, value: number): Partial<Settings> {
   if (field === 'cacheMaxEntries') return { cacheMaxEntries: value };
   if (field === 'concurrency') return { concurrency: value };
@@ -5397,6 +6037,16 @@ function commitNumber(ctx: SectionContext, input: HTMLInputElement, field: Numbe
       return;
     }
     const parsed = Number(input.value);
+    // ⚠ 下面 `!Number.isFinite(parsed)` 这一半今天**不可达、也没有读数**，别再把它当成一条活路径：
+    // `<input type="number">` 的取值净化只留下"语法上是有效浮点数、**且换算结果有限**"的字符串，
+    // 其余一律清成 `''`。实测（jsdom 30.0.1，本仓库的测试环境）：`'abc'` / `'1e999'` / `'Infinity'`
+    // / `'0x10'` / `' 5 '` / `'5x'` / `'NaN'` / 400 位整数，用 `value` setter、`setAttribute('value', …)`、
+    // `defaultValue` 三条路写进去，读 **`.value`** 都是 `''`。注意 **`.defaultValue` 不净化**：它反射
+    // 内容属性，后两条路写进去时读回来还是原文（`commitNumber` 只读 `.value`，因此不受影响）；
+    // `valueAsNumber = Infinity` 则直接抛 TypeError。
+    // 于是能走到这里的非空值必定是有限数——`Number.isFinite` 这一半今天永远不会为假。
+    // 留着的唯一理由：控件哪天换成文本控件（`type="text"`）——那时 `Number('1e999')` = Infinity
+    // 会被 clampInt 悄悄夹成上限，只有这一半拦得住。浏览器一侧本仓库没有读数，别写成既成事实。
     if (input.value.trim().length === 0 || !Number.isFinite(parsed)) {
       input.value = String(current[field]);
       setStatus(cacheStatus, 'err', `${label}要填一个数字`);
@@ -5442,6 +6092,7 @@ export const cacheSection: Section = {
 
 Run: `npx vitest run tests/options/cache-section.test.ts tests/options/options.test.ts`
 Expected: PASS —— **8 条 + 29 条**（**计划写作时的投影**）／**落地实测 10 条 + 31 条**。既有的三条清除缓存用例一条都不许红。
+> **Task 11 终账**：cache-section 最终是 **11** 条（Task 8 质量收口 `da1ec72` 的 F7 给"未加载分支"补的那条读数，10 → 11，不多不少）；options 终账仍是 31 条。上面的"10"是 Task 8 落地时刻的实况，不追改。
 
 > 两个数都变了，两处都不是"实现偷懒"：
 > - `cache-section.test.ts` **8 → 10**：落地时补了两条必需用例——「打字过程中存储一个字节都不变；只有提交（change）才落盘」（计划原本把"`change` 天然满足"当成人肉约定，**没有读数**）与「数不出缓存条数时显示占位符并报错，绝不显示成 0」（此前 `—` 这个占位分支无人守）。
@@ -5501,7 +6152,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { matchesTerms, parseQuery } from '../../src/options/search';
-import { bubble, loadOptions, pick, resetOptionsPage, seedSettings } from './harness';
+import { bubble, loadOptions, mountOptionsHtml, pick, resetOptionsPage, seedSettings, settle } from './harness';
 
 /**
  * 设置页样式表的路径（只给上面那条"CSS 引用的 `#sec-*` 都得存在"的守卫用）。
@@ -5595,10 +6246,20 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
       search(query);
       expect([query, visibleSections()]).toEqual([query, ['engine']]);
     }
-    // 索引只读这两类元素：隐私区块里既没有 `.lab`，`.sec-desc` 也只有那一句别名无关的话。
+    // 索引只读这两类元素：隐私区块里没有 `.lab`，`.sec-desc` 也只有一个。
     // **这两条是"防空洞"的护栏**：它们断言的是**文案的形状**（隐私里没有 `.lab`、只有 1 个
     // `.sec-desc`、正文里确实有那些词），不是搜索逻辑本身。将来谁改了隐私文案（加一个 `.lab`、
-    // 或者把那句承诺挪进 `.sec-desc`），红的是这里——那时该改的是**文案或索引边界**，不是搜索。
+    // 或者再挂一句 `.sec-desc`），红的是这里——那时该改的是**文案或索引边界**，不是搜索。
+    // 这两句注释都按实测改过口，别再退回笼统说法：
+    // ① `.lab` 计数这条**不是恒真式**，只是会被上面那圈循环**遮蔽**。往隐私区块插一个 `.lab`：
+    //    若那个词正好是某个区块的别名（实测用「密钥」），搜「密钥」先让隐私一起点亮，红在上面
+    //    的 `visibleSections()`（收到 `['engine','privacy']`），这条根本轮不到执行；只有当那个
+    //    词**不是任何别名**时（实测用「边界说明」），才由这条当场红（`to have a length of +0
+    //    but got 1`）。它守的是"隐私区块不长出 `.lab`"，代价是插进来的词不许是别名。
+    // ② 上面那句 `.sec-desc` **不是"别名无关的话"**（原文这么写，实测是假话）：它含隐私**自己**
+    //    的两个别名——`网络请求`、`可见文本`（`sections/privacy.ts` 的别名表）。但它不含**别的
+    //    区块**的别名：全量"别名 × 各区块干草堆"碰撞矩阵实测**跨区块碰撞总数 = 0**，所以别名
+    //    互斥与索引边界都不受影响（自己的别名落在自己的干草堆里本来也无害）。
     expect(privacy.querySelectorAll('.lab')).toHaveLength(0);
     expect(privacy.querySelectorAll('.sec-desc')).toHaveLength(1);
     // 而正文里确实有那些词（否则这条用例就是空转）。
@@ -5625,6 +6286,16 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
 
     search('源语言');
     expect(visibleSections()).toEqual(['language']);
+    // 反向也要守：组里**还有可见链接**时不能把这个分组一起藏掉。把 `every` 写成 `some` 就会——
+    // `some` 只要"组里有**任何一个**链接被藏"就为真，于是**过度隐藏**：搜「源语言」时「翻译」
+    // 这一组 3 个链接里藏了 2 个（实测 `[["engine",true],["language",false],["shortcuts",true]]`），
+    // 组被一起藏掉，**还该可见的「语言与显示」跟着它所在的分组一起消失**。变的是**祖先**的
+    // `hidden`，链接自己的 `hidden` 仍是 false，所以只查"命中的区块可见"（那条只看
+    // `[data-section]`）或只看 `[data-nav]` 自己 `hidden` 的断言都看不见它——实测：`every` → `some`
+    // 之后把下面这一条注释掉，全量用例仍然全绿，放回来才当场红（`expected true to be false`）。
+    // 这个选择器只取**第 1 个** `[data-nav-group]`（页面共 3 个：翻译 / 内容控制 / 数据），也就是
+    // 「语言与显示」所在的那个分组；分组那段逻辑本身对**每个** `[data-nav-group]` 跑同一套代码。
+    expect(document.querySelector<HTMLElement>('[data-nav-group]')?.hidden).toBe(false);
 
     search('并发');
     expect(visibleSections()).toEqual(['cache']);
@@ -5652,6 +6323,28 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
 
     expect(visibleSections()).toHaveLength(8);
     expect(pick<HTMLElement>('search-empty').hidden).toBe(true);
+  });
+
+  it('页面里没有 #search：接线不抛，其余区块的监听器照常挂上（少了搜索框 ≠ 整页死掉）', async () => {
+    // `bindSearch()` 跑在 `runSafely` **之外**（`init()` 里它在前、兜底在后），所以它一抛，
+    // `init()` 当场中断——后面所有区块的监听器都挂不上，页面停在文件顶部注释点名要防的
+    // "看着能点、点下去没反应"。这条把那个分界钉住：先摘掉搜索框再加载设置页。
+    // 摘掉之前是**承重**的：修复前 `await import(...)` 直接以
+    // "Cannot read properties of null (reading 'addEventListener')" 拒绝，这条当场红。
+    await seedSettings();
+    mountOptionsHtml();
+    pick<HTMLElement>('search').remove();
+    await import('../../src/options/options');
+    await settle();
+
+    // 别的区块照常工作：悬停翻译开关仍然存得下去（它证明 `bind` 那一圈真的跑到了）。
+    // 只断言"存成功"这件事，不复述 shortcuts 区块的整句文案（那是它的措辞，不是这条的分界）。
+    const toggle = pick<HTMLInputElement>('hover-translate');
+    toggle.checked = false;
+    toggle.dispatchEvent(bubble('change'));
+    await settle();
+    const status = pick<HTMLElement>('shortcuts-status');
+    expect([status.dataset.kind, status.textContent?.includes('已保存')]).toEqual(['ok', true]);
   });
 });
 
@@ -5736,13 +6429,26 @@ describe('区块清单与页面结构一一对应', () => {
     //    拼写对不上——屏幕阅读器读不出这个区块的标题，而**没有任何用例会红**。
     await seedSettings();
     await loadOptions();
+    const { SECTIONS } = await import('../../src/options/options');
 
-    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'));
-    expect(labelled.length).toBeGreaterThanOrEqual(8);
+    // 只数 `[data-section][aria-labelledby]`，并与区块清单逐项对齐。这里刻意**不**写
+    // "文档里带该属性的元素总数 >= 8"：那是个会漂的数——页面别处新增一个带 `aria-labelledby`
+    // 的元素，就能在某个区块丢掉标题关联时把这条顶住（总数还是 8），守卫静默失效。
+    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[data-section][aria-labelledby]'));
+    expect(labelled.map((node) => node.dataset.section)).toEqual(SECTIONS.map((section) => section.id));
     const missing = labelled
-      .map((node) => [node.dataset.section ?? node.id, node.getAttribute('aria-labelledby') as string] as const)
+      .map((node) => [node.dataset.section as string, node.getAttribute('aria-labelledby') as string] as const)
       .filter(([, id]) => document.getElementById(id) === null);
     expect(missing).toEqual([]);
+    // 上面那条**只覆盖区块元素**（`[data-section]`），所以引用完整性要单独查一遍：收紧之前这里
+    // 遍历的是**全部**带该属性的元素（配一个"总数 >= 8"的判据），收紧之后非区块元素上的悬挂引用
+    // 就没人管了——实测：给 `#search` 加一个指向不存在 id 的 `aria-labelledby`，全文件 15 条一度
+    // 全绿。分工因此是：**逐项对齐**钉住区块清单（会漂的全称数不用），**全文档检查**钉住引用完整性
+    // （只查"指得到吗"，不数个数，所以页面将来多几个引用也不会变脆）。
+    const dangling = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'))
+      .map((node) => [node.dataset.section ?? node.id, node.getAttribute('aria-labelledby') as string] as const)
+      .filter(([, id]) => document.getElementById(id) === null);
+    expect(dangling).toEqual([]);
     // 反向也查一遍：CSS 里引用的每个 `#sec-*` 都得在页面里存在（就是那四个死选择器的守卫）。
     const cssIds = new Set([...readFileSync(CSS_PATH, 'utf-8').matchAll(/#(sec-[a-z-]+)/g)].map((match) => match[1] as string));
     const cssMissing = [...cssIds].filter((id) => document.getElementById(id) === null);
@@ -5965,6 +6671,8 @@ Expected: PASS —— **8 条用例**（新增的 `[hidden]` 那条是第 8 条�
 | `options.html` 的 `data-nav="privacy"` 删掉 | 「八个区块：顺序一致、每个都有区块元素与导航项」 |
 | **把 `data-nav="prompt"` 那一行挪进「数据」组** | 「导航分组归属与三段信息架构一致」 |
 
+> ⚠ **Task 11 收口时这张表 10 行全部重测过**（2026-09-20，`%TEMP%` 自建副本、基线 13 files / 145 passed、每条先复位再单发）：预测红条数普遍不对表——**第 1 行偏宽**（实测 1 红：单词查询在 every/some 下不可判，且没有任何区块只含多词查询拆出来的一部分词——第二处预测无可证伪的世界）；**第 4~9 行偏窄**（实测 5 / 4 / 5 / 3 / 3 / 2 红）；第 10 行在钉死的形状下 1 红（"1 vs 2"按形状裁决）。逐行精确形状与落点见文末「Task 9 变异表·十行重测终账」——**别把这张表的"期望红在哪一条"当成红条数的读数**。
+
 - [ ] **Step 7: 提交**
 
 ```bash
@@ -5995,7 +6703,7 @@ git commit -m "feat(options): 轻量搜索（区块与字段标签过滤 + 零�
 > §3.1 还点名了「**内置免费引擎不可删**（不渲染删除）」：免费引擎因此要有自己的一行
 > （名字 + 内置徽章 + 状态点 + 测试连接，**没有**删除、没有编辑）。这一行**不带**
 > `data-profile-id`，所以 `tests/options/options.test.ts` 的 `profileRows()` 依旧只数真实档案，
-> 既有 29 条一条都不受影响。
+> 既有 **31** 条一条都不受影响（**计划时按 29 条计——那是旧数**：`options.test.ts` 在 `293bfdd` 上就已经是 31 条；Task 11 收口 `npx vitest run tests/options` 实测仍是 31，投影标注保留在此供对账）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -6011,17 +6719,29 @@ git commit -m "feat(options): 轻量搜索（区块与字段标签过滤 + 零�
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
-import { ENGINE_HEALTH_KEY, loadEngineHealth } from '../../src/options/engine-health';
 import {
+  ENGINE_HEALTH_KEY,
+  FREE_ENGINE_HEALTH_KEY,
+  loadEngineHealth,
+  profileHealthKey,
+  saveEngineHealth,
+} from '../../src/options/engine-health';
+import {
+  CUSTOM_BASE_URL,
+  actionButton,
   chatResponse,
   chromeStub,
+  editorOf,
+  fieldOf,
   jsonResponse,
   loadOptions,
   pick,
   profileRows,
   profileSeed,
   resetOptionsPage,
+  rowOf,
   seedSettings,
+  settle,
   waitFor,
 } from './harness';
 
@@ -6029,6 +6749,16 @@ const CUSTOM_ORIGIN_PATTERN = 'https://api.example.com/*';
 
 async function seedHealth(record: Record<string, unknown>): Promise<void> {
   await chromeStub.storage.session.set({ [ENGINE_HEALTH_KEY]: record });
+}
+
+/**
+ * 按**档案键**写记录：键是 `p:<档案 id>`。用例里直接手写裸 id 会静默落到谁也读不到的地方
+ * （那正是"两个键空间"要杜绝的形态），所以档案记录一律走 `profileHealthKey` 拼键。
+ */
+async function seedProfileHealth(records: Record<string, unknown>): Promise<void> {
+  const keyed: Record<string, unknown> = {};
+  for (const [id, record] of Object.entries(records)) keyed[profileHealthKey(id)] = record;
+  await seedHealth(keyed);
 }
 
 async function storedHealth(): Promise<Record<string, unknown>> {
@@ -6048,22 +6778,39 @@ function status(): HTMLElement {
   return pick<HTMLElement>('engine-status');
 }
 
+/** 内置免费引擎那一行的状态点。它没有 `data-profile-id`，只能按自己的标记找。 */
+function freeDot(): HTMLElement {
+  const dot = pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot');
+  if (dot === null) throw new Error('内置免费引擎那一行没有状态点');
+  return dot;
+}
+
+/**
+ * 带正文的失败响应：`describeHttpError` 读的是 `response.text()`，而 harness 的 `jsonResponse`
+ * 只有 `json()` 那一支——用它拼不出"服务商在正文里回显请求内容"这个场景。
+ */
+function textResponse(body: string, statusCode: number): Response {
+  return { status: statusCode, ok: false, text: async () => body } as unknown as Response;
+}
+
 beforeEach(() => {
   resetOptionsPage();
 });
 
 describe('状态点的记录：读取与脏数据', () => {
   it('读得出来；没记录的档案不在结果里', async () => {
-    await seedHealth({ 'p-a': { state: 'ok', detail: '' }, 'p-b': { state: 'bad', detail: 'NETWORK：超时' } });
+    await seedProfileHealth({ 'p-a': { state: 'ok', detail: '' }, 'p-b': { state: 'bad', detail: 'NETWORK：超时' } });
     await loadOptions();
 
     const health = await loadEngineHealth();
-    expect(health['p-a']).toEqual({ state: 'ok', detail: '' });
-    expect(health['p-b']?.state).toBe('bad');
-    expect(health['p-c']).toBeUndefined();
+    expect(health[profileHealthKey('p-a')]).toEqual({ state: 'ok', detail: '' });
+    expect(health[profileHealthKey('p-b')]?.state).toBe('bad');
+    expect(health[profileHealthKey('p-c')]).toBeUndefined();
   });
 
   it('存储里是垃圾也不崩：认不出来的条目直接丢掉，能救的救回来（缺 detail 补空串）', async () => {
+    // 键刻意是任意字符串：`pickHealth` 是**键无关**的（两个键空间的分法在 `engine-health.ts` 的
+    // 键常量里，不在读取器的形状校验里），这一条才看得清"形状不对就丢"是自己那条规矩。
     await seedHealth({
       good: { state: 'ok', detail: '' },
       notAnObject: 'nonsense',
@@ -6078,7 +6825,28 @@ describe('状态点的记录：读取与脏数据', () => {
     expect(Object.keys(health).sort()).toEqual(['good', 'missingDetail']);
     expect(health['missingDetail']).toEqual({ state: 'bad', detail: '' });
     // 页面照常渲染，不因为一条脏记录整页白。
+    //
+    // 这一条**不能只断言"零个档案行"**：本用例一个档案都没 seed，`profileRows()` 恒为 0，
+    // 于是它在"`mount` 里根本不渲染列表"的变异下照样是绿的（加这条断言之前实测：那个变异
+    // 只红 6 条，绿的正是本条与上面那条纯存储的）。下面钉住内置免费引擎那一行——它是
+    // **每次重绘都会画出来**的那一行，有它在，"页面照常渲染"才是真的在断言渲染。
     expect(profileRows()).toHaveLength(0);
+    expect(pick('profiles').querySelector('[data-engine-free]')).not.toBeNull();
+  });
+
+  it('两次并发写不互相吞：读-改-写按存储区串行（`Promise.all` 形态）', async () => {
+    // 记录是"一份对象、多条条目"，每次写都是整份读-改-写。不排队时后写的那次拿自己那份
+    // 旧基线整份回写，把先写的那次静默抹掉——实测改前这里只剩后写的那一条（当时键还是裸 id，
+    // 读数是 `{'p-b': …}`），而界面上两个点都是绿的（内存里两份都在），重开设置页才有一个回到灰。
+    await Promise.all([
+      saveEngineHealth(profileHealthKey('p-a'), { state: 'ok', detail: '' }),
+      saveEngineHealth(profileHealthKey('p-b'), { state: 'bad', detail: 'NETWORK：超时' }),
+    ]);
+
+    expect(await storedHealth()).toEqual({
+      [profileHealthKey('p-a')]: { state: 'ok', detail: '' },
+      [profileHealthKey('p-b')]: { state: 'bad', detail: 'NETWORK：超时' },
+    });
   });
 });
 
@@ -6092,7 +6860,7 @@ describe('状态点三态', () => {
         profileSeed({ id: 'p-c', label: '失败过的' }),
       ],
     });
-    await seedHealth({
+    await seedProfileHealth({
       'p-a': { state: 'ok', detail: '' },
       'p-c': { state: 'bad', detail: 'AUTH：API Key 无效或权限不足' },
     });
@@ -6119,8 +6887,8 @@ describe('状态点三态', () => {
     await waitFor(() => status().dataset.kind === 'ok');
 
     expect(dotOf('p-a').dataset.state).toBe('ok');
-    await waitFor(async () => (await storedHealth())['p-a'] !== undefined);
-    expect((await storedHealth())['p-a']).toEqual({ state: 'ok', detail: '' });
+    await waitFor(async () => (await storedHealth())[profileHealthKey('p-a')] !== undefined);
+    expect((await storedHealth())[profileHealthKey('p-a')]).toEqual({ state: 'ok', detail: '' });
 
     // 再测一次，这次让接口返回 401。
     fetchMock.mockResolvedValue(jsonResponse({ error: 'bad key' }, 401));
@@ -6129,7 +6897,10 @@ describe('状态点三态', () => {
 
     expect(dotOf('p-a').dataset.state).toBe('bad');
     expect(dotOf('p-a').title).toContain('AUTH');
-    await waitFor(async () => ((await storedHealth())['p-a'] as { state?: string } | undefined)?.state === 'bad');
+    await waitFor(
+      async () =>
+        ((await storedHealth())[profileHealthKey('p-a')] as { state?: string } | undefined)?.state === 'bad',
+    );
   });
 
   it('测试记录写不进去时如实说一句，但不改这次测试的结果', async () => {
@@ -6153,15 +6924,124 @@ describe('状态点三态', () => {
 
   it('删除档案时把它的记录一并清掉（别给下次迁移回来的同一个 id 留一个假状态）', async () => {
     await seedSettings({ engineId: 'p-a', profiles: [profileSeed()] });
-    await seedHealth({ 'p-a': { state: 'ok', detail: '' }, 'keep': { state: 'bad', detail: 'x' } });
+    await seedProfileHealth({ 'p-a': { state: 'ok', detail: '' }, 'keep': { state: 'bad', detail: 'x' } });
     await loadOptions();
 
     profileRows()[0].querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
     const editor = profileRows()[0].querySelector('.profile-editor') as Element;
     editor.querySelector<HTMLButtonElement>('[data-action="delete-profile"]')!.click();
 
-    await waitFor(async () => (await storedHealth())['p-a'] === undefined);
-    expect(Object.keys(await storedHealth())).toEqual(['keep']);
+    await waitFor(async () => (await storedHealth())[profileHealthKey('p-a')] === undefined);
+    // 删的是**它的档案键**：邻居那条（`p:keep`）原样留着。
+    expect(Object.keys(await storedHealth())).toEqual([profileHealthKey('keep')]);
+  });
+
+  it('草稿行点测试连接不落记录：`__new__` 没有点可更新，也没有清理出口', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
+    vi.stubGlobal('fetch', fetchMock);
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
+    await loadOptions();
+
+    // `__new__` 是草稿哨兵（与 `options.test.ts` 同一个字面量：它不导出，按契约写死）。
+    pick<HTMLButtonElement>('add-profile').click();
+    const editor = editorOf('__new__');
+    fieldOf(editor, '.profile-label').value = '临时档案';
+    fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
+    fieldOf(editor, '.profile-model-name').value = 'm';
+    fieldOf(editor, '.profile-api-key').value = 'sk-draft';
+    actionButton(editor, 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'ok');
+
+    // 请求真的发出去了、状态行照常报结果；草稿行刻意**没有**状态点，删档案也删不到它，
+    // 所以它不该在会话存储里留下一条谁也认领不了、也没人清理的幽灵记录。
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(await storedHealth()).toEqual({});
+  });
+
+  it('失败详情里的 Key 一律脱敏：状态行、`title` 与会话记录都不含它', async () => {
+    const secret = 'sk-PROBE-SECRET-123';
+    // 非 401 的失败走 `describeHttpError`，`detail` 就是**服务商响应正文**：正文里回显请求内容
+    // 是可达的（实测改前存储里与 `title` 里都出现了这把 Key）。401/AUTH 分支给的是罐头文案。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(textResponse(`{"error":{"message":"invalid key ${secret}"}}`, 400)),
+    );
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ apiKey: secret })] });
+    await loadOptions();
+
+    rowOf('p-a').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    const editor = editorOf('p-a');
+    actionButton(editor, 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'err');
+    await waitFor(
+      async () =>
+        ((await storedHealth())[profileHealthKey('p-a')] as { state?: string } | undefined)?.state === 'bad',
+    );
+
+    // ① 记录（持久化那条路径）② `title`（悬停能看见）③ 状态行（当场显示）。
+    const detail = ((await storedHealth())[profileHealthKey('p-a')] as { detail: string }).detail;
+    expect(detail).not.toContain(secret);
+    expect(detail).toContain('***');
+    expect(dotOf('p-a').title).not.toContain(secret);
+    expect(status().textContent ?? '').not.toContain(secret);
+    // 脱敏不是把整句删掉：服务商给的原因（除了 Key 那一段）照常显示。
+    expect(status().textContent).toContain('invalid key');
+  });
+
+  it('脱敏不看分支：成功路径显示出来的「译文」也一样过一遍', async () => {
+    const secret = 'sk-PROBE-SECRET-123';
+    // 这不是在断言服务商会把 Key 回显成译文（那是服务商的事），而是说**这条显示路径同样不该漏**：
+    // 成功分支的文案也进状态行，凭据一旦出现在里面就是同一个泄漏。删掉那一处脱敏，本条会红。
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(chatResponse(`<<<1>>>\n${secret}`)));
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ apiKey: secret })] });
+    await loadOptions();
+
+    rowOf('p-a').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    actionButton(editorOf('p-a'), 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'ok');
+
+    expect(status().textContent).toContain('***');
+    expect(status().textContent).not.toContain(secret);
+  });
+
+  it('短 Key（<8 字符）不做脱敏：正常译文与被回显的失败文案都必须原样', async () => {
+    // 精确子串替换在短串上必然误伤：`apiKey='hello'` + 译文 `你好，hello world` 会被抹成
+    // `你好，*** world`，`apiKey='你好'` + 译文 `你好` 会被整句抹成 `***`。短串本来也无法在
+    // 文本里可靠识别成凭据（真凭据都够长），所以门槛设在 8——这里把门槛两侧都钉住。
+    const shortKey = 'hello';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(chatResponse(`<<<1>>>\n你好，${shortKey} world`))
+      .mockResolvedValueOnce(textResponse(`{"error":{"message":"bad ${shortKey} request"}}`, 400));
+    vi.stubGlobal('fetch', fetchMock);
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ apiKey: shortKey })] });
+    await loadOptions();
+
+    rowOf('p-a').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    const editor = editorOf('p-a');
+
+    // ① 成功分支：译文里的 `hello` 原样显示（`hello` 同时也是请求文本，所以钉的是整句译文）。
+    actionButton(editor, 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    expect(status().textContent).toContain(`你好，${shortKey} world`);
+    expect(status().textContent).not.toContain('***');
+
+    // ② 失败分支：服务商正文里的同一个词也原样进记录与状态行。
+    actionButton(editor, 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'err');
+    await waitFor(
+      async () =>
+        ((await storedHealth())[profileHealthKey('p-a')] as { state?: string } | undefined)?.state === 'bad',
+    );
+    const detail = ((await storedHealth())[profileHealthKey('p-a')] as { detail: string }).detail;
+    expect(detail).toContain(`bad ${shortKey} request`);
+    expect(detail).not.toContain('***');
+    expect(status().textContent).toContain(`bad ${shortKey} request`);
   });
 });
 
@@ -6182,7 +7062,9 @@ describe('内置免费引擎那一行', () => {
   });
 
   it('点它的「测试连接」真的发一次请求，成功之后点变绿', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ sentences: [{ trans: '你好' }] }));
+    // 夹具按**实际实现**给：免费引擎（`src/engines/google.ts` 的 `parseGoogleResponse`）读的是
+    // `[[[译文, 原文, …], …], null, 源语言, …]` 这个嵌套数组，不是 OpenAI 兼容那份 `choices`。
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en']));
     vi.stubGlobal('fetch', fetchMock);
     await seedSettings({ engineId: 'google', targetLang: 'zh-Hans' });
     await loadOptions();
@@ -6192,7 +7074,100 @@ describe('内置免费引擎那一行', () => {
 
     await waitFor(() => status().dataset.kind === 'ok');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    // 免费引擎没有 Key，脱敏必须**原样放行**。这条断言昨天守的是"空串不能当要抹的 Key"
+    // （那时有一支 `key.length === 0` 的分支），今天空串落在**长度门槛 8** 之外，所以它守的
+    // 是门槛本身：把门槛删掉或降到 0，译文会变成 `你***好`，这条当场红（不是恒真）。
+    expect(status().textContent).toContain('你好');
     await waitFor(() => pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot')!.dataset.state === 'ok');
+  });
+
+  it('档案 id 撞上 `google` 也不串台：免费行的记录落在引擎键上，档案行仍是从没测过', async () => {
+    // 脏存储可达：`pickProfile` 对档案 id 只要求"非空字符串"，不做保留字检查（出厂 UI 造不出来，
+    // `createProfileId()` 恒带 `p-` 前缀，但存档/外部写入能）。这是"两个键空间"改法之前的
+    // 撞车形状：那时两类键共用一个字符串空间，两行共用一个槽——点免费行亮的是**档案行**，
+    // 重绘后两行同时绿。
+    //
+    // 变异口径（两种"合回去"的形态都自己复现过，红的先后不一样，都是本条用例的杀手）：
+    // - 只合**键空间**（裸 id + 引擎键 `google`）、保留"先认引擎键"的分派 → 2 红，本条最先红的是
+    //   下面那条**键断言**（引擎的记录落在 `google` 这个档案键上）；
+    // - 连 `rowForKey` 的分派也一起还原成 `rowById` 优先 → 也是 2 红，但本条最先红的是**点断言**
+    //   （`freeDot()` 停在 idle：免费行的结果落到了 id 为 `google` 的档案行上），键断言是拿掉
+    //   点断言之后的第二条杀手。
+    // 另有一个只把**档案侧前缀**去掉、其余不动的形态：它不走本条，红在"测试连接成功 / 写不进去 /
+    // `e:free` 用例"三条上（3 红）——`rowForKey` 再也解不出档案行，那几个点根本不会更新。
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en']));
+    vi.stubGlobal('fetch', fetchMock);
+    await seedSettings({
+      engineId: 'google',
+      targetLang: 'zh-Hans',
+      profiles: [profileSeed({ id: 'google', label: '恰好叫 google 的档案' })],
+    });
+    await loadOptions();
+
+    expect(dotOf('google').dataset.state).toBe('idle');
+    pick<HTMLElement>('profiles').querySelector<HTMLButtonElement>('[data-action="test-free"]')!.click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    await waitFor(async () => Object.keys(await storedHealth()).length > 0);
+
+    // 免费行的点亮了，档案行的点**没被它点亮**。
+    expect(freeDot().dataset.state).toBe('ok');
+    expect(dotOf('google').dataset.state).toBe('idle');
+
+    // 记录落在引擎键上；档案那一格（`p:google`）里什么都没有——这一条钉死"把两个键空间合回去"。
+    expect((await storedHealth())[profileHealthKey('google')]).toBeUndefined();
+    expect((await storedHealth())[FREE_ENGINE_HEALTH_KEY]).toEqual({ state: 'ok', detail: '' });
+
+    // 重绘（展开档案行会重画整个列表）之后两行各念自己那一份记录：共用槽时这里两行同时绿。
+    rowOf('google').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    expect(dotOf('google').dataset.state).toBe('idle');
+    expect(freeDot().dataset.state).toBe('ok');
+  });
+
+  it('档案 id 直接取成引擎键本身（`e:free`）也不串台：两类键按构造不相等', async () => {
+    // 最极端的脏值：档案 id 就是引擎键。判据是"前缀不同 ⇒ 永不相等"——档案键 `p:e:free`、
+    // 引擎键 `e:free`，两个字符串在第一个字符上就分开了。
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en'])) // 免费引擎那次
+      .mockResolvedValueOnce(chatResponse('<<<1>>>\n你好')); // 档案那次（OpenAI 兼容）
+    vi.stubGlobal('fetch', fetchMock);
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({
+      engineId: 'google',
+      targetLang: 'zh-Hans',
+      profiles: [profileSeed({ id: FREE_ENGINE_HEALTH_KEY, label: 'id 就是引擎键的档案' })],
+    });
+    await loadOptions();
+
+    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('idle');
+    pick<HTMLElement>('profiles').querySelector<HTMLButtonElement>('[data-action="test-free"]')!.click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    await waitFor(async () => (await storedHealth())[FREE_ENGINE_HEALTH_KEY] !== undefined);
+
+    // ① 免费行按**引擎键**取到点；那一条 id 恰为引擎键的档案行没被点亮。
+    expect(freeDot().dataset.state).toBe('ok');
+    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('idle');
+    // ② 档案那一格（`p:e:free`）此时还不存在——引擎的结果没有写进档案的键。
+    expect((await storedHealth())[profileHealthKey(FREE_ENGINE_HEALTH_KEY)]).toBeUndefined();
+
+    // 重绘一次，确认"各读各的那一格"在列表重画之后仍然成立。
+    rowOf(FREE_ENGINE_HEALTH_KEY).querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('idle');
+    expect(freeDot().dataset.state).toBe('ok');
+
+    // 再把**这个档案**也测一次：两条记录各自落在自己的键上，两个点各自亮自己的。
+    actionButton(editorOf(FREE_ENGINE_HEALTH_KEY), 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    await waitFor(
+      async () => (await storedHealth())[profileHealthKey(FREE_ENGINE_HEALTH_KEY)] !== undefined,
+    );
+
+    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('ok');
+    expect(freeDot().dataset.state).toBe('ok');
+    expect(await storedHealth()).toEqual({
+      [FREE_ENGINE_HEALTH_KEY]: { state: 'ok', detail: '' },
+      [profileHealthKey(FREE_ENGINE_HEALTH_KEY)]: { state: 'ok', detail: '' },
+    });
   });
 });
 ```
@@ -6220,7 +7195,7 @@ Expected: FAIL —— 模块解析失败：`Cannot find module`（口径见 Task
 // 那句 `title` 立刻成了假话——他明明刚测过。session 区域是受信上下文可读的独立键
 // （设置页是 `chrome-extension://` 同源，本来就在读它清缓存），不进 `Settings`、不动 schema 版本。
 //
-// **代价如实说**（README 已记）：session 区域在浏览器关闭时清空，重启后所有点回到灰。
+// **代价如实说**：session 区域在浏览器关闭时清空，重启后所有点回到灰。
 //
 // 这里刻意不复用 `store.ts`：那份快照是"设置"，这是"UI 的临时记忆"，两者的失败语义也不同
 // （设置写失败要拦住用户，测试记录写失败只该说一句）。
@@ -6237,19 +7212,79 @@ export interface EngineHealth {
 /** 独立存储键。**不进 `Settings`**：它不是设置，也不该被 `saveSettings` 整份覆盖带走。 */
 export const ENGINE_HEALTH_KEY = 'jinyi:engine-health';
 
-/** 默认区域在**调用时**才解析：模块 import 期不该碰 `chrome`（单测里那是替身，还没装）。 */
-function sessionArea(): StorageArea {
-  return chromeArea(chrome.storage.session);
+/**
+ * 记录键的**两个键空间**：档案记录是 `p:<档案 id>`，引擎记录是 `e:<引擎名>`
+ * （今天只有内置免费引擎这一格，`e:free`）。
+ *
+ * 为什么不是"档案用裸 id、引擎用一个保留值"：那样两类键仍然共用一个字符串空间，撞车只是被
+ * 缩小、没有被消除——档案 id 由存储层从任意非空字符串读回（`pickProfile` 只要求"非空字符串"，
+ * 不做保留字检查），谁都能造出一个恰好等于引擎键的 id。撞上时的症状是两行共用一个槽：
+ * 点免费行亮的是**用户档案行**，重绘后两行同时绿，而重开设置页只剩一条记录。
+ *
+ * **前缀不同 ⇒ 两类键按构造不可能相等**（档案键恒以 `p:` 开头、引擎键恒以 `e:` 开头）：
+ * 任何档案 id（`google`、`e:free`、`__new__`、脏存储里别的什么怪值）都撞不到引擎那一格。
+ * 这是**消除**撞车，不是把撞车的范围缩小一格。
+ *
+ * 读侧**不按前缀过滤**（`pickHealth` 仍然键无关）：一是"形状不对的记录丢掉"那条规矩与键空间
+ * 是两件事，混在一处会让前者的读数（`tests/options/engine-health.test.ts`「存储里是垃圾也不崩」
+ * 用 `good` / `badState` 这类任意键）说不清是被谁丢的；二是过滤解决不了任何问题——没有一行会去
+ * 读裸键。
+ *
+ * 迁移：本分支的中间版本用**裸 id**（`google` / `p-a`）写过记录。那是 session 区域、从未发布、
+ * 浏览器一关就没了，所以这里**刻意不写迁移代码**。**不能把它们一概说成"读不到"**：
+ * **不以前缀 `p:` 开头**的裸键（`google`、`p-a`…）今天读不到任何一行——没有一行会去读它们；
+ * 而 `p:` 形状的老键（只可能来自手改存储，正常 id 不会长这样）会被 **id 恰好等于后半段**
+ * 的档案行认领（`profileIdFromHealthKey('p:x')` → `'x'`）。也就是说这个形状例外是
+ * "读取按 `p:<id>` 取值"这条规矩本身的镜像，不是漏掉的一支；留着它比在读侧加一层
+ * "只认本轮写的键"的过滤便宜——那种过滤既没解决任何问题，又会把键空间的知识复制到第二处。
+ */
+const PROFILE_HEALTH_PREFIX = 'p:';
+const ENGINE_HEALTH_PREFIX = 'e:';
+
+/** 内置免费引擎那一格的键。它按构造不可能等于任何档案键（见上面两个键空间）。 */
+export const FREE_ENGINE_HEALTH_KEY = `${ENGINE_HEALTH_PREFIX}free`;
+
+/** 一个档案的记录键：`p:<档案 id>`。读写都必须走它，别在别处拼字面量。 */
+export function profileHealthKey(id: string): string {
+  return `${PROFILE_HEALTH_PREFIX}${id}`;
 }
 
+/** 档案记录键 → 档案 id；不是档案键（引擎键、老构建的裸键…）时返回 `null`。 */
+export function profileIdFromHealthKey(key: string): string | null {
+  return key.startsWith(PROFILE_HEALTH_PREFIX) ? key.slice(PROFILE_HEALTH_PREFIX.length) : null;
+}
+
+/**
+ * 默认区域的包裹**只做一次**（按底层存储区对象记住它）。
+ *
+ * 为什么不能每次现包一个 `chromeArea(chrome.storage.session)`：下面的写队列按存储区对象共享，
+ * 而每次现包都是一个**新对象**——队列于是永远匹配不上，"看起来串行化了、其实每次写都排在自己
+ * 那条空队列上"（`core/cache.ts` 没有这个坑：它的 `StorageArea` 是构造时注入一次、存下来复用的）。
+ * 按底层对象记忆还顺带对了一层：测试里重装替身会拿到新的底层对象，包裹与队列跟着换新的，
+ * 不会指向上一个用例那块已经作废的存储。
+ *
+ * 另一条不变式：模块 import 期不碰 `chrome`（单测里那是替身，还没装），所以这里是**调用时**解析。
+ */
+const wrappedAreas = new WeakMap<chrome.storage.StorageArea, StorageArea>();
+
+function sessionArea(): StorageArea {
+  const raw = chrome.storage.session;
+  const cached = wrappedAreas.get(raw);
+  if (cached !== undefined) return cached;
+  const area = chromeArea(raw);
+  wrappedAreas.set(raw, area);
+  return area;
+}
+
+/** 逐条校形。键在这里是**记录键**（`p:<id>` / `e:<引擎名>`），本函数不解释它的前缀。 */
 function pickHealth(raw: unknown): Record<string, EngineHealth> {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Record<string, EngineHealth> = {};
-  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
     const record = value as Partial<EngineHealth>;
     if (record.state !== 'ok' && record.state !== 'bad') continue;
-    out[id] = { state: record.state, detail: typeof record.detail === 'string' ? record.detail : '' };
+    out[key] = { state: record.state, detail: typeof record.detail === 'string' ? record.detail : '' };
   }
   return out;
 }
@@ -6263,23 +7298,110 @@ export async function loadEngineHealth(area: StorageArea = sessionArea()): Promi
   return pickHealth(raw[ENGINE_HEALTH_KEY]);
 }
 
-/** 记录一个引擎/档案的结果（读-改-写：只动它自己的那一条）。 */
+/**
+ * 写队列：**按存储区对象共享**（与 `core/cache.ts` 的 `queues` 同一条口径：WeakMap 不阻止
+ * 存储区被回收；队列挂在模块作用域而不是某次调用上，同一存储区的并发写才真的排到一条线上）。
+ *
+ * 为什么必须排队：这份记录是"一份对象、多条条目"，每次写都是**整份读-改-写**。不排队时两个
+ * 并发写各读同一份旧基线、各整份回写，后落盘的那次把先写的那次静默抹掉——实测
+ * `Promise.all([saveEngineHealth('p-a'…), saveEngineHealth('p-b'…)])` 之后存储里只剩 `p-b`；
+ * 审查者的 UI 读数（两个档案各点一次「测试连接」）同样是存储里只剩一条，而**页面上两个点
+ * 都是绿的**（内存里两份都在），重开设置页才有一个回到灰。
+ *
+ * 只在**改写**路径上排队，`loadEngineHealth` 不进队列：读写之间本来就没有原子性可谈
+ * （调用方要么在写之前读、要么在写之后读），而"读到旧值"与"读到半份写入"是两回事——
+ * 后者不会发生，`area.set` 对单键是原子的。
+ *
+ * 队列的键是**调用方交进来的那个存储区对象**：默认路径靠上面的 `sessionArea()` 复用同一个包裹
+ * 才排得进同一条队列；显式传 `area` 的调用方若要并发写互相排队，也得传同一个对象。
+ *
+ * ⚠ **这条队列的作用域边界（做不到的事，如实写在这里）**：队列是**模块实例级**的，而模块实例与
+ * `chrome.storage.session` 都是**每个 JS 上下文各一份**（设置页与扩展的 service worker 是两个
+ * 上下文，两个设置页标签也是）。所以**同时打开两个设置页**时，两个上下文各排各的队，最后落盘的
+ * 那次仍会把前一条吃掉——症状与排队之前一模一样。这**不是本模块能修的**：`chrome.storage` 没有
+ * 比较并交换，跨上下文的串行化在这一层做不到。它与 `store.ts` 文件头承认的那条已知代价
+ * （规格 §4.1：两个设置页并排打开时，后写的一方覆盖前一方）**是同一性质**，只是这里丢的是
+ * "最近一次测试结果"而不是设置。
+ *
+ * ⚠ **一处未在真机上取过读数的假设**：记忆化（`wrappedAreas`）依赖"同一个上下文里
+ * `chrome.storage.session` 每次读都是同一个对象"。这是按 `@types/chrome` 的 API 形态推断的
+ * （`storage.session` 是 `StorageArea` 属性，不是 getter 工厂），**没有实测**。若它不成立，
+ * 每次调用都会拿到新包裹、队列静默退化成"看起来串行化了、其实没有"（正是 F3 修前的症状）。
+ * 为什么不改成模块级的单例队列（那样就零假设了）：代价是把互不相干的存储区排到同一条线上
+ * （单测里注入自己的 `area` 时会排到会话区后面），而它**并不改善**上面那条跨上下文的边界——
+ * 单例同样是每个上下文一份。所以这里保留按存储区共享（与 `core/cache.ts` 同一范式）。
+ * 若将来真机读数证明该假设不成立，换成模块级 `let queue` 是 5 行的事。
+ */
+const queues = new WeakMap<StorageArea, Promise<unknown>>();
+
+/** 把任务挂到该存储区的串行队列上。队列本身不因一次失败卡死，但失败**原样抛给这次调用方**。 */
+function queueWrite<T>(area: StorageArea, task: () => Promise<T>): Promise<T> {
+  const tail = queues.get(area) ?? Promise.resolve();
+  const run = tail.then(task);
+  queues.set(area, run.catch(() => undefined));
+  return run;
+}
+
+/**
+ * 记录一个引擎/档案的结果（在这个存储区的队列里做整份读-改-写，只动它自己的那一条）。
+ *
+ * **第一个参数是记录键**（`profileHealthKey(id)` 或 `FREE_ENGINE_HEALTH_KEY`），**不是档案 id**：
+ * 照参数名传裸 id 会写出一条谁也读不到的孤儿记录——正是这套键空间要杜绝的形状。
+ */
 export async function saveEngineHealth(
-  id: string,
+  key: string,
   health: EngineHealth,
   area: StorageArea = sessionArea(),
 ): Promise<void> {
-  const current = await loadEngineHealth(area);
-  await area.set({ [ENGINE_HEALTH_KEY]: { ...current, [id]: health } });
+  await queueWrite(area, async () => {
+    const current = await loadEngineHealth(area);
+    await area.set({ [ENGINE_HEALTH_KEY]: { ...current, [key]: health } });
+  });
 }
 
-/** 档案被删掉时把它的记录一并清掉。 */
-export async function forgetEngineHealth(id: string, area: StorageArea = sessionArea()): Promise<void> {
-  const current = await loadEngineHealth(area);
-  if (!(id in current)) return;
-  const next = { ...current };
-  delete next[id];
-  await area.set({ [ENGINE_HEALTH_KEY]: next });
+/**
+ * 档案被删掉时把它的记录一并清掉（同样排队：与并发的那次写之间保持调用顺序）。
+ *
+ * **第一个参数同样是记录键**（`profileHealthKey(id)`），与 {@link saveEngineHealth} 同一个口径：
+ * 传裸 id 删不掉任何东西，那一行下次重绘时会带着旧状态又亮起来。
+ */
+export async function forgetEngineHealth(key: string, area: StorageArea = sessionArea()): Promise<void> {
+  await queueWrite(area, async () => {
+    const current = await loadEngineHealth(area);
+    if (!(key in current)) return;
+    const next = { ...current };
+    delete next[key];
+    await area.set({ [ENGINE_HEALTH_KEY]: next });
+  });
+}
+
+/**
+ * 把**这次请求真正用过的那把 Key**从"要显示 / 要落存储"的文本里抹掉。
+ *
+ * 为什么需要：失败详情来自服务商的响应正文（`engines/api-error.ts` 的 `describeHttpError`），
+ * 而正文里回显请求内容是可发生的——实测让桩回 400 + `{"error":{"message":"invalid key sk-…"}}`，
+ * 状态行、`title` 与会话记录里都出现了那把 Key（401/AUTH 分支给的是罐头文案，不含正文，
+ * 所以这条路只有非 401 的失败会走到）。设置页那句承诺（"只有引擎名与成败原因，不含 Key"）
+ * 不能靠"服务商不会回显"来兜。
+ *
+ * 只做**精确子串替换**，不做正则或形状猜测：我们确切知道的只有 `config.apiKey` 这一把，
+ * 猜别的形状既会把正常文案改花，又可能漏掉真正的那把。
+ *
+ * **长度门槛 8**：更短的"Key"（`hello`、`你好`、空串）一律原样放行。理由是精确子串替换在短串上
+ * 必然误伤——实测 `apiKey='hello'` + 译文 `你好，hello world` 会被抹成 `你好，*** world`，
+ * `apiKey='你好'` + 译文 `你好` 会被整句抹成 `***`；而短串本来也无法在文本里可靠地识别成凭据
+ * （真凭据都够长，各家至少 `sk-` + 一串）。空 Key（免费引擎、没填 Key 的路径）因此天然落在
+ * 门槛之外，不需要单独一支。
+ *
+ * **残留（如实说）**：≥8 字符的 Key 若**逐字**出现在正常译文里，一样会被抹掉——这是拿
+ * "偶尔改花一句译文"换"凭据不进状态行/`title`/会话记录"，方向是有意选的。
+ */
+const MIN_REDACT_LENGTH = 8;
+
+export function redactSecret(text: string, secret: string | undefined): string {
+  const key = (secret ?? '').trim();
+  if (key.length < MIN_REDACT_LENGTH) return text;
+  return text.split(key).join('***');
 }
 ```
 
@@ -6716,6 +7838,16 @@ Expected: 全绿；测试总数 = **867 + 本轮新增**。**已落地的实测�
 实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
 > **实现阶段补的用例会让总数比这里的预期多几条**（单元 A 就有先例：审查或变异验证逼出来的必需用例）。多出来的是好事，不是错误——只要每一条都能说清它守的是什么、并且是**加强**而不是放宽既有断言。真正要警惕的是"数字对得上但守卫是假的"，不是"数字比预期大"。
 
+✅ **Task 11 落地的全量读数（2026-09-20，HEAD `991f367`，Step 4 的五条命令由收口代理逐条亲跑，原样记录）**：
+
+- `npm test` → **52 files / 983 passed**（`extractor-scale` 打印 `[scale] elements=8875 median=4671.6ms samples=7384.3/4671.6/3809.2 readsPerRun=4375 segments=1175 gate=off`——绝对上界默认不跑，功能三条照跑）。
+- `npm run typecheck` → exit 0（两个 tsconfig 静默）。
+- `npm run build` → exit 0；末尾 `verify:dist` 报**「产物校验全部通过（14 项）」**，产物清单 16 个文件 / 149.96 KB。
+- `npm run verify:dist`（单独再跑）→ 同样 **14 项**、exit 0。
+- `npm run zip` → `jinyi-0.1.0.zip`：**16 个文件、59838 字节**；脚本自带解回比对通过；`--check` 显式路径形态复核「与 `dist/` 逐字节一致」exit 0；**独立解包**到临时目录与 `dist/` 逐文件 SHA256 比对：16/16、0 处不一致；连跑两次 `npm run zip`，zip 的 SHA256 一字不差（`DFA00D4F…593A307B`）→ **打包可复现**。
+- **终账对账（三个口径都留着）**：`983` vs 计划写作投影 `968`（口径含 options@29 的旧数）vs Task 8 后的下限投影 `974`。**差额构成（对 974：+9）**：`search.test.ts` 15 vs 计划 14（+1：Task 9 质量收口 `2806ca1` F4 的判空用例）、`engine-health.test.ts` 15 vs 计划 8（+7：Task 10 三轮审查收口逼出的必需用例，逐条账在 `d2cb4b5`/`254242b` 的提交信息）、`cache-section.test.ts` 11 vs Task 8 时点的 10（+1：`da1ec72` F7）。文件数 52 = 投影 52 ✓。**没有一条"数字对不上"是说不出去向的。**
+- `tests/options` 分文件终账（`npx vitest run tests/options` = **13 files / 145 passed**）：store **8**、dom **4**、options **31**、options-css **8**、no-innerhtml **2**、shortcuts **7**、glossary **15**、rule-pattern **11**、site-rules **12**、prompt **6**、cache-section **11**、search **15**、engine-health **15**。**文中各 Task 的 Expected 计数是当时时点的实况，不追改**——本表与上面的终读数是这份计划唯一的终账。
+
 ```bash
 npm run typecheck
 ```
@@ -6749,6 +7881,12 @@ Expected: 第一次跑会同步一批带 `// <路径>` 首行标记的块（`src
 > （另外两条同源的坑，已经在本计划里避开：`options.ts` 是**一整块**、不是"前半块带标记 + 后半块不带"；`sections/cache.ts` 的**中间态那一块的首行标记带了括号后缀**——`PATH_LABEL` 匹配不上，脚本**整块跳过、什么都不做**（不是"多出一行标记"），所以它永远不会被同步；Task 8 落地时**已经**把它从计划里删掉（`240f88a`），否则计划里会同时存在两份 `cache.ts`。）
 >
 > ✅ **同步之后必须核一条**：数一数计划里 `// src/options/…` 与 `// tests/options/…` 这两类首行标记的出现次数，应当**等于"每个文件一个块"**——也就是**计划里每个源文件只剩一个代码块**（中间态块、被替换掉的旧块都该没有了）。同一个路径出现两次，就是某次替换没删干净：在**计划**里删掉过时的那一块（**别删仓库里的文件**）。
+>
+> ✅ **Task 11 落地时这两步都做了（2026-09-20，全部 Task 落地之后）**：全量首跑同步 **20 个块**（含 `src/options/options.ts` **72 → 108 行**——刷进来的是新装配层，不是上面警告里那份 694 行的旧文件；当年"实现之前绝对不许跑"的危险自此解除），其余 8 块本就与仓库逐字一致；**复跑报「已同步 0 个代码块」**（幂等 ✓）。标记核对（脚本数）：`^// (src|tests)/\S+\.(ts|json|css|html|mjs)$` 命中 **28 行标记、28 个不同路径、重复 0**——每个文件恰剩一块 ✓。
+> **HTML/CSS 手工块的抽查也做了**（sync 按设计永远碰不到它们，这次抽查就是 Step 5 自设的必需环节）：
+> 1. `options.html:57` 注释里残留的两个 `**` 已由控制器清掉（`e975bbe`，提交前 `tests/options` 145 条全绿）。**这是"计划↔仓库漂移里 sync 结构性查不出"的实例**：计划块在 Task 6 扫描时就去了星号，仓库块一直没跟上的那半截只有人工抽查能抓到——人工抽查是必需的，不是可选的。
+> 2. 核对结果：Task 3 的 `options.html` **整块 134 行今天在仓库里逐行可见**；Task 4/5/6/7/8/10 的 HTML 插入块与仓库**逐字**对上（Task 5 的「内容控制」导航组块因 Task 6/7 按计划往组内插行而不再整体连续——其本身各行逐字在）；Task 9 搜索块有一处**注释续行多一个前导空格**（仓库 14 / 计划 13，注释内、不上屏，不判为实质漂移）。CSS 插入块：Task 6 `.rule-action` ✓、Task 9 `[hidden]` 与 `.search` ✓、Task 10 `.dot` ✓ 逐字。
+> 3. **手工块、已知漂移（两处，均为注释文字，规则体逐字一致，不改仓库）**：① `options.css` `.add:disabled` 的注释——仓库落地版与计划草稿不同文（多了"正是'看着能用其实没有监听器'那类死控件状态"与"用令牌而不是 `opacity`（§7）"两段）；② `options.css` `.stat` 的注释——仓库落地版多了两行 `—` 占位语义（"三个都是存储里的真值…数不出来时显示 0 等于在说缓存是空的"），计划块仍是单行。两处方向都是"仓库比计划更会说话"，读代码的人不吃亏，留账即可。
 
 - [ ] **Step 6: 提交**
 
@@ -6772,7 +7910,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 7 | 站点规则：`never` 命中时三个入口都不翻译；`*.x.com` 通配与精确匹配各有用例；首条命中生效 | **单元 A 已交付**（`tests/core/site-rules.test.ts` 12 条、`tests/content/index.test.ts` 的拦截用例、`tests/popup/popup.test.ts` 的解除用例）；本单元 Task 6 补**写入侧**（界面里能增删的规则就是那三条语义的输入） | 本单元不重复实现、不重复测匹配语义；Task 6 的规则行只写 `action: 'never'` |
 | 8 | §6 的文案已改对，且断言更新在提交信息里写明理由 | Task 2 全部（含提交信息模板） | 改后的断言从 1 条变成 **7 条**（链接仍可点击 / 仍可能失去下划线与可点击 / **降级为纯文本** / 旧说法不许回来 / 当下为真的「保存语言与显示」/ **仅译文模式下** / **六成**），条数与语气都只强不弱；**后两条是限定词与真判据自己的回归网**（三处修正里只有白名单那处原本有读数）；Task 3 Step 10 的 HTML 块与 Task 2 的块**逐字相同** |
 | 9 | 亮/暗两套下无硬编码颜色（用 `tests/helpers/css.ts` 的解析器断言声明块） | Task 3 Step 4（`options-css.test.ts` 7 条）+ Task 9 Step 5（`[hidden]` 那条，第 8 条） | 令牌逐字一致、正文无 `#`/`rgb()`/`hsl()` 字面量、无 `opacity`；`--on-accent` 同时加进 `popup.css` 以保持共用组一致 |
-| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**计划写作时的投影是 968 / 52 files**（= 已落地实测 **933 / 48**（Task 6 后）+ 后续四个测试文件的计划内 35 条）；**Task 8 落地后实测 951 / 50 files**（Task 9/10 尚未开始，**与投影不是同一个口径**，别对账——详见 Task 11 Step 4）；**以命令输出为准**——实现阶段补的用例只多不少 |
+| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**计划写作时的投影是 968 / 52 files**（= 已落地实测 **933 / 48**（Task 6 后）+ 后续四个测试文件的计划内 35 条）；**Task 8 落地后实测 951 / 50 files**（Task 9/10 尚未开始，**与投影不是同一个口径**，别对账——详见 Task 11 Step 4）；**以命令输出为准**——实现阶段补的用例只多不少；**Task 11 终账（2026-09-20 亲跑）**：**52 files / 983 passed**、typecheck/build exit 0、`verify:dist` 14 项、`zip` 16 文件 / 59838 字节且逐字节可复现——口径链 968（投影）→ 951/50（Task 8 后实测）→ 974（下限投影）→ **983（终账）**，差额 +1/+7/+1 的去向逐条可对（见 Task 11 Step 4 的落地读数段） |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -6997,4 +8135,61 @@ Task 6 落地后 `sections/site-rules.ts` 的区块 id 与 CSS 里 `body:has(#se
    - **回退 `number | null`**（`countCached` 回到 `Promise<number>`）；
    - **恢复 `${describe(raw)}` 的原因**，并把断言从 `toContain('读取缓存条数失败')` **加强**成 `toContain('读取缓存条数失败：存储读取失败')`——让恢复回来的原因自己也有一条读数（`tests/options/cache-section.test.ts:218`）。
 4. **通用约定（写给下一次做变异验证的人）**：**"新写的文件杀不死某个变异"不等于这个变异没被守——既有测试可能就是它的读数。** 给变异表补行之前，**先跑一遍看它是不是已经红了**；"我觉得没人守"不是读数。
+
+### Task 11 落地时的六条（README 三个提交、计划块的撒谎、flake 裁决、`**` 盲区、同步与抽查、终账）
+
+1. **Step 1~3（README）由另一代理分三个提交落地**（哈希经 `git log` 现查）：`b66483e`（功能范围改写 / 新增「设置页」一节 / 站点规则与隐私各补一条 + 「开发」节补 `JY_SCALE_MS` 的 pwsh / bash 两种写法 + flake 处置）、`1db5ad1`（还四账：保回三条仍为真的既有限制、第四条经核实过期**故意不保回**、修「上文」与「参照物」两处落地后自相矛盾的指称、把规模基准的绝对阈值标成 opt-in）、`1287e0d`（四处旧现实：设置页清单 / 保存语义 / 目录结构 / 按钮名，外加全仓扫描新增一条：引号内 UI 文案逐字对齐——那条引号内文案与真实 UI 只差一个分号）。
+2. **Step 1 计划替换块自身的缺陷（必须记）**：那块若照字整节替换「功能范围」，会**顺带删掉 3 条仍为真的既有限制**（「Key 留空=保留原 Key 无反向界面」「悬停/划词的段落与选区只读页面文本」「仅译文模式下整页翻译中悬停暂时不可用」——逐字取自 `b66483e~1` 的 README）——**照字落地等于让文档撒谎**。这是"计划块与落地时的仓库现状脱节"的实例：块写于实现期中途，只点名保留了 `autoTranslateDelay` 那一条，被覆盖区间里的其它真话不在计划的 Files 清单里。第四条「语言方向固定为自动检测…还没有选源语言的控件」经核实**已过期**（`#source-lang` 就在 `options.html:89-90`），故意不保回——**过期与仍真要逐条判，不能整批保也不能整批删**。教训：给"整节替换"性质的计划块，写块与收块时必须逐条盘点被覆盖区间里的存量陈述。
+3. **flake 的处置与裁决**（`extractor-scale`——本单元唯一一条已知的、与本轮改动无关的不稳定项）：绝对耗时上界改成 `JY_SCALE_MS=1` 显式 opt-in；**功能断言永远照跑**（元素数、`segments=1175`、`styleReads` 线性——收口终跑的读数 `elements=8875 readsPerRun=4375 segments=1175 gate=off`）。**相对比值判据评估后放弃**：主/标比值 11 次运行从 2.04 漂到 3.44，机理是 jsdom 单位成本在进程内换档（同一页面 0.2050 vs 0.4229 ms/元素——**比值含档位差、不含规模差**）；同档位 2× 跨度按"上界须留 ≥2× 余量"的规则推出上界须 ≥4.26，而纯 O(n²) 在该跨度只读出 ≈3.9——**拦不住想拦的东西**。三份并发复现 2 红 1 绿（median 3472/3563/3995ms 撞同一个 3500ms 上界）；三个验证变异全部按预测命中：旧判据→段数断言红（expected 1025 to be 1175）、去 style 每轮缓存→读取断言红（expected 15075 ≤ 10650 红）、上界改 1ms 证 gate 两态（默认绿、opt-in 才红）。**先例记法：为"有守卫"写一条量出来会飘的断言，不如不写。**
+4. **`options.html:57` 的 `**` 与 sync 盲区**：计划自定的"HTML 里没有 `**`、无例外"机械规则（Task 6 扫描节），在仓库里曾长期不成立——`sync-plan-code.mjs` 按设计只认 `// <路径>` 标记块，HTML/CSS 块**永远查不到**。控制器清掉（`e975bbe`）。**教训：手工同步块的人工抽查是必需的，不是可选的**（本次抽查的完整结果记在上面 Step 5 的落地注记，含两处 CSS 注释级"已知漂移"的点名）。
+5. **Step 5 同步与核对**：20 块同步 / 复跑 0 / 28 标记唯一 / 手工块三处白名单外的差异全部判为"非实质或已留账"——读数在上面 Step 5 落地注记。
+6. **Step 4 终账**：五条命令全绿 + zip 可复现——读数在上面 Step 4 落地注记。**这一节没有新增缺口要报：跑到收口时点，没有任何一条命令处于不达标状态。**
+
+### Task 8 / 9 / 10 三轮审查收口的全链（提交链 × finding 数 × 九条方法教训）
+
+每轮形状相同：**规格审查 → 质量审查 → 收口 → 收口验证**（验证会新开 finding，直到全关或止损）。提交链与 finding 数（哈希全部经 `git log` 现查）：
+
+| 任务 | 实现 | 规格审查 | 质量审查 | 收口验证 |
+| --- | --- | --- | --- | --- |
+| Task 8 | `2b041ce` + `7f7a2dd` | 4 项 → `82b2d33`（计划账另见 `240f88a`） | 7 项 → `da1ec72` | 确认全关 + N1/N2 → `23bb8cc`（另有计划文档一条修正 `483203c`） |
+| Task 9 | `7f3a407` + `ed71704` + `b9eb61d` | 2 项（F1 由控制器直接修在 `5ba064c`：Task 9 落地把 `options.ts` 那句"还没有守卫"变成了假话） | 4 项 + 1 信息项 → `2806ca1`（路径限定重做；并发事故记账见其提交信息） | 确认全关 + NF1 → `f07aef4` |
+| Task 10 | `f3aac7a` | **pass**（两处被迫偏离按裁决保留：`healthDot` 的判空回落修的是**计划自带的 bug**；google 夹具按 `parseGoogleResponse` 的**真实形状**重做） | 8 项 → `d2cb4b5` + `855332f` + `aff7dde` + `dd85cba` | 验证 F1~F8 全关、新开 F9/F10/F11 → `254242b` + `7301a14`；再验全关、新开 F12/F13 → `8359a60` + `991f367` |
+
+（三轮提交在时间上互相穿插——`da1ec72` 落在 `f3aac7a` 之后是并发在制的实况，不是链断了。本表哈希全部经 `git log` 现查；Task 10 质量收口的第二枚提交是 `855332f`，若见有材料写成 `855322f` 属转写错误。）
+
+**跨任务的方法教训（每条都能指回读数）：**
+
+1. **"恒真 / 被遮蔽 / 无依赖"是三态，别压成两态。** Task 8 抓到真恒真：用例第二半喂 `'abc'`，被 `<input type=number>` 净化成 `''`，走的分支与第一半逐字同。Task 9 的 `.lab` 计数被审查者误判恒真，执行者分两种情形实测：插「密钥」（别的区块的别名）红在上面那圈循环、该断言轮不到执行＝**被遮蔽**；插「边界说明」（不与任何别名碰撞）该断言**真的红**（`+0 but got 1`）——它有牙齿。"换成恒真式后全绿"只证明无依赖，不证明恒真。**判定手段：给断言构造一次它能为假的世界。**
+2. **审查结论可被执行者用读数推翻。** Task 9 执行者推翻审查三条：恒真标签（上条）、"every→some 方向说反"（实测方向与原注释一致，缺的是因果链不是方向）、"全文件唯一不判空处"（同文件 `:47` 同样不判空，区别在后果半径）。验证者复跑后全部认错。**结论跟着读数走，不跟着角色走。**
+3. **收紧一条守卫可能同时放松另一条（NF1）。** `f07aef4`：把 `labelled.length >= 8` 换成"只数 `[data-section][aria-labelledby]`、与 `SECTIONS` 逐项对齐"时，选择器跟着收窄，把**全文档**的悬挂引用检查丢了——非区块元素上的悬挂引用一度无人守，验证轮抓出后补回。**改断言的 diff 要按"覆盖面集合"看，不按"行数看着更严"看。**
+4. **包装对象不可当身份。** `chromeArea()` 每次调用返回**新对象**，按对象身份做键的 WeakMap 队列"看起来串行化了、其实每次写都排进自己的新队列"；记忆化改为按**底层存储区**包裹（`254242b`）。通用规则：任何"按身份记忆"的结构，先问这个身份是不是每调用一次换一个。
+5. **变异形状要精确到"对称/不对称"级别。** Task 10：同一个说法"去掉档案侧前缀"，对称还原 1 红、不对称 3 红；"合回旧形状"的两种写法红的还是**不同断言**（`991f367` 把落点记在撞车用例旁边）。红条数不是变异的固有属性，是**变异实现**的属性——本计划 Task 9 变异表十行重测（文末）就是这条的大规模复现：九行预测里有七行的红条数与落点集合都对不上表。
+6. **共享索引竞态：提交必须路径限定。** `5e64089` 事故：Task 9 侧 `git add` 后、`git commit` 前，并发 Task 10 代理的裸 `git commit` 把那两条路径一起带走；Task 10 侧用**纯索引操作**把它 reset 掉、重做成 `d2cb4b5`（`5e64089` 成悬挂对象，历史未改写）；期间产生的空提交 `1a304ce` 里"改动已在 `5e64089`"随之变成假话；`2806ca1` 用 `git commit -m "…" -- <显式路径>` 重做，并在提交信息里把这段更正。**规矩：共享工作区一律路径限定提交；发现记录坏了用向前提交更正、不改写历史。**
+7. **HTML 规范 vs 实现归因。** `da1ec72` 的提交信息（注意：**非代码**）解释 `'1e999'` 被清空时说"`1e999` 按规范合法、是 jsdom/WPT 额外要求有限性"——**错**：WHATWG 规定 Infinity/NaN 不是 valid floating-point number、溢出返回 error，清空它是规范行为。`cache.ts` 里的代码注释是规范口径、无需改；提交信息是历史、不改写；**正确事实记在这里防止传播**。
+8. **改名 = 接口变更。** F13 把 `saveEngineHealth` / `forgetEngineHealth` / `pickHealth` 的参数 `id` 改回 `key`（`8359a60`）时，`forgetEngineHealth` 里一处 `if (!(id in current))` 漏改，被跑起来的非对称删除档案变异与 `tsc`（error TS2304）**双双**抓住、当场修掉。**改名的验证不是"跑一遍套件绿了"，是把每个调用点用编译器或变异逼出来。**
+9. **止损决定也要记账。** F12/F13 的级别（注释限定 + 参数改名）由控制器明令"做完封板、不再开验证轮"。验证循环的收益随 finding 级别衰减——**不衰减的是把衰减本身写下来**：什么时候停、为什么停，和 finding 一样是账。
+
+### Task 9 变异表·十行重测终账（2026-09-20，`%TEMP%` 自建副本；仓库工作区未动，副本已删净）
+
+基线：副本内 `npx vitest run tests/options` = **13 files / 145 passed**（跑前跑后各验一次）。每条变异**先复位再单发**——第一轮工具就栽在"复位没复位干净"上（reset 用了文件名而非完整路径：M1 之后每行都叠着上一行的状态，M4/M7/M9/M10 则因 needle 打在已被改脏的文件上而根本没被应用）；修好工具后**十行整表重跑**，下表读数全部出自干净轮（这本身就是教训 5 的又一次现场演示：**没盯住的执行细节会直接变成假读数**）。**精确形状一列写全：红条数只在形状钉死后才有意义。**
+
+| # | 精确形状 | 表内预测 | 实测红（本轮） | 判定 |
+| --- | --- | --- | --- | --- |
+| 1 | `matchesTerms` 里 `return terms.every((term) => text.includes(term));` 改 `some`（折小写、join 均不动） | 「全部命中」+「每个别名」 | **1 红**：「全部命中才算命中（AND，不是 OR）」 | **偏宽**：单词查询在 every/some 下不可判；矩阵里的多词查询（`API Key` 拆成 api+key）实测**没有任何区块只含其中一个词**——第二处预测没有可证伪的世界 |
+| 2 | `createSearch` 删 `group.hidden = links.length > 0 && links.every((link) => link.hidden);` 整行（`links` 仍计算） | 「按字段标签找区块…」 | 1 红 ✓ 同条 | 准 |
+| 3 | `empty.hidden = hits > 0` → `empty.hidden = true` | 「零命中…」 | 1 红 ✓ 同条 | 准 |
+| 4 | `parseQuery` 的 `.trim()` 与 `.split(/\s+/)` 之间去掉 `.toLowerCase()`（`matchesTerms` 对 haystack 的折小写**保留**） | 「全部命中」的 `'KEY'` | **5 红**：「空查询…折小写」「全部命中…」「命中「词库」「专有名词」…」「隐私…不进索引」「每个别名…」 | **偏窄**：大小写敏感牵动的不止一处 |
+| 5 | `sections/glossary.ts` 的 `aliases` 数组尾部追加 `'密钥'`（别处一字不动） | 「命中「密钥」…」+ 别名互斥守卫 | **4 红**：「命中「密钥」…」「隐私…不进索引」「命中的区块，它的导航项必须可见」「每个别名…」 | **偏窄**（+2：隐私用例与 nav 可见用例同时吃这个碰撞） |
+| 6 | `sectionHaystack` 选择器 `'.lab, .sec-desc'` → `'.lab, .sec-desc, li'`（表里"或整段 textContent"是**另一个形状**，未测） | 「隐私…不进索引」 | **5 红**：第 5 行的四条 +「命中「词库」…」 | **偏窄** |
+| 7 | 同一选择器 → `'.lab, .sec-desc, .hint'`（`li` 不进） | 「每个别名…」（`API Key` 点亮 cache 与 engine） | **3 红**：「命中「词库」…」「隐私…不进索引」「每个别名…」 | **偏窄**。且 `.hint` 与 `li` 带进来的词不同（hint 带 "API Key"，li 带「密钥/档案」），两行的杀手集合也不同——**形状必须钉到选择器字符串这一级** |
+| 8 | `navLink.hidden = !hit` 反写成 `= hit`（`sectionEl` 那行不动） | 「导航项必须可见」 | **3 红**：「命中「密钥」…」「导航项必须可见」「按字段标签找区块…」 | **偏窄**（另两条同时断言 nav 显隐） |
+| 9 | `options.html` 删 `data-nav="privacy"` 整行（区块不动） | 「八个区块…」 | **2 红**：「八个区块：顺序一致、每个都有区块元素与导航项、每个都有别名表」+「导航分组归属与三段信息架构一致」 | **偏窄**（分组归属那条按组数 nav 清单，缺项也红） |
+| 10 | `data-nav="prompt"` 整行搬进「数据」组、插在 `<p class="grp">数据</p>` 之后**第一位**（区块顺序与组外元素一律不动） | 「导航分组归属…」 | **1 红** ✓ 同条 | 准。**历史"1 红 vs 2 红"未决之争按形状裁决**：该形状下文档序 `[data-nav]` 清单与 `SECTIONS` 顺序恰好仍然一致，「八个区块」不被扰动；要 2 红得换形状（与 cache **对调**、或把区块一起搬）。红条数是变异实现的属性，不是这一行的属性 |
+
+### 未覆盖缺口 / 未核实假设（收口时点的全单元账，§11 风格列全）
+
+- **`targetLang` 进请求体无读数**（既有，非本轮引入）：引擎侧对 fetch 桩的 body 只断言 `model` 与 `temperature`（`tests/engines/openai-compat.test.ts:106-108`），没有任何断言读"目标语言真的进了发出去的那份 body"。
+- **`chrome.storage.session` 真机对象身份未实测**：记忆化队列（教训 4）依赖"同一上下文里 `chrome.storage.session` 是同一个对象"；类型层 `const session: SessionStorageArea` 支持推断，但**运行时没有读数**。**若被证伪，队列静默退化成每次新队列**——症状与"没排队"一样且不会有任何用例红（单测注入的是替身）。
+- **`<input type="search">` 的原生 × 是否派发 `input`/`change` 未验**：jsdom 全绿不证明真浏览器；这是"真机上可能坏"的已知候选（清空走不走我们的 change 委托，决定 Esc/清空语义的真实行为）。
+- **真机天花板（全单元共同）**：布局挤压、暗色对比度、`<details>` 版式、`[hidden] { display: none !important }` 的真实效果、窄窗口（<900px）降级、免费端点可达性——本机没有浏览器，全部只到"jsdom 断言 + 静态读码"为止。README「设置页」一节已如实写了一部分（降级未验证、`Esc` 未验证、写入频率未实测）。
 
