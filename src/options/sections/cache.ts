@@ -114,8 +114,10 @@ function commitNumber(ctx: SectionContext, input: HTMLInputElement, field: Numbe
     // ⚠ 下面 `!Number.isFinite(parsed)` 这一半今天**不可达、也没有读数**，别再把它当成一条活路径：
     // `<input type="number">` 的取值净化只留下"语法上是有效浮点数、**且换算结果有限**"的字符串，
     // 其余一律清成 `''`。实测（jsdom 30.0.1，本仓库的测试环境）：`'abc'` / `'1e999'` / `'Infinity'`
-    // / `'0x10'` / `' 5 '` / `'5x'` / `'NaN'` / 400 位整数，`value` setter、`setAttribute('value', …)`、
-    // `defaultValue` 三条路读回来都是 `''`；`valueAsNumber = Infinity` 直接抛 TypeError。
+    // / `'0x10'` / `' 5 '` / `'5x'` / `'NaN'` / 400 位整数，用 `value` setter、`setAttribute('value', …)`、
+    // `defaultValue` 三条路写进去，读 **`.value`** 都是 `''`。注意 **`.defaultValue` 不净化**：它反射
+    // 内容属性，后两条路写进去时读回来还是原文（`commitNumber` 只读 `.value`，因此不受影响）；
+    // `valueAsNumber = Infinity` 则直接抛 TypeError。
     // 于是能走到这里的非空值必定是有限数——`Number.isFinite` 这一半今天永远不会为假。
     // 留着的唯一理由：控件哪天换成文本控件（`type="text"`）——那时 `Number('1e999')` = Infinity
     // 会被 clampInt 悄悄夹成上限，只有这一半拦得住。浏览器一侧本仓库没有读数，别写成既成事实。

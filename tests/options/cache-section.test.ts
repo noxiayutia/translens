@@ -234,7 +234,11 @@ describe('设置页：缓存与请求', () => {
     const { NOT_LOADED } = await import('../../src/options/store');
     cacheSection.bind({ settings: () => null } as never);
 
-    // 5 是个真会落盘的值（会被夹到 min 200）：这一支要是漏了守卫，存储当场就变。
+    // 5 是个真会落盘的值（会被夹到 min 200）——但**别把这条用例的牙读成"存储会不会变"**：
+    // 删掉这一支，`store.patchSettings` 自己那条 null 守卫（`store.ts:105`）照样会把写拒掉，
+    // 存储一个字节都不动（实测）。这一支真正决定的是**状态行说哪句话**——下面 `toBe(NOT_LOADED)`
+    // 要的是那一句原文（少了它就会变成「保存单批字符上限失败：设置还没读出来…」），那才是读数；
+    // `toEqual(before)` 只是防御。
     commitNumber(inputOf('max-batch-chars'), '5');
     await settle();
 
