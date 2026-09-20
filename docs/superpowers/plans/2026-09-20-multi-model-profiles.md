@@ -51,7 +51,7 @@
 | `handleTranslateTexts` / `onMessage` 路由 | `src/background/service-worker.ts:86` / `:120` | C2 加前置闸、C3 加第二条消息 |
 | `engineSelect` / `engineOptions` / `applySettings` / `renderEngineHint` / `saveSettingsOrReport` / `onEngineChange` | `src/popup/popup.ts:31` / `:68` / `:77` / `:230` / `:378` / `:480` | C2（提示）+ C5（下拉） |
 | `profileSeed` / `pick` / `profileRows` / `rowOf` / `editorOf` / `fieldOf` / `actionButton` / `expand` / `bubble` / `seedSettings` / `storedSettings` / `storedProfiles` / `settle` / `waitFor` / `loadOptions` / `engineStatus` / `jsonResponse` / `chatResponse` | `tests/options/harness.ts:44` / `:48` / `:55` / `:59` / `:65` / `:71` / `:77` / `:84` / `:93` / `:98` / `:103` / `:108` / `:119` / `:124` / `:133` / `:139` / `:147` / `:152` | C1/C4 增改夹具 |
-| `ChromeStub` / `runtime.dispatchMessage` / `runtime.sendMessage` / `runtime.sentMessages` / `runtime.noReceiver` / `permissions` / `storage.session` | `tests/helpers/chrome-stub.ts:273` / `:270` / `:259` / `:263` / `:261` / `:185` / `:274` | C3/C4/C5 断言用；**不改这个文件** |
+| `ChromeStub` / `runtime.dispatchMessage` / `runtime.sendMessage` / `runtime.sentMessages` / `runtime.noReceiver` / `ChromeStub.permissions`（成员本身在 `:277`，`:185` 是它引用的 `StubPermissions` 接口）/ `storage.session` | `tests/helpers/chrome-stub.ts:273` / `:270` / `:259` / `:263` / `:261` / `:277`（接口在 `:185`）/ `:274` | C3/C4/C5 断言用；**不改这个文件** |
 
 ### 契约属性清单（现状，逐条都要保住）
 
@@ -61,12 +61,12 @@
 | `#engine-status` | `engineStatus()`（`harness.ts:140`） | 保留（文案除新增外一字不改） |
 | `#add-profile` | 新增档案 | 保留 |
 | `.profile-row[data-profile-id]` | `profileRows()` / `rowOf()` | 保留（**行本身不再是按钮**） |
-| `[data-action="toggle"]` | `harness.ts:88` 的 `expand()`、`engine-health.test.ts:172/203/218/263/291/313/409/442` | **保留这个值**，但按钮从"整行摘要"变成折叠行右侧的 `编辑` |
+| `[data-action="toggle"]` | `harness.ts:88` 的 `expand()`、`engine-health.test.ts` **9 处**（`:172` `:203` `:218` `:263` `:291` `:313` `:409` `:442` 是"点它展开"；`:346` 是**负向**断言 `free!.querySelector('[data-action="toggle"]')` 必须为 null） | **保留这个值**，但按钮从"整行摘要"变成折叠行右侧的 `编辑`。`:346` **不需要迁移**（它断的是免费引擎行上没有这个按钮——与本单元无关），但**别把上面那串行号当完备清单**：它是"我逐个 grep 过"的记录，不是证明 |
 | `[data-action="save-profile"]` / `test-profile` | `options.test.ts` 多处 / `engine-health.test.ts` 多处 | 保留（`save-profile` 的文案从「保存档案」改成「保存」；**状态行文案一字不改**） |
 | `[data-action="delete-profile"]` | `options.test.ts:520/544/585/627`、`engine-health.test.ts:220` **都在编辑器里查** | **移到折叠行**；这 5 处改成从行上查（断言强度不变，见 C4 的迁移表） |
 | `.profile-editor` | `editorOf()`（`harness.ts:66`）、`expand()` | 保留（仍在行**内部**、仍是 `.profile-row` 的子节点） |
 | `.profile-label` `.profile-base-url` `.profile-api-key` `.profile-toggle-key` `.profile-provider` | `fieldOf()` / `options.test.ts:117/152/289` | 保留 |
-| `.profile-model-name` | `options.test.ts` 12 处、`engine-health.test.ts:239` | **移交给夹具**：C1 加 `setModel()`/`currentModel()` 两个 helper，这些调用点改成调它们；C4 改 helper 的实现并**删掉**这个控件 |
+| `.profile-model-name` | `options.test.ts` **14 行**、`engine-health.test.ts:239` | **移交给夹具**：C1 加 `setModel()`/`currentModel()` 两个 helper，这些调用点改成调它们；C4 改 helper 的实现并**删掉**这个控件。14 行逐个都在 C4 Step 6b 的迁移表里（`:150` `:260` `:299` `:304` `:305` `:307` `:329` `:384` `:395` `:414` `:444` `:466` `:483` `:657`） |
 | `.dot[data-state]` | `engine-health.test.ts` 的 `dotOf()` | 保留（折叠行里还是 `.dot`） |
 | `[data-engine-free]` | `engine-health.test.ts:71/122/345` | 保留（免费行不加 `data-profile-id`、不加 `toggle`/`delete-profile`） |
 | `.badge` | 「使用中」/「内置」 | 保留；新增 `.badge-muted`（`自定义`） |
@@ -132,7 +132,20 @@
 9. **计划里不写会漂的数字**：行号、用例总数、行数一律写"以命令输出为准"，或写成"投影 vs 实测"两个数并列。
 10. **任务之间不许有前向引用**（不写"见 Task N"）：每个任务自带它需要的全部代码与命令。
 11. **pwsh 5.1 的 `Set-Content` / `Get-Content` 会破坏 UTF-8**：文件读写一律用编辑 / 写入工具；命令只用来跑 `npx vitest run` / `git` / `node scripts/*.mjs`。
-12. **提交只用路径限定**：`git commit -m "…" -- <两个显式路径>`（禁止整树 VCS 操作与历史改写）。
+12. **提交只用路径限定**：`git commit -m "…" -- <两个显式路径>`。**禁止整树 VCS 操作**：`git stash` / `git restore` / `git checkout -- .` / `git reset --hard` 一律不许用。**路径限定的 `git checkout <commit> -- <你自己已经提交的那几个文件>` 可以接受**，但必须同时满足两个前提：**只碰你自己的文件**、**你的改动已经提交**（否则你会把自己还没提交的工作覆盖掉）。取"改前读数"要优先用 `%TEMP%` 里的自建副本（单元 B 的做法），别在共享工作区里来回 checkout。
+13. **在 jsdom / vitest 里证明"还是同一个节点"只能用 `toBe` / `===`**（`Set.has` / `Array.includes` 这类 SameValueZero 比较也算）。**`toEqual` / `toStrictEqual` 都不能当身份断言**——vitest 5.0.0 对 DOM 节点走的是**结构比较**：`node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289` 那一行是
+    `if (isDomNode(a) && isDomNode(b)) return a.isEqualNode(b);`（判据函数 `isDomNode` 在同文件 `:1356`，只看 `nodeType` / `nodeName` / `isEqualNode` 在不在）。
+    ⚠ 那个 chunk 文件名里的哈希是**装出来的**（版本一变就换名），所以引用时用**符号**（`isDomNode` / `isEqualNode`）定位，别只记路径。DOM 节点是**宿主对象**、没有可枚举的自有属性（`Object.keys(node)` 是 `[]`），所以结构比较**完全**由上面那个 DOM 分支实现；`toStrictEqual` 走同一条分支，一样失效（全仓 `tests/` 今天一处都没用它）。反过来也一样——要断言"结构/内容一样"就用 `toEqual`，别用 `toBe`。
+14. **对未跟踪的新文件，路径限定 commit 必须先把路径 `git add` 一遍**：`git commit -m … -- <新文件>` 会报 `error: pathspec '<新文件>' did not match any file(s) known to git`（git 只认它已知的路径）。正确形态：**先 `git add -- <显式路径>`，再跑同一条路径限定 commit**。仍然**不许**整树 `git add -A` / `git add .`。C0 / C3 / C4 三个 Task 各新建了测试文件或源码文件，它们的提交步骤都已经按这条写好了。
+
+### 附：DOM 身份断言盲区的清理账（`e9f7dd5`，写在这里防止后人夸大）
+
+这条盲区在仓库里被清过一遍，账目如下，**引用这些数字时按下面的口径说**：
+
+- `e9f7dd5` **只改 `tests/content/**` 六个文件**（+124/−23）：`observer.test.ts` 4 处、`index.test.ts` 4 处、`renderer.test.ts` 3 处、`extractor.test.ts` 2 处、`extractor-inline-carrier.test.ts` 1 处、`observer-rescan-guard.test.ts` 1 处——**14 处不在最初的清单里**（最初的清单只覆盖了本轮任务书点到的那几处，说明这个盲区是"扫一遍才看得全"的）。
+- 共 **19 处**从 `toEqual` 改成 `toBe` / `===`。其中 **2 处是纯加法**：只加一条 `===` 的身份断言，**原结构匹配器逐字保留**（"结构一样"与"同一个对象"是两件事，两条都要）。
+- **用例条数不变（478 → 478）**，改前改后同一批用例全绿——这正说明旧写法是**假通过**：它从来没红过，也就从来没守过身份。
+- **读数怎么读才诚实（别夸大）**：那 19 组配对读数（旧写法在同构克隆体的世界里绿、新写法红）证明的是**断言的判别力**，**不是**某个具体业务缺陷的复现——把"期望侧"换成同构克隆体，与"被测代码送来一个同构副本"在断言处**不可区分**。所以**不许把它写成"修掉了 19 个 bug"**；正确的说法是"19 处身份断言原本没有判别力，现在有了"。
 
 ---
 
@@ -158,7 +171,7 @@
 | `tests/background/service-worker.test.ts` | 修改（C2/C3） | 前置闸的零请求（成对）、拉取的隐私断言（成对）、既有档案字面量迁移 |
 | `tests/shared/messages.test.ts` | 修改（C3） | `isFetchModelsMessage` 的正反用例 |
 | `tests/popup/popup.test.ts` | 修改（C2/C5） | 提示区认 `problem`；模型下拉三态、切档案记住、换模型的提示与回滚；既有档案字面量迁移 |
-| `tests/options/options.test.ts` | 修改（C1/C4） | 26 处契约迁移（全部只增不减） |
+| `tests/options/options.test.ts` | 修改（C1/C4） | 既有契约迁移（全部只增不减） |
 | `tests/options/engine-health.test.ts` | 修改（C4） | 2 处迁移（`setModel` / 行上的删除按钮） |
 | `README.md` | 修改（C6） | 功能范围 + 已知限制 + 全量读数 |
 
@@ -191,6 +204,12 @@
 > **改法**：展开/收起只动受影响的那一两行（把编辑器插进 / 移出那一行、更新 `aria-expanded`；展开新的之前把上一个的编辑器移除）。`renderProfiles` 只留给"数据真的变了"的路径：挂载 / 保存后 / 删除后 / 重载。
 >
 > **验收到哪一步（必须写进交付说明）**：本机没有浏览器，所以只到 **jsdom 里的"代价不随档案数增长"读数**——单次展开的 DOM 变更量（`MutationObserver` 数增删节点）。**真机绝对耗时测不了**；用户复测若仍慢，下一步是加临时 `console` 计时探针定位。
+>
+> **落地实测（`35488b2`，本 Task 已实现并提交）**：三条用例与本节代码一致；实现者另加了一条**纯加强**的身份断言（`after.slice(0, 3).map((row, index) => row === before[index])` → `[true, true, true]`），并把本节原来那句"前三行还是原来那三个节点"的**期望红**纠正成真报文。**本节已按落地现实改过**（Step 1 的注释、Step 2 的期望红、Step 6 的两行变异机制），改的就是同一件事：**身份读数只能来自 `toBe` / `===`，`toEqual` 对 DOM 元素是结构比较**（已写进「硬规矩」）。下面「落地读数表」里 C0 那两行仍以命令输出为准。
+>
+> **一处行为增量（C0 引入 → 契约已在 C4 定死）**：草稿行展开着时去点真档案的展开按钮——旧实现把草稿行**整行抹掉**，新实现**行留在列表里、只是收起**。
+> **直接读数已经取到（探针跑完已删）**：新实现 `ids=["p-a","__new__"]`、`draftRowExists=true`，但**切回草稿行四个字段全空**；旧实现 `ids=["p-a"]`、`draftRowExists=false`。而且**真档案行一样丢**（收起再展开回落到存储值）——编辑器由 `buildEditor` 从快照重建，DOM 里敲的字没有任何人接，这是**既有行为**，不是 C0 引入的。
+> **所以"不会丢数据"这个说法是错的**，正确说法是"C0 之后草稿行不再整行消失，但未保存的输入在任何收起路径下仍然丢失"。**裁决**：C4 引入每行的内存暂存，让**隐式收起**保留输入、**`取消`** 丢弃它（见 Task C4 开头的裁决块与规格 §9 第 19 条）；文案纪律同在那里。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -315,9 +334,13 @@ describe('展开就地更新：代价不随档案数增长', () => {
   });
 
   it('新增档案那一行也是就地追加：不动已有的行', async () => {
-    // 草稿行的插入走 `insertDraftRow`（只 append 一行，排在免费引擎行之前），
-    // 不是 `renderProfiles`。断言的读数是"已有行的 DOM 节点身份没变"——
-    // 整表重建时这些引用会全部失效（`isConnected` 变 false）。
+    // 草稿行的插入走 `insertDraftRow`（只 append 一行，排在免费引擎行之前），不是 `renderProfiles`。
+    // 断言的读数是"已有行的 **DOM 节点身份**没变"。
+    //
+    // ⚠ **身份只能用 `toBe` / `===` 证明**（硬规矩 13，含 vitest 源码级的机制出处）：`toEqual` 对
+    // DOM 元素是**结构比较**（vitest 里走 `isDomNode` → `a.isEqualNode(b)`）——jsdom 里两个各造一次
+    // 的 `<div class="profile-row item" data-profile-id="p-0">` 属性一样就算"相等"。
+    // 拿 `toEqual` 当身份断言会**假绿**（实测：整表重建的旧实现下 `toEqual(before)` 照样通过）。
     await seedSettings({ engineId: 'p-0', profiles: seeds(3) });
     await loadOptions();
     const before = profileRows();
@@ -329,9 +352,9 @@ describe('展开就地更新：代价不随档案数增长', () => {
     const after = profileRows();
     expect(after).toHaveLength(4);
     expect(after[3].dataset.profileId).toBe('__new__');
-    // 前三行还是原来那三个节点（同一个对象）。
-    expect(after.slice(0, 3)).toEqual(before);
-    // 免费引擎那一行也还是原来那个节点，而且排在草稿行之后。
+    // 前三行还是原来那三个节点（逐项 `===`：身份，不是结构）。
+    expect(after.slice(0, 3).map((row, index) => row === before[index])).toEqual([true, true, true]);
+    // 免费引擎那一行也还是原来那个节点（`toBe` 是身份比较），而且排在草稿行之后。
     expect(pick<HTMLElement>('profiles').querySelector('[data-engine-free]')).toBe(freeBefore);
     expect(after[3].nextElementSibling).toBe(freeBefore);
     // 草稿行展开着（新增档案的语义就是"当场开始填"）。
@@ -346,7 +369,8 @@ Run: `npx vitest run tests/options/engine-expansion.test.ts`
 
 Expected:
 - 第 1 条 **FAIL**：`expected [ 5, 6, 6 ] to deeply equal [ 5, 1, 0 ]`（旧实现整表重建：清空 N+1 个子节点 + 重造 N+1 个）。
-- 第 3 条 **FAIL**：`expected [ …(4) ] to deeply equal [ …(3) ]`（`renderProfiles` 重建了所有行，节点身份全变）。
+- 第 3 条 **FAIL**：报文是 **`Object.is equality`**（`expected <div …> to be <div …>`），落在**那两条 `toBe` 身份断言**上——落地实测落在免费引擎行那条（`querySelector('[data-engine-free]')` 在整表重建之后是一个**新造**的节点）。
+  ⚠ **`toEqual` 那一行在旧实现下是绿的**（结构比较），所以这条用例的身份读数**全部**由 `toBe` / `===` 提供。别把期望红写成"`toEqual` 不相等"——那是写计划时的错判，落地时被实测纠正过。
 - 第 2 条 **PASS**——**它本来就绿**（见用例里的注释）。别把它当成"红得不对"，也别为了让它红去改断言。
 
 - [ ] **Step 3: 最小实现**
@@ -460,14 +484,17 @@ Expected: 全绿（`options.test.ts` / `engine-health.test.ts` 等一条都不�
 | 删掉 `trigger.setAttribute('aria-expanded', …)` | 「展开 A 再展开 B」——A 的 `aria-expanded` 停在 `'true'`（重复点 B 时 B 的也停在 true） |
 | `expandedId = expandedId === id ? null : id` 改成 `expandedId = id`（**不对称**：点两次不再收起） | 「展开 A 再展开 B」最后一段——`editorOf('p-b')` 不为 null |
 | `const expanded = id === expandedId` 反写成 `id !== expandedId` | 三条全红（展开的那一行拿不到编辑器，收起的那一行反而拿到） |
-| `insertDraftRow` 换回 `renderProfiles` | 「新增档案那一行也是就地追加」——`after.slice(0, 3)` 与 `before` 不再相等（节点身份全变） |
-| 删掉 `if (free === null) … else free.before(row)` 里的 `else` 分支（草稿行追加到末尾） | 「新增档案那一行也是就地追加」——`after[3].nextElementSibling` 不是免费引擎行 |
+| `insertDraftRow` 换回 `renderProfiles` | 「新增档案那一行也是就地追加」——**免费引擎行不再是同一个节点**（`Object.is equality` 红，落在 `querySelector('[data-engine-free]')` 那条 `toBe` 上）。⚠ 这个变异**只有 `toBe` / `===` 抓得住**：`after.slice(0,3).map(… === …)` 那半也红，但任何写成 `toEqual(before)` 的断言在它下面照样绿 |
+| 删掉 `if (free === null) … else free.before(row)` 里的 `else` 分支（草稿行追加到末尾） | 「新增档案那一行也是就地追加」——`after[3].nextElementSibling` 不再是 `freeBefore`（`toBe` 红）；已有三行的身份不受影响（那一半仍绿），所以这条变异的读数**只**落在这两条 `toBe` 上 |
 
 - [ ] **Step 7: 提交**
 
 ```bash
+git add -- tests/options/engine-expansion.test.ts
 git commit -m "perf(options): 展开/收起只动受影响的那一行，不再整表重建" -- src/options/sections/engine.ts tests/options/engine-expansion.test.ts
 ```
+
+> 第一行是必须的：`engine-expansion.test.ts` 是**未跟踪的新文件**，直接跑路径限定 commit 会报 `error: pathspec 'tests/options/engine-expansion.test.ts' did not match any file(s) known to git`（硬规矩 14）。
 
 ---
 
@@ -819,8 +846,9 @@ function liftProfileModels(record: Record<string, unknown>): Record<string, unkn
 /**
  * **过渡读取映射**：单模型输入框里的那个模型名 = 整个清单。
  *
- * 存在的唯一理由：C1（数据模型 v4）与 C4（模型目录 UI）之间，既有的 12 处用例仍然按
- * `.profile-model-name` 驱动面板。C4 把面板换成模型目录时，这个函数与那个输入框一起删掉。
+ * 存在的唯一理由：C1（数据模型 v4）与 C4（模型目录 UI）之间，既有的 14 行 `.profile-model-name`
+ * 调用点（清单见「契约属性清单」）仍然按它驱动面板。C4 把面板换成模型目录时，这个函数与那个
+ * 输入框一起删掉。
  *
  * ⚠ **它是有损的**：档案里如果已经有多个模型，任何一次保存都会把它压成"输入框里那一个"。
  * 所以 C1 **不许独立发布**（C4 落地前不许合进 release 分支）。
@@ -980,6 +1008,7 @@ export function currentModel(editor: Element): string {
 | `tests/shared/settings.test.ts:113-115` | `profiles: [{ id: 'p', apiKey: null, model: 7 }]` → `{ id:'p', label:'我的接口', baseUrl:'', model:'', apiKey:'' }` | 期望值改成 `{ id:'p', label:'我的接口', baseUrl:'', models: [], activeModel: '', apiKey:'' }` |
 | `tests/shared/settings.test.ts:257` | `profile({ id: 'p2', …, model: 'm2' })` | `profile({ id: 'p2', …, models: ['m2'], activeModel: 'm2' })`（`:260` 的 `config` 期望**不动**：`{ apiKey, baseUrl, model: 'm2' }`） |
 | `tests/shared/settings.test.ts:309` `:354` `:377` | 迁移用例里的期望档案 `model: '…'` | 加 `models: ['…']` + `activeModel: '…'`（`:354` 的 `model: ''` → `models: [], activeModel: ''`） |
+| `tests/shared/settings.test.ts:399-413`（「已有 profiles 的 v3 数据即使残留 engineConfig 也不再迁移（幂等）」） | `profiles: [profile({ id: 'p-a', label: '手工档案', apiKey: 'sk-a' })]` **种在 `version: 3` 上** | **种数据改用 v3 字面量**：`profiles: [{ id: 'p-a', label: '手工档案', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-a' }]`，期望值**仍用 v4 的 `profile()` 夹具**（即 `models: ['deepseek-chat']` + `activeModel: 'deepseek-chat'`）。**⚠ 不许把期望值放宽成 `models: []` / `activeModel: ''`**——那是把 v3 数据被清空当成了正确行为。**这条会红的原因**：`1a` 把共享夹具升级成 v4 之后，`version: 3` + v4 字段的记录里**没有 `model`**，`liftProfileModels` 于是把清单清成 `[]`、当前项清成 `''`（核查者在纯净树里按 5b 表全改完仍 `1 failed`，diff 就是 `- activeModel:"deepseek-chat" / + ""`、`- models:["deepseek-chat"] / + []`）。**判据**：任何"种在旧版本号上"的数据都必须是**那个版本的真实形状**；拿当前夹具去种老版本，等于在测一个真实存储里不存在的输入 |
 | `tests/shared/settings.test.ts:503` | `expect(ui.profiles[1]).toEqual({ …, model: 'deepseek-chat' })` | 期望值换成 `models: ['deepseek-chat'], activeModel: 'deepseek-chat'`（投影仍不许带 `apiKey`） |
 
 **5c. 「只有一份真相」补一条**（追加进 `mergeSettings` 那条既有用例之后）：
@@ -1555,7 +1584,7 @@ describe('isFetchModelsMessage', () => {
 
 ```ts
 // tests/background/service-worker.test.ts（片段：追加进 runtime.onMessage 消息路由 的 describe）
-  it('拉取模型清单：消息里只有一个 profileId（不含 Key），后台自己从存储读 Key 并带上', async () => {
+  it('拉取模型清单：后台自己从存储读 baseUrl 与 Key 并请求 /models（设置页只交 profileId）', async () => {
     const calls: Array<{ url: string; auth: string | null }> = [];
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(input), auth: new Headers(init?.headers).get('authorization') });
@@ -1581,16 +1610,18 @@ describe('isFetchModelsMessage', () => {
     });
 
     const message = { type: MSG.FETCH_MODELS, payload: { profileId: 'p-a' } };
-    // 成对的一半（§5.1）：消息体里**没有**密钥。
-    expect(JSON.stringify(message)).not.toContain('sk-secret');
 
     const dispatch = stub.runtime.dispatchMessage(message);
     expect(dispatch.returns).toEqual([true]);
     expect(dispatch.responded).toBe(false); // 响应必须异步：同步返回就会丢消息
     await expect(dispatch.response()).resolves.toEqual({ ok: true, models: ['m-1', 'm-2'] });
 
-    // 成对的另一半：后台**确实**拿到了 Key（否则"消息里没有 Key"只是因为整条链路压根没读 Key）。
+    // 后台**确实**拿到了 Key（否则"消息里没有 Key"只是因为整条链路压根没读 Key）。
     expect(calls).toEqual([{ url: 'https://api.example.com/v1/models', auth: 'Bearer sk-secret' }]);
+    // ⚠ **"消息体里不含 apiKey"这半边的读数不在这里**：本条用例手里的 `message` 是自己两行前
+    // 造的字面量，对它断言"不含 sk-secret"是**恒真式**（测的是用例自己），不是守卫。
+    // 那半边的真正读数在 Task C4——那里消息是由**设置页真的发出去**的
+    // （`chromeStub.runtime.sentMessages` 精确相等），payload 多一个字段就红。
   });
 
   it('拉取的失败与"档案不在"都走 { ok: false, message }：不抛错、不留未处理的拒绝', async () => {
@@ -1909,8 +1940,11 @@ Expected: exit 0。
 - [ ] **Step 8: 提交**
 
 ```bash
+git add -- src/background/models.ts tests/background/models.test.ts
 git commit -m "feat(background): /models 拉取（只传 profileId，容忍三种形状，10 秒独立超时）" -- src/shared/messages.ts src/background/models.ts src/background/service-worker.ts tests/background/models.test.ts tests/shared/messages.test.ts tests/background/service-worker.test.ts
 ```
+
+> 第一行处理两个**未跟踪的新文件**（硬规矩 14）。
 
 ## Task C4: 设置页档案行 / 编辑面板重排（图二布局 + 模型目录 + 取消 + 零自动拉取）
 
@@ -1924,6 +1958,28 @@ git commit -m "feat(background): /models 拉取（只传 profileId，容忍三�
 > 这是本单元最大的一刀：折叠行从「整行是一个 `<button>`」变成「`.grow` + `.row-actions` 两个小按钮」，编辑面板从「四个 `.field`」变成「名字 / Key / `<details>` 自定义设置 / 模型目录 / 底部三颗按钮」，`删除` 从面板里挪到折叠行，`保存档案` 文案改成 `保存`。
 >
 > **既有断言的迁移**（全部只增不减）见 Step 6 的表。迁移的判据只有一条：**断言的强度不许降**——`stored.model` → `stored.activeModel` **并且**补 `stored.models`；`actionButton(editor, 'delete-profile')` → `rowButton(id, 'delete-profile')`（点击位置变了，断言的其余部分一个字不动）。
+>
+> ## 未保存输入的暂存契约（**本节作者的裁决**，落成规格 §9 第 19 条）
+>
+> **先看实测读数**（C0 落地时用探针 `tests/options/zz-draft-value-probe.test.ts` 取的，探针跑完已删；新旧两版都跑过）：
+>
+> | 场景 | 新实现（`35488b2`） | 旧实现（把 `case 'toggle'` 换回 `renderProfiles`） |
+> | --- | --- | --- |
+> | 真档案行手改 label 后收起再展开 | `label="存过的名字"` ← **回落到存储值，改动丢了** | 同左（**旧实现也一样丢**） |
+> | 草稿填四个字段后点真档案的展开按钮 | `ids=["p-a","__new__"]`、`draftRowExists=true`，切回草稿行四个字段**全空** | `ids=["p-a"]`、`draftRowExists=false` ← **整行消失** |
+> | 草稿行点自己收起再展开 | 四个字段全空 | 整行消失（再展开已不可能） |
+>
+> 两条结论必须记住：① **"C0 之后不再丢数据"是错的**——C0 只改变了"草稿行会不会整行消失"，未保存的输入在**任何**收起路径下都仍然丢失；② 真档案行丢改动是**既有行为**（编辑器由 `buildEditor` 从快照重建，没人接住 DOM 里敲的字），不是 C0 引入的。
+>
+> **裁决**：C4 里编辑器有了显式的 `取消` / `保存`，就必须把**隐式收起**的语义一起定死，不能让"顺手点一下别的行"变成静默丢数据。
+>
+> - **`保存`**：写存储 → 清掉这一行的暂存。
+> - **`取消`**：**丢弃**这一行的编辑 → 清掉它的暂存 → 收起（这是它的定义，显式）。
+> - **隐式收起**（点另一个档案的 `编辑`、点本行收起、切到草稿行）：**保留**未保存的输入——**每行一份内存暂存**（`Map<string, ProfileFormValues>`），收起时存下当前 DOM 的值，重新展开时先填暂存、没有暂存才用快照。这样"手滑点走一下"不丢东西，而且不需要确认弹窗、更不需要自动保存（**半填的档案绝不被静默写进存储**——B 轮定的纪律）。
+> - 草稿行（`NEW_DRAFT_ID`）走**同一套**暂存；`保存` 成功、`取消`、行被删除时清掉它对应的那一格。
+> - **文案纪律**：`取消` 的 `title` 可以写「丢弃这次编辑」；而"切走再切回会丢"这类说法**只在真有这个行为时才写**——裁决落地后就不该写（README 的已知限制按**最终实现**写，见 Task C6）。
+>
+> 落点：**Step 1** 的三条用例（隐式收起 / 真档案行四字段+模型清单+Key 边界 / 草稿保存后暂存清空）+ 既有那条 `取消` 用例（改成"取消清暂存"的见证）+ **Step 3g/3q** 的实现 + **Step 8** 的六行变异。
 
 - [ ] **Step 1: 写失败测试（新建 `tests/options/engine-models.test.ts`）**
 
@@ -1936,10 +1992,12 @@ git commit -m "feat(background): /models 拉取（只传 profileId，容忍三�
  * 面板里的名字 / Key / 「自定义设置」/ 模型目录 / 底部三颗按钮，以及模型清单的三条写入规则
  * （空值与重复值不写入、添加即设为当前、删当前项自愈）。
  *
- * 另外钉住两条**承诺**：
+ * 另外钉住三条**承诺**：
  * - 「获取可用模型」只有点了才发请求（§5.4）——**正负两半写在同一条用例里**：正极不存在时，
  *   负向断言会因为"分支根本没执行"而永远绿（本仓六种杀不死的成因②）；
- * - 「取消」丢弃面板编辑、存储一个字节不动（§6.2 第 5 条）。
+ * - 「取消」丢弃面板编辑、存储一个字节不动（§6.2 第 5 条）；
+ * - **隐式收起保留未保存的输入**、而「取消」丢弃它（§9 第 19 条）——两条语义**各自一条用例**，
+ *   它们将来一旦互相漂，红的就是彼此。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MSG } from '../../src/shared/messages';
@@ -2214,7 +2272,11 @@ describe('模型目录：三条写入规则 + 自愈 + 空态说明', () => {
 });
 
 describe('取消：丢弃面板编辑，存储一个字节不动', () => {
-  it('改名字 + 加模型后取消：面板收起、存储原样；再展开看到的是存储里的值', async () => {
+  it('改名字 + 加模型后取消：面板收起、存储原样；再展开看到的是存储里的值（**不是**刚被取消的草稿）', async () => {
+    // 这条同时是"**`取消` 清暂存**"的见证：如果 `handleCancelProfile` 忘了清，重新展开会命中
+    // 暂存、把 `改过的名字` / `another-model` 填回来，下面那两条断言当场红。
+    // （与"隐式收起保留输入"是**两条不同的用例**——那两条在下面那个 describe 里。两条语义将来
+    // 一旦互相漂，红的就是彼此。）
     await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ label: '原名字' })] });
     await loadOptions();
 
@@ -2231,6 +2293,9 @@ describe('取消：丢弃面板编辑，存储一个字节不动', () => {
     editor = expand('p-a');
     expect(fieldOf(editor, '.profile-label').value).toBe('原名字');
     expect(currentModel(editor)).toBe('deepseek-chat');
+    expect(
+      Array.from(editor.querySelectorAll<HTMLElement>('.model-row')).map((row) => row.dataset.model),
+    ).toEqual(['deepseek-chat']);
   });
 
   it('取消草稿行：整行移除（草稿没有存储里对应的东西，收起它只会留个空壳）', async () => {
@@ -2375,13 +2440,114 @@ describe('测试连接：没有当前模型时零请求', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('未保存输入的暂存：隐式收起保住它，取消丢弃它（规格 §9 第 19 条）', () => {
+  it('切走再切回草稿行：行还在，未保存的输入被暂存保住', async () => {
+    // 为什么存在：旧实现里草稿行会**整行消失**（用户以为「新增档案」被吞了）；C0 之后行不再消失，
+    // 但值仍会被 `buildEditor` 重建丢掉；C4 起用每行的内存暂存把它保住。
+    // 探针实测（C0 落地时）：`ids=["p-a","__new__"]`、`draftRowExists=true`、切回四个字段全空。
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    pick<HTMLButtonElement>('add-profile').click();
+    await settle();
+    fieldOf(editorOf('__new__'), '.profile-label').value = '临时档案';
+
+    // 切走：点真档案的「编辑」。这一步在旧实现下会把草稿行整个抹掉。
+    rowOf('p-a').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    await settle();
+    expect(profileRows().map((row) => row.dataset.profileId)).toEqual(['p-a', '__new__']);
+    expect(rowOf('__new__').querySelector('.profile-editor')).toBeNull(); // 收起 = 编辑器不在 DOM
+
+    // 切回：暂存生效（没有暂存的话，新建的编辑器四个字段都是空的）。
+    rowOf('__new__').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    await settle();
+    expect(fieldOf(editorOf('__new__'), '.profile-label').value).toBe('临时档案');
+  });
+
+  it('切走再切回真档案行：四个字段与模型清单都保住；**存储里的** Key 仍然不进 DOM', async () => {
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [profileSeed({ id: 'p-a', apiKey: 'sk-stored' }), profileSeed({ id: 'p-b', label: 'B 家' })],
+    });
+    await loadOptions();
+
+    let editor = expand('p-a');
+    fieldOf(editor, '.profile-label').value = '改了一半';
+    fieldOf(editor, '.profile-base-url').value = 'https://half.example/v1';
+    fieldOf(editor, '.profile-api-key').value = 'sk-typed-here';
+    setModel(editor, 'second-model');
+
+    expand('p-b'); // 切走（这一步收起 p-a → 写暂存）
+    await settle();
+    // 切过去的那一行**不会**看到别人正在编辑的内容：暂存是按**档案 id 各留一格**的。
+    // 这条同时是"共用一格"那个变异的杀手（共用时 p-b 会读到 p-a 的草稿）。
+    const other = expand('p-b');
+    expect(fieldOf(other, '.profile-label').value).toBe('B 家');
+    expect(fieldOf(other, '.profile-base-url').value).toBe(CUSTOM_BASE_URL);
+
+    editor = expand('p-a'); // 切回（重建编辑器 → 先填暂存）
+
+    expect(fieldOf(editor, '.profile-label').value).toBe('改了一半');
+    expect(fieldOf(editor, '.profile-base-url').value).toBe('https://half.example/v1');
+    expect(
+      Array.from(editor.querySelectorAll<HTMLElement>('.model-row')).map((row) => row.dataset.model),
+    ).toEqual(['deepseek-chat', 'second-model']);
+    expect(currentModel(editor)).toBe('second-model');
+    // Key 那一格搬的是**用户刚敲进去的**值（他自己的屏幕、他自己的输入），仍然是遮住的。
+    // 这条**没有**改变隐私硬规矩：存储里那把 Key 照旧不回填、不进 DOM（下一句就是它的读数）。
+    expect(fieldOf(editor, '.profile-api-key').value).toBe('sk-typed-here');
+    expect(fieldOf(editor, '.profile-api-key').type).toBe('password');
+    expect(document.documentElement.outerHTML).not.toContain('sk-stored');
+    // 存储一个字节都没动：暂存是内存里的东西，不是自动保存。
+    expect((await storedProfiles())[0]?.label).toBe('我的 DeepSeek');
+  });
+
+  it('草稿保存成功后清掉草稿暂存：再点「新增档案」是一张白纸，不是上一次那份草稿', async () => {
+    // 为什么存在：草稿保存后 id 会从 `__new__` 变成一个**新生成的**档案 id。所以"保存后清暂存"
+    // 这件事只在草稿这一支上**可观察**——残留的 `__new__` 那条会在下一次"新增档案"时把旧草稿
+    // 预填回去。（同档案保存后的清理**不可观察**：保存后 `renderProfiles` 会按新快照重建那一行，
+    // DOM 本来就不是旧草稿。别为不可观察的那半编一条断言。）
+    await seedSettings({ engineId: 'google' });
+    await loadOptions();
+
+    pick<HTMLButtonElement>('add-profile').click();
+    await settle();
+    let editor = editorOf('__new__');
+    fieldOf(editor, '.profile-label').value = '第一份草稿';
+    fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
+    fieldOf(editor, '.profile-api-key').value = 'sk-draft';
+    // 先收起一次（写暂存），再展开（读暂存），然后保存。
+    rowOf('__new__').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    await settle();
+    rowOf('__new__').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    await settle();
+    editor = editorOf('__new__');
+    expect(fieldOf(editor, '.profile-label').value).toBe('第一份草稿');
+
+    editor.querySelector<HTMLButtonElement>('[data-action="save-profile"]')!.click();
+    await waitFor(async () => (await storedProfiles()).length === 1);
+    expect((await storedProfiles())[0]?.label).toBe('第一份草稿');
+
+    // 再开一个新草稿：四个字段都该是空的（残留的 `__new__` 暂存会把它们填回来）。
+    pick<HTMLButtonElement>('add-profile').click();
+    await settle();
+    const fresh = editorOf('__new__');
+    expect(fieldOf(fresh, '.profile-label').value).toBe('');
+    expect(fieldOf(fresh, '.profile-base-url').value).toBe('');
+    expect(fieldOf(fresh, '.profile-api-key').value).toBe('');
+    expect(fresh.querySelectorAll('.model-row')).toHaveLength(0);
+  });
+});
 ```
 
 - [ ] **Step 2: 跑到红**
 
 Run: `npx vitest run tests/options/engine-models.test.ts`
 
-Expected: 大面积红，且红的形态正是"新版式还不存在"：`编辑` 按钮的文案还是空串（点击后整行内容被 `applyTriggerState` 换掉之前，`rowButton('p-a','toggle')` 找不到 → 抛 `档案行 p-a 缺按钮 toggle`）、`.row-actions` 不存在、`.profile-model-name` 还在、`.models-field` 为 null。**别改断言去迎合现状**——这些红是这一步的目的。
+Expected: 大面积红，且红的形态正是"新版式还不存在"：`编辑` 按钮的文案还是空串（点击后整行内容被 `applyTriggerState` 换掉之前，`rowButton('p-a','toggle')` 找不到 → 抛 `档案行 p-a 缺按钮 toggle`）、`.row-actions` 不存在、`.profile-model-name` 还在、`.models-field` 为 null。
+**暂存那三条也会红，但红的形态要看清**：此刻既没有 `.model-row`（`setModel` 里的 `[data-action="add-model"]` 取不到 → 抛错），也没有 `editorDrafts`，"切回"读到的是快照值/空串。**它们真正的作用是守住 Step 3g/3p 落地后的行为**——所以 Step 2 不必逐条对报文，Step 7 之后它们必须是绿的，Step 8 用变异逐行验。
+**别改断言去迎合现状**——这些红是这一步的目的。
 
 - [ ] **Step 3: 实现（`src/options/sections/engine.ts`）**
 
@@ -2732,12 +2898,92 @@ function buildProfileRow(ctx: SectionContext, id: string): HTMLElement {
 }
 ```
 
-**3g. `applyExpansion` 换用 `applyTriggerState`**（改动处；其余逻辑与 C0 相同）：
+**3g. 未保存输入的暂存 + `applyExpansion` 整体替换**（这一段同时换用 `applyTriggerState`，并接上
+「隐式收起保留未保存输入」的裁决——见本节开头的裁决块与规格 §9 第 19 条）：
 
 ```ts
-// src/options/sections/engine.ts（片段：applyExpansion 的循环体）
+// src/options/sections/engine.ts（片段：暂存 + applyExpansion，整体替换 C0 那一版）
+/**
+ * 每行的**未保存编辑暂存**（内存，key = 档案 id 或 `NEW_DRAFT_ID`）。
+ *
+ * 为什么需要它：收起编辑器 = 把 `.profile-editor` 从 DOM 里摘掉，而输入值只住在那些节点上。
+ * 用户去点另一个档案的「编辑」看一眼、再点回来，刚敲的东西就没了——**这是旧实现就有的行为**
+ * （实测：真档案行一样丢），C0 之后又多了一种形态（草稿行不再整行消失，但值照样丢）。
+ *
+ * 语义（规格 §9 第 19 条，三支互不覆盖）：
+ * - **隐式收起**（点别的行 / 点本行收起 / 切到草稿行）：存下当前 DOM 的值，重新展开时先填暂存；
+ * - **`取消`**：删掉这一行的暂存（那是它的定义："丢弃这次编辑"）；
+ * - **`保存` 成功** / **行被删除**：删掉这一行（草稿保存后 id 会变，两个键都清）。
+ *
+ * ⚠ **这不是自动保存**：暂存只在内存里，关掉设置页就没了，也永远不会被静默写进存储
+ *   （半填的档案绝不入库）。
+ *
+ * ⚠ **它搬 Key，而且是唯一一处**：暂存里那一格是"用户刚在这个输入框里敲的值"，不是存储里那份
+ *   ——隐私硬规矩（存储里的 Key 不回填、不进 DOM）一字未改，只是用户自己敲进去的字不该因为
+ *   他点了一下别的行就蒸掉。`restoreEditor` 把它写回 `.value` 时输入框仍然是 `password`。
+ *
+ * **刻意不做**：这里没有"扫一遍删掉孤儿暂存"的清理。那种清理**写不出读数**（谁也说不出少了它
+ * 会怎样），而三个显式清点各有用例。孤儿条目只是内存里几十字节，且 id 带随机段、不会复用。
+ */
+const editorDrafts = new Map<string, ProfileFormValues>();
+
+/** 收起**之前**把这一行 DOM 里的值存下来。读不出来（控件缺失）就什么都不存：宁可不暂存，也不留个坏值。 */
+function stashEditor(id: string, editor: Element): void {
+  try {
+    editorDrafts.set(id, readEditor(editor));
+  } catch {
+    editorDrafts.delete(id);
+  }
+}
+
+/** 展开时把暂存填回新造的编辑器；没有暂存就什么都不做（表单保持快照的值）。 */
+function restoreEditor(id: string, editor: Element): void {
+  const draft = editorDrafts.get(id);
+  if (draft === undefined) return;
+  requireWithin<HTMLInputElement>(editor, '.profile-label').value = draft.label;
+  requireWithin<HTMLInputElement>(editor, '.profile-base-url').value = draft.baseUrl;
+  requireWithin<HTMLInputElement>(editor, '.profile-api-key').value = draft.apiKey;
+  // 模型清单住在 DOM 行上，所以"恢复清单"就是把清单区按暂存重画一遍。
+  renderModels(requireWithin<HTMLElement>(editor, '.models-field'), {
+    models: draft.models,
+    activeModel: draft.activeModel,
+  });
+}
+
+/**
+ * 展开 / 收起只动受影响的那一两行。
+ *
+ * 为什么不是 `renderProfiles(ctx)`：那个函数开头清空整张列表再重建（档案行 + 免费引擎行），
+ * 于是**每次点开一个档案都要重建 N+1 行**——代价随档案数线性增长，用户点一下要等。
+ * 展开只改三件东西：这一行触发按钮的 `aria-expanded` 与文案、这一行里**有没有**
+ * `.profile-editor`、以及摘/插编辑器前后各一次暂存的读与写。列表结构、行顺序、免费引擎行、
+ * 其它行通通不动。
+ *
+ * `renderProfiles` 只留给"数据真的变了"的路径：挂载、保存后、删除后、重载。
+ */
+function applyExpansion(ctx: SectionContext): void {
+  const snapshot = ctx.settings();
+  if (snapshot === null) return;
+  for (const row of Array.from(profilesList.querySelectorAll<HTMLElement>('.profile-row[data-profile-id]'))) {
+    const id = row.dataset.profileId as string;
+    const expanded = id === expandedId;
     const trigger = row.querySelector('[data-action="toggle"]');
     if (trigger !== null) applyTriggerState(trigger, expanded);
+    const existing = row.querySelector('.profile-editor');
+    if (expanded && existing === null) {
+      const profile = id === NEW_DRAFT_ID ? undefined : snapshot.profiles.find((item) => item.id === id);
+      const editor = buildEditor(id, profile);
+      // **先恢复暂存、再插进 DOM**：用户看到的第一帧就是他离开时的样子，不会闪一下空表单。
+      restoreEditor(id, editor);
+      row.append(editor);
+    } else if (!expanded && existing !== null) {
+      // 收起 = 把编辑器摘掉。**摘之前先把值存进暂存**，否则用户敲的东西随节点一起没了
+      // （"一次只展开一个"的执行点就是这一句）。
+      stashEditor(id, existing);
+      existing.remove();
+    }
+  }
+}
 ```
 
 **3h. `applyProviderTemplate`（整体替换）**：
@@ -2833,13 +3079,18 @@ function handleRemoveModel(id: string, name: string): void {
 }
 
 /**
- * 「取消」= 丢弃本面板的编辑。
+ * 「取消」= **显式丢弃**这一行的编辑。
  *
- * 为什么不需要撤销栈：编辑值**只住在 DOM 里**（保存才写存储），所以"丢弃"就是把编辑器从行里
- * 摘掉——`applyExpansion` 做的正是这件事。它也不可能顺手把别的行、别的字段一起丢掉。
- * 草稿行没有存储里对应的东西：取消它就把整行移除（否则会留下一个收起的空壳）。
+ * 为什么不需要撤销栈：编辑值只住在 DOM 与那一格内存暂存里（保存才写存储），所以"丢弃"
+ * 就是两件事——**删掉这一行的暂存**，再把编辑器从行里摘掉（`applyExpansion` 做后者）。
+ * 少了"删暂存"那一句，收起时写的暂存会在下次展开时把刚被取消的草稿填回来（用例当场红）。
+ *
+ * 它也不可能顺手把别的行、别的字段一起丢掉。
+ * 草稿行没有存储里对应的东西：取消它就把整行移除（否则会留下一个收起的空壳），并清掉它的暂存。
  */
 function handleCancelProfile(ctx: SectionContext, id: string): void {
+  // 这一句是"取消"与"隐式收起"的分界：隐式收起**保留**暂存，取消**清掉**它。
+  editorDrafts.delete(id);
   if (id === NEW_DRAFT_ID) {
     expandedId = null;
     rowById(NEW_DRAFT_ID)?.remove();
@@ -3135,6 +3386,54 @@ function handleCancelFetched(id: string): void {
 import { MSG, type FetchModelsResponse } from '../../shared/messages';
 ```
 
+**3p. 暂存的生命周期：保存成功与删除档案各清一格**（两处改动）。
+
+```ts
+// src/options/sections/engine.ts（片段：handleSaveProfile 成功之后）
+  const saved = await ctx.save(engineStatus, '设置未能保存', { profiles });
+  if (!saved) return;
+
+  // 保存成功 = 这次编辑会话结束：清掉这一行的暂存。
+  // ⚠ `NEW_DRAFT_ID` 那一格也必须清：草稿保存后 id 从 `__new__` 变成新生成的档案 id，
+  // 留着它，下一次点「新增档案」就会把刚保存的那份草稿预填回去（`engine-models.test.ts`
+  // 里「草稿保存成功后清掉草稿暂存」那条用例专门守它）。
+  // 而同档案那一格**没有独立读数**（保存后 `renderProfiles` 会按新快照重建这一行，DOM 本来就
+  // 不是旧草稿）——它留在这里的理由是"一条暂存不该活得比它对应的编辑会话更久"。
+  editorDrafts.delete(savedId);
+  editorDrafts.delete(NEW_DRAFT_ID);
+
+  expandedId = savedId;
+  renderProfiles(ctx);
+  renderEngineHint(ctx);
+```
+
+```ts
+// src/options/sections/engine.ts（片段：handleDeleteProfile 的两处清理）
+  const target = latest.profiles.find((profile) => profile.id === id);
+  if (target === undefined) {
+    // 别处已经删过（并发窗口）：如实说，并刷新到存储的真实列表，不静默"删除成功"。
+    expandedId = null;
+    // 它的暂存也跟着走：档案都不在了，留着这一格只会在同一个 id 被重新造出来时把旧草稿带回来。
+    editorDrafts.delete(id);
+    const refreshed = await renderFromStorage(ctx);
+```
+
+```ts
+// src/options/sections/engine.ts（片段：handleDeleteProfile 成功删除之后）
+  const saved = await ctx.save(
+    engineStatus,
+    '设置未能保存',
+    { profiles: remaining, engineId: wasCurrent ? DEFAULT_ENGINE_ID : latest.engineId },
+  );
+  if (!saved) return;
+
+  // 档案没了，它的暂存也不该留（同一个 id 不会复用，但"删了还留着"本身就是没道理的）。
+  editorDrafts.delete(id);
+  if (expandedId === id) expandedId = null;
+  renderProfiles(ctx);
+  renderEngineHint(ctx);
+```
+
 - [ ] **Step 4: 实现（`src/options/options.html` 的引擎区块文案）**
 
 ```html
@@ -3309,7 +3608,11 @@ export function rowButton(id: string, action: string): HTMLButtonElement {
 
 Run: `npx vitest run tests/options`
 
-Expected: `engine-models.test.ts` 全绿；`options.test.ts` / `engine-health.test.ts` 在迁移之后一条都不红。**若有红，先分辨**：是"迁移漏了一处点击位置"，还是"断言被改弱了"——后者不许用放宽断言解决。
+Expected: `engine-models.test.ts` 全绿（含**暂存那三条**：切走再切回草稿行 / 切走再切回真档案行 / 草稿保存后暂存清空）；`options.test.ts` / `engine-health.test.ts` 在迁移之后一条都不红。**若有红，先分辨**：是"迁移漏了一处点击位置"，还是"断言被改弱了"——后者不许用放宽断言解决。
+
+Run: `npx vitest run tests/options/options.test.ts tests/options/engine-health.test.ts`
+
+Expected: 全绿——特别是既有的隐私用例（「三个档案各塞不同密钥——收起与展开后，DOM 里一个都不许出现」）：暂存只搬**用户刚敲进去的**值，存储里的 Key 一个都不进暂存，所以那条用例与它引用的每个密钥都照旧。
 
 Run: `npx vitest run tests/options/options-css.test.ts tests/options/no-innerhtml.test.ts tests/options/search.test.ts`
 
@@ -3332,8 +3635,16 @@ Expected: 全绿。三条分别管着：CSS 令牌纪律（新规则只用 `--te
 | 「当前项」那颗 `use.disabled = true` 删掉 | 「「设为当前」切换当前项…」——`useButton('a').disabled` 为 false |
 | `handleCancelProfile` 里删掉 `applyExpansion(ctx)` | 「取消：…」——`rowOf('p-a').querySelector('.profile-editor')` 不为 null |
 | 取消草稿那一支改成 `applyExpansion`（只收起不移除） | 「取消草稿行」——`profileRows()` 仍是 `['__new__']` |
+| **暂存六行（规格 §9 第 19 条，逐行都有读数）** | |
+| `stashEditor(id, existing)` 那一行删掉（收起时不存） | 「切走再切回草稿行…」读到空串；「切走再切回真档案行…」同样红 |
+| `restoreEditor(id, editor)` 那一行删掉（展开时不读暂存） | 同上两条红（暂存写了也没人读） |
+| `restoreEditor` 里恢复 `.profile-api-key` 那一行删掉 | 「切走再切回真档案行…」——`value` 是 `''` 而不是 `sk-typed-here` |
+| `stashEditor` / `restoreEditor` 的 key 从 `id` 改成处处用 `NEW_DRAFT_ID`（**对称性破坏**：所有行共用一格） | **两条用例各红一处**：「切走再切回真档案行…」——切到 p-b 时它读到 p-a 的草稿（`fieldOf(other, '.profile-label')` 是 `改了一半` 而不是 `B 家`）；「切走再切回草稿行…」——切回草稿行读到 p-a 的值（`我的 DeepSeek` 而不是 `临时档案`）。⚠ 机理：`applyExpansion` 按 **DOM 顺序**遍历，上一次调用留下的那一格会被下一行读走——所以**必须**有"切过去那一行看不到别人的草稿"这条断言，只比较"切回自己那一行"抓不住它 |
+| `handleCancelProfile` 开头那行 `editorDrafts.delete(id)` 删掉 | 「取消：改名字 + 加模型后取消…」——再展开读到 `改过的名字` 与 `another-model`（**这条用例现在还守着"取消清暂存"**） |
+| `handleSaveProfile` 里 `editorDrafts.delete(NEW_DRAFT_ID)` 删掉 | 「草稿保存成功后清掉草稿暂存：再点「新增档案」是一张白纸…」——新草稿被上一次的值预填 |
+| `handleSaveProfile` 里 `editorDrafts.delete(savedId)` 删掉 | **不设此变异（已核实不可观察）**：保存成功后 `renderProfiles` 会按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor`，所以残留的那一格在正常流程里读不到。留着这一行是"暂存不活得比编辑会话更久"的对称性，不是守卫。写在这里是记录"查过、没有读数"，不是待办 |
 | 零自动拉取：在 `buildEditor` 里直接发一次拉取消息（模拟"展开就拉"） | 「打开设置页 / 展开档案 / 聚焦输入框都不发请求…」——`sentMessages` 不为空 |
-| `handleFetchModels` 的消息体加上 `apiKey: profile.apiKey` | 同一条（`sentMessages` 精确相等） |
+| `handleFetchModels` 的消息体加上 `apiKey: profile.apiKey` | 「打开设置页 / 展开档案 / 聚焦输入框都不发请求…」——`sentMessages` 精确相等当场红。**这一行是验收项 5（"消息体不含 apiKey"）唯一的守卫**：C3 侧那条同类断言已删（它手里的是自己的字面量，恒真） |
 | `renderFetchedModels` 里 `checkbox.checked = true` | 「拉取成功：勾选清单默认全不选…」红 |
 | `handleMergeModels` 里 `activeModel` 无条件用 `picked[0]` | 「拉取成功…」那半仍绿（清单原本为空）→ **补一条**：清单非空时并入**不许**改当前项（**加进那条用例**：先 `setModel`，再并入 `m-9`，`currentModel` 仍是刚设的那个） |
 | `handleTestProfile` 里删掉 `if (problem !== undefined)` 那一支 | 「测试连接：没有当前模型时零请求」——`fetchSpy` 被调用（引擎会抛 AUTH，但请求已经发出去了？**不会**：引擎的空 model 闸在 `fetch` 之前）→ **这条变异的读数是"状态行文案变成引擎那句通用 AUTH"**，不是 fetch 次数。用例里的 `toContain('还没有模型')` 因此是它的杀手 |
@@ -3341,8 +3652,11 @@ Expected: 全绿。三条分别管着：CSS 令牌纪律（新规则只用 `--te
 - [ ] **Step 9: 提交**
 
 ```bash
-git commit -m "feat(options): 档案行与编辑面板改成图二布局（模型目录 + 取消 + 零自动拉取）" -- src/options/sections/engine.ts src/options/options.html src/options/options.css tests/options/harness.ts tests/options/engine-models.test.ts tests/options/options.test.ts tests/options/engine-health.test.ts
+git add -- tests/options/engine-models.test.ts
+git commit -m "feat(options): 档案行与编辑面板改成图二布局（模型目录 + 暂存 + 取消 + 零自动拉取）" -- src/options/sections/engine.ts src/options/options.html src/options/options.css tests/options/harness.ts tests/options/engine-models.test.ts tests/options/options.test.ts tests/options/engine-health.test.ts
 ```
+
+> 第一行处理**未跟踪的新测试文件**（硬规矩 14）。
 
 ## Task C5: 弹窗模型下拉（仅 > 1 项）+ 记住上次用的模型 + 换模型提示
 
@@ -3480,7 +3794,7 @@ describe('模型下拉（规格 §7：只有 > 1 个模型时才出现）', () =
     expect(await storedActiveModel('p-b')).toBe('b1');
   });
 
-  it('换模型：只写那一个档案的 activeModel，其它档案与字段原样；存储里没有 Key 的丢失', async () => {
+  it('换模型：只写那一个档案的 activeModel，其它档案与字段原样（存储里的 Key 一个都没丢）', async () => {
     await seedSettings({
       engineId: 'p-a',
       profiles: [
@@ -3752,10 +4066,14 @@ git commit -m "feat(popup): 档案有多个模型时多一个模型下拉，换�
   （连不上 / 401 / 404 / 不是 JSON / 10 秒超时），**手填这条路永远在**。
 ```
 
-- [ ] **Step 3: README「已知限制 › 设置页」补四条（追加在那一段末尾）**
+- [ ] **Step 3: README「已知限制 › 设置页」补五条（追加在那一段末尾）**
 
 ```markdown
 <!-- README.md（片段：追加进「### 设置页」那个列表的末尾） -->
+- **面板里没保存的改动会被记住**（只要你还在这张设置页上）：点另一个档案的「编辑」看一眼再点回来、
+  或把本行收起再展开，名字 / 接口地址 / Key / 模型清单都还是你刚填的样子——每个档案在内存里各留一格
+  暂存。**「取消」才是丢弃**（它会把那格一起清掉）。这不是自动保存：**关掉设置页暂存就没了**，
+  也永远不会把半填的档案悄悄写进存储——要落盘只能点「保存」。
 - **展开档案行变快，只有 jsdom 这一层的读数**：改前每点一次展开都会把整张档案列表推倒重建
   （代价随档案数线性增长），改后只动受影响的那一两行——测试钉住的是"单次展开对 DOM 的改动量与
   档案数无关"（N=5/20/50 同值），**不是真机耗时**（本机没有浏览器，绝对耗时测不了）。若你复测仍慢，
@@ -3776,7 +4094,7 @@ git commit -m "feat(popup): 档案有多个模型时多一个模型下拉，换�
 - **设置改动即时保存**：选择类与开关类 `change` 即存，文本类（术语、规则域名、提示词）失焦才存，
   数字类在提交时存。**档案仍用面板底部的「保存」按钮**——保存档案要在用户手势里申请该地址的宿主权限
   （Chrome 要求手势），而且填了一半的档案不该被静默写进存储。同一个面板上的「取消」丢弃这次编辑、
-  不动存储。
+  不动存储（收起 / 切走**不会**丢弃——见上面「面板里没保存的改动会被记住」那条）。
 ```
 
 - [ ] **Step 5: 全量命令（收口）**
@@ -3825,7 +4143,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | 2 | 删当前模型自愈且不变量成立；清空列表为 `''` | C1（读取边界，Step 1/3）+ C4（UI 自愈，Step 1/8） |
 | 3 | `activeModel === ''` → 可读错误 + **零网络请求** | C2 Step 1/3（成对用例） |
 | 4 | 三种响应形状各解析正确；解析不出时文案指向手填 | C3 Step 1/3 |
-| 5 | 拉取消息体**不含 `apiKey`**（成对：后台确实拿到了 Key） | C3 Step 1c（`JSON.stringify(message)` + `Bearer` 双向断言） |
+| 5 | 拉取消息体**不含 `apiKey`**（成对：后台确实拿到了 Key） | **两半分别在两处**：「消息里真的没有 Key」= **C4 Step 1 的零自动拉取用例**（`chromeStub.runtime.sentMessages` 对**设置页真的发出去的那条消息**做精确相等断言；payload 多一个字段就红）；「后台确实拿到了 Key」= C3 Step 1c 的 `Bearer sk-secret` 断言。⚠ **C3 侧不再放"消息里没有 Key"的断言**——那里手里的 `message` 是它自己造的字面量，那种断言是恒真式（测的是用例自己），不是守卫 |
 | 6 | 打开设置页 / 切换档案 / 聚焦输入框都不触发拉取 | C4 Step 1（零自动拉取用例，正负两半同条） |
 | 7 | 弹窗下拉 1 项无、2 项有；切回档案记住上次用的模型 | C5 Step 1/5（三态 + 往返用例） |
 | 8 | 换模型后 `configHash` 变化 | C2 Step 1b（端到端）+ `tests/background/scheduler.test.ts:290` 既有单元网 |
@@ -3839,6 +4157,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | 16 | 手填空值与重复值不写入；添加即当前；拉取并入只在原本为空时设当前 | C4 Step 1/3i/3j |
 | 17 | 没有当前模型时点「测试连接」→ 那句话 + 零请求 | C4 Step 1/3l |
 | 18 | `activeModel` 认不出来 → 置 `''`，不替用户挑 | C1 Step 1/3c |
+| **19** | **隐式收起保留未保存的输入**（每行内存暂存），而 `保存` / `取消` / 行被删除各自清掉它 | **C4**：裁决块（Task C4 开头）+ Step 1 的三条用例（草稿往返 / 真档案行四字段与 Key 边界 / 草稿保存后暂存清空）+ 既有那条 `取消` 用例（改写成"取消清暂存"的见证）+ Step 3g/3p 的实现 + Step 8 的六行变异 |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -3894,6 +4213,8 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | 开工基线 `npm test` | 单元 B 收口时 52 files / 983 passed（**以命令输出为准**） | |
 | C0 单次展开的 DOM 变更量（N=5/20/50） | `{1,0}` / `{1,0}` / `{1,0}`；旧实现 `{6,6}` / `{21,21}` / `{51,51}` | |
 | C0 A→B 切换的变更量 | `{1,1}`（任意 N） | |
+| **C0 落地时的"未保存输入"探针**（`zz-draft-value-probe.test.ts`，跑完已删） | —— | **已取到**：新实现 真档案行收起再展开 → 回落到存储值；草稿被切走 → `ids=["p-a","__new__"]`、`draftRowExists=true`、切回四字段**全空**；草稿点自己收起 → 四字段全空。旧实现：草稿被切走 → `ids=["p-a"]`、`draftRowExists=false`；点自己收起 → 整行消失 |
+| **C4 落地后的同一条探针**（预期改变） | 切回草稿行 → `label="临时档案"`（暂存生效）；`取消` 后 → 空 | |
 | 收口 `npm test` | 以命令输出为准 | |
 | 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
 | `sync-plan-code.mjs` | `已同步 0 个代码块` | |
