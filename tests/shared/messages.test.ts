@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MSG, isTranslateTextsMessage, type TranslateTextsMessage } from '../../src/shared/messages';
+import {
+  MSG,
+  isFetchModelsMessage,
+  isTranslateTextsMessage,
+  type FetchModelsMessage,
+  type TranslateTextsMessage,
+} from '../../src/shared/messages';
 
 describe('MSG', () => {
   it('消息类型常量取值唯一', () => {
@@ -59,5 +65,29 @@ describe('isTranslateTextsMessage', () => {
   it('拒绝其它类型的消息', () => {
     expect(isTranslateTextsMessage({ type: MSG.GET_PAGE_STATE })).toBe(false);
     expect(isTranslateTextsMessage(null)).toBe(false);
+  });
+});
+
+describe('isFetchModelsMessage', () => {
+  it('识别合法的拉取请求', () => {
+    const message: FetchModelsMessage = { type: MSG.FETCH_MODELS, payload: { profileId: 'p-a' } };
+    expect(isFetchModelsMessage(message)).toBe(true);
+  });
+
+  it('拒绝缺 payload / profileId 不是非空字符串的消息（跨进程边界不能只信类型）', () => {
+    const cases: unknown[] = [
+      { type: MSG.FETCH_MODELS },
+      { type: MSG.FETCH_MODELS, payload: {} },
+      { type: MSG.FETCH_MODELS, payload: { profileId: '' } },
+      { type: MSG.FETCH_MODELS, payload: { profileId: 7 } },
+      { type: MSG.FETCH_MODELS, payload: 'p-a' },
+      null,
+    ];
+    for (const message of cases) expect([message, isFetchModelsMessage(message)]).toEqual([message, false]);
+  });
+
+  it('两个校验器互不认领：翻译消息不是拉取消息，反之亦然', () => {
+    expect(isFetchModelsMessage({ type: MSG.TRANSLATE_TEXTS, payload: { items: [] } })).toBe(false);
+    expect(isTranslateTextsMessage({ type: MSG.FETCH_MODELS, payload: { profileId: 'p-a' } })).toBe(false);
   });
 });

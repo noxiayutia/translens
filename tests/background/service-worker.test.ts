@@ -316,6 +316,173 @@ describe('runtime.onMessage 消息路由', () => {
     // 真正会漏的是第二个 sendResponse：`.catch` 里那个调用自己抛出的异常背后没有处理者。
     expect(rejections).toEqual([]);
   });
+
+  it('拉取模型清单：后台自己从存储读 baseUrl 与 Key 并请求 /models（设置页只交 profileId）', async () => {
+    const calls: Array<{ url: string; auth: string | null }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), auth: new Headers(init?.headers).get('authorization') });
+      return new Response(JSON.stringify({ data: [{ id: 'm-1' }, { id: 'm-2' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    // `fetchModels` 会先查一次宿主权限（§5.5）——与引擎同一条纪律，所以这里要"已授权"。
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    await useSettings({
+      engineId: 'p-a',
+      profiles: [
+        {
+          id: 'p-a',
+          label: 'A 家',
+          baseUrl: 'https://api.example.com/v1',
+          models: ['m-1'],
+          activeModel: 'm-1',
+          apiKey: 'sk-secret',
+        },
+      ],
+    });
+
+    const message = { type: MSG.FETCH_MODELS, payload: { profileId: 'p-a' } };
+
+    const dispatch = stub.runtime.dispatchMessage(message);
+    expect(dispatch.returns).toEqual([true]);
+    expect(dispatch.responded).toBe(false); // 响应必须异步：同步返回就会丢消息
+    await expect(dispatch.response()).resolves.toEqual({ ok: true, models: ['m-1', 'm-2'] });
+
+    // 后台**确实**拿到了 Key（否则"消息里没有 Key"只是因为整条链路压根没读 Key）。
+    expect(calls).toEqual([{ url: 'https://api.example.com/v1/models', auth: 'Bearer sk-secret' }]);
+    // ⚠ **"消息体里不含 apiKey"这半边的读数不在这里**：本条用例手里的 `message` 是自己两行前
+    // 造的字面量，对它断言"不含 sk-secret"是**恒真式**（测的是用例自己），不是守卫。
+    // 那半边的真正读数在 Task C4——那里消息是由**设置页真的发出去**的
+    // （`chromeStub.runtime.sentMessages` 精确相等），payload 多一个字段就红。
+  });
+
+  it('拉取的失败与"档案不在"都走 { ok: false, message }：不抛错、不留未处理的拒绝', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{}', { status: 404 }));
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    await useSettings({
+      engineId: 'p-a',
+      profiles: [
+        { id: 'p-a', label: 'A 家', baseUrl: 'https://api.example.com/v1', models: [], activeModel: '', apiKey: 'sk-a' },
+      ],
+    });
+
+    const missing = stub.runtime.dispatchMessage({ type: MSG.FETCH_MODELS, payload: { profileId: 'gone' } });
+    await expect(missing.response()).resolves.toEqual({
+      ok: false,
+      message: '这个档案已经不在了，请重新打开设置页再试。',
+    });
+
+    const failed = stub.runtime.dispatchMessage({ type: MSG.FETCH_MODELS, payload: { profileId: 'p-a' } });
+    const response = (await failed.response()) as { ok: boolean; message: string };
+    expect(response.ok).toBe(false);
+    expect(response.message).toContain('HTTP 404');
+  });
+
+  it('档案没有当前模型：可读错误 + 一个请求都不发（成对：把 activeModel 填上就真的发）', async () => {
+    const calls: Array<{ model: string }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ model: (JSON.parse(String(init?.body)) as { model: string }).model });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    const noModel = {
+      id: 'p-a',
+      label: 'A 家',
+      baseUrl: 'https://api.example.com/v1',
+      models: ['m-1'],
+      activeModel: '',
+      apiKey: 'sk-a',
+    };
+    await useSettings({ engineId: 'p-a', profiles: [noModel] });
+
+    const dispatch = translateTexts({ items: [{ id: 'i1', text: 'Hello' }] });
+    // ⚠ **顺序是承重的（落地校正）**：先收响应、**紧接着就读 `calls` 与缓存**，最后才断言错误码与文案。
+    // 原来写成"先 `await expect(...).resolves.toEqual({…})` 再读 `calls`"，于是"一个请求都没发"这个读数
+    // 排在了错误断言后面——那正是"测量安排本身让读数看不见"的形状（复盘 §3）。
+    // ⚠ **成对的另一半是下面那条独立的用例**（原来挤在同一条 `it` 里）：挤在一起时，这一条的错误断言
+    // 一红，另一半的读数就再也跑不到（本仓"前面的失败遮住后面的读数"）。两条独立用例各红各的。
+    const response = await dispatch.response();
+    expect(calls).toEqual([]); // ① 一次 fetch 都没有
+    expect(cacheEntries('local')).toHaveLength(0); // ② 两层缓存也没留下条目
+    expect(cacheEntries('session')).toHaveLength(0);
+    expect(response).toEqual({
+      ok: false,
+      code: 'AUTH',
+      message: '这个档案还没有模型，点「添加模型」或「拉取可用模型」',
+    });
+  });
+
+  it('成对的另一半：把 activeModel 填上就真的发一次请求（上一条的"零请求"不是整条链路坏了）', async () => {
+    // 没有这一半，上一条在"整条链路都坏了 / 永远返回 AUTH"的实现下照样是绿的。
+    const calls: Array<{ model: string }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ model: (JSON.parse(String(init?.body)) as { model: string }).model });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    await useSettings({
+      engineId: 'p-a',
+      profiles: [
+        {
+          id: 'p-a',
+          label: 'A 家',
+          baseUrl: 'https://api.example.com/v1',
+          models: ['m-1'],
+          activeModel: 'm-1',
+          apiKey: 'sk-a',
+        },
+      ],
+    });
+
+    const response = await translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response();
+    expect(calls).toEqual([{ model: 'm-1' }]);
+    // 上一条的 `cacheEntries(...) === 0` 只有在"同一个夹具下缓存真的会写进去"时才有信息量：
+    // 这两行是它的正向对照（`cacheEntries` 要是取错层 / 取错前缀，上一条会永远绿）。
+    expect(cacheEntries('local')).toHaveLength(1);
+    expect(cacheEntries('session')).toHaveLength(1);
+    expect(response).toEqual({ ok: true, results: [{ id: 'i2', text: '你好' }] });
+  });
+
+  it('同一个档案换 activeModel：不命中上一个模型的缓存（§4 的前提，端到端钉住）', async () => {
+    // `scheduler.test.ts:290` 已有一条**单元级**的网（`engineConfig.model` 变 → key 变）；这一条补的是
+    // **链路上游**：`resolveEngine` 到底把 `activeModel` 映射进了 `config.model`。
+    // ⚠ 这条用例**今天不存在**（计划原来把它写在 C2，而 C2 不碰 `src/background/**`）——本 Step 是它的归属地。
+    // 少了它，"映射写错字段（比如取 models[0]）"只会在真机上表现为"换模型没生效"。
+    const bodies: Array<{ model: string; messages: unknown }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as { model: string; messages: unknown });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    const both = {
+      id: 'p-a',
+      label: 'A 家',
+      baseUrl: 'https://api.example.com/v1',
+      models: ['m-1', 'm-2'],
+      activeModel: 'm-1',
+      apiKey: 'sk-a',
+    };
+
+    await useSettings({ engineId: 'p-a', profiles: [both] });
+    await translateTexts({ items: [{ id: 'i1', text: 'Hello' }] }).response();
+    expect(bodies).toHaveLength(1);
+
+    // 同一个档案、同一段文本、只把 activeModel 换成 m-2：必须再请求一次（缓存不许串味）。
+    await useSettings({ engineId: 'p-a', profiles: [{ ...both, activeModel: 'm-2' }] });
+    await translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response();
+
+    expect(bodies.map((body) => body.model)).toEqual(['m-1', 'm-2']);
+  });
 });
 
 describe('两层缓存的层次顺序', () => {

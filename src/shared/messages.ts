@@ -23,6 +23,14 @@ export const MSG = {
    * 否则用户拨了开关、页面却纹丝不动（规格 §7.1 要求"改动即时生效"）。
    */
   APPLY_SETTINGS: 'jinyi:apply-settings',
+  /**
+   * 设置页 → service worker：拉取某个档案可用模型清单（`{接口地址}/models`）。
+   *
+   * 设置页**只传 `profileId`**（§5.1）：它持有全量设置（含 Key），把 Key 塞进消息等于把密钥
+   * 又搬过一条通道，与现有「Key 不进内容脚本、不渲染进设置页 DOM」的隔离口径相矛盾。
+   * 后台按这个 id 自己从存储读 `baseUrl` 与 `apiKey`。
+   */
+  FETCH_MODELS: 'jinyi:fetch-models',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -58,6 +66,27 @@ export interface PageState {
   total: number;
   done: number;
   failed: number;
+}
+
+export interface FetchModelsMessage {
+  type: typeof MSG.FETCH_MODELS;
+  payload: { profileId: string };
+}
+
+/**
+ * `ok: true` 但 `models: []` = 「这个地址没有给出可用的模型清单」——**不是失败**
+ * （§5.2：引导手填，而不是报错完事）。失败一律走 `ok: false` + 一句能读懂的话。
+ */
+export type FetchModelsResponse = { ok: true; models: string[] } | { ok: false; message: string };
+
+/** 与 `isTranslateTextsMessage` 同一条纪律：只校验**形状**，空 profileId 是形状问题（它无法指代任何档案）。 */
+export function isFetchModelsMessage(value: unknown): value is FetchModelsMessage {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Partial<FetchModelsMessage>;
+  if (message.type !== MSG.FETCH_MODELS) return false;
+  if (!message.payload || typeof message.payload !== 'object') return false;
+  const payload = message.payload as { profileId?: unknown };
+  return typeof payload.profileId === 'string' && payload.profileId.length > 0;
 }
 
 /**

@@ -2,8 +2,9 @@
 import { TieredCache, TranslationCache, type StorageArea } from '../core/cache';
 import { EngineError, toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
-import { isTranslateTextsMessage, MSG, type TranslateTextsResponse } from '../shared/messages';
-import { DEFAULT_SETTINGS, loadSettings, resolveEngine } from '../shared/settings';
+import { isFetchModelsMessage, isTranslateTextsMessage, MSG, type FetchModelsResponse, type TranslateTextsResponse } from '../shared/messages';
+import { DEFAULT_SETTINGS, loadSettings, resolveEngine, type Settings } from '../shared/settings';
+import { fetchModels } from './models';
 import { translateBatch } from './scheduler';
 
 const MENU_TRANSLATE_PAGE = 'jinyi-translate-page';
@@ -90,7 +91,19 @@ async function handleTranslateTexts(
     const settings = await loadSettings(persistentArea);
     // 「用哪个引擎 + 用哪份配置」只有一处解析（shared/settings 的 resolveEngine）：
     // engineId 现在是 `google` 或某个档案的 id，别处各写一份 if 迟早和这里漂移。
-    const { engine, config } = resolveEngine(settings);
+    const { engine, config, problem } = resolveEngine(settings);
+    // 档案没有当前模型：**在这里就返回**（§3.3）。规格要的是一句可行动的话，而不是带着空 model
+    // 去打接口换回一句 HTTP 400（上次 `deepseek` 那次事故的形状）。
+    // 整条请求失败（不是条目级失败）：这件事对这批里的每一条都成立，没有"逐条重试"的意义。
+    //
+    // ⚠ **这道闸不负责"零请求"**：零请求由 `src/engines/openai-compat.ts:64-67` 的空 model 闸
+    // **构造性**保证（它在 `fetch` 之前就抛 AUTH）。这道闸改变的是**失败粒度与文案**：
+    // 没有它 → 条目级 `{ ok: true, results: [{ code: 'AUTH', message: '尚未填写模型名…' }] }`；
+    // 有它 → 整条 `{ ok: false, code: 'AUTH', message: problem }`。别把它记成"少发一次请求的守卫"。
+    //
+    // ⚠ **接线完成前不许合进 release**（与 C1 的过渡映射同一条纪律）：`problem` 在类型上是可选的，
+    // 漏接一处不会编译失败，只会在真机上表现为"用户拿到一句通用的、指不到去哪儿的话"。
+    if (problem !== undefined) return { ok: false, code: 'AUTH', message: problem };
     const targetLang = payload.targetLang ?? settings.targetLang;
 
     // 上限随设置变化；上限是实例属性而条目挂在存储区上，所以每个存储区只能有这一个实例
@@ -117,7 +130,35 @@ async function handleTranslateTexts(
   }
 }
 
+/**
+ * 设置页点「获取可用模型」→ 后台**自己**从存储读那份档案的 baseUrl / apiKey 再请求（§5.1）。
+ * 失败一律收成 `{ ok: false, message }`：这个函数不抛，路由那一层只是兜底。
+ */
+async function handleFetchModels(payload: { profileId: string }): Promise<FetchModelsResponse> {
+  let settings: Settings;
+  try {
+    settings = await loadSettings(persistentArea);
+  } catch (raw) {
+    return { ok: false, message: `设置读不出来：${toEngineError(raw).message}` };
+  }
+  const profile = settings.profiles.find((item) => item.id === payload.profileId);
+  if (profile === undefined) return { ok: false, message: '这个档案已经不在了，请重新打开设置页再试。' };
+  return fetchModels(profile);
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (isFetchModelsMessage(message)) {
+    handleFetchModels(message.payload)
+      .then(sendResponse)
+      .catch((raw: unknown) => {
+        // 这个处理器自己不抛（失败都收成 `{ ok: false, message }`），这一层是纯兜底：
+        // 抛出去会变成一次未处理的拒绝 + 一个永远等不到响应的调用方。
+        sendResponse({ ok: false, message: `拉取模型清单失败：${toEngineError(raw).message}` } satisfies FetchModelsResponse);
+      })
+      // `sendResponse` 自己会抛（端口已关）：与翻译那条同一条口径，静默丢弃。
+      .catch(() => undefined);
+    return true;
+  }
   if (!isTranslateTextsMessage(message)) return false;
   handleTranslateTexts(message.payload)
     .then(sendResponse)
