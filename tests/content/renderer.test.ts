@@ -1,5 +1,12 @@
 /**
  * @vitest-environment jsdom
+ *
+ * 断言约定：断言"还是原来那个节点"必须用 `toBe` / `===`，不能用 `toEqual`。
+ * vitest 的 `equals` 对 DOM 节点走 DOM3 `isEqualNode`（**结构比较**，见本仓库 vitest 5.0.0 的
+ * `node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289`）。实测探针读数：
+ *   `expect(段落.cloneNode(true)).toEqual(段落)`            → **PASS**
+ *   `expect({kind:'before',node:克隆体}).toEqual({…原节点})` → **PASS**
+ * 也就是"落点/载体指错成了一个同构节点"在 `toEqual` 下是假通过，必须比身份。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DomRenderer } from '../../src/content/renderer';
@@ -518,7 +525,12 @@ describe('DomRenderer 仅译文模式：inline 载体包卡片（digitalocean �
     const p = document.getElementById('d') as HTMLElement;
 
     const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
-    expect(segments.map((s) => s.element)).toEqual([h3, p]);
+    // 载体必须**就是** h3 与 p 本身：`toEqual` 在 DOM 节点上是结构比较（`isEqualNode`），
+    // 同构克隆体会假通过（探针：克隆体 toEqual=PASS / toBe=FAIL）。
+    const carriers = segments.map((s) => s.element);
+    expect(carriers).toHaveLength(2);
+    expect(carriers[0]).toBe(h3);
+    expect(carriers[1]).toBe(p);
 
     const renderer = new DomRenderer(document, 'translated-only');
     for (const segment of segments) renderer.mount(segment, 'done', `【译】${segment.order}`);
@@ -1029,7 +1041,10 @@ describe('DomRenderer 文本段（混合内容里的直接文本）', () => {
     const [segment] = collectSegments(document.body, { targetLang: 'zh-Hans' });
     expect(segment.textRun).toBe(true);
     expect(segment.element).toBe(box);
-    expect(segment.anchor).toEqual({ kind: 'before', node: document.getElementById('body') });
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（`isEqualNode`），把落点换成与 `#body`
+    // 同构的段落（夹具里的同构兄弟/克隆体）照样绿；这里要的是**那一个**节点。
+    expect(segment.anchor.kind).toBe('before');
+    expect(segment.anchor.kind === 'before' ? segment.anchor.node : undefined).toBe(document.getElementById('body'));
 
     const renderer = new DomRenderer(document, 'bilingual');
     renderer.mount(segment, 'pending');
@@ -1049,7 +1064,9 @@ describe('DomRenderer 文本段（混合内容里的直接文本）', () => {
     expect(stray?.textRun).toBe(true);
     // 落点在容器上，位置由 anchor 显式给出（旧实现把后一个块级子元素本身当锚点）。
     expect(stray?.element).toBe(box);
-    expect(stray?.anchor).toEqual({ kind: 'before', node: second });
+    // 身份比较：`toEqual` 在 DOM 节点上是结构比较（`isEqualNode`），同构的同级段落会假通过。
+    expect(stray?.anchor.kind).toBe('before');
+    expect(stray && stray.anchor.kind === 'before' ? stray.anchor.node : undefined).toBe(second);
 
     const renderer = new DomRenderer(document, 'bilingual');
     renderer.mount(stray as ExtractedSegment, 'pending');
@@ -1116,7 +1133,11 @@ describe('DomRenderer 文本段（混合内容里的直接文本）', () => {
     const again = collectSegments(document.body, { targetLang: 'zh-Hans' });
     expect(again.map((s) => s.text)).toEqual(['Intro sentence here']);
     // 落点跳过插件自己注入的 [data-jy-root]：参照的是它后面那个块级子元素。
-    expect(again[0].anchor).toEqual({ kind: 'before', node: document.getElementById('body') });
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（`isEqualNode`），同构克隆体会假通过。
+    expect(again[0].anchor.kind).toBe('before');
+    expect(
+      again[0].anchor.kind === 'before' ? again[0].anchor.node : undefined,
+    ).toBe(document.getElementById('body'));
     // 已经翻译过的段落不会再被产出。
     expect(again.some((s) => s.text === 'Body paragraph text')).toBe(false);
   });

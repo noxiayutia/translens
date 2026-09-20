@@ -63,7 +63,13 @@ describe('复现：inline 载体包着块级内容必须下钻（digitalocean me
     const link = document.querySelector('a.CardLink') as HTMLElement;
     const segments = collectSegments(document.body, { targetLang: 'zh-Hans' });
 
-    expect(segments.map((s) => s.element)).toEqual([h3, p]);
+    // "成段的是 h3 与 p 本身"：`toEqual` 在 DOM 节点上是**结构比较**（vitest 的 equals 走
+    // DOM3 `isEqualNode`，见 node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289），同构克隆体
+    // 会假通过（探针：克隆体 toEqual=PASS / toBe=FAIL）；载体身份必须用 toBe 钉。
+    const carriers = segments.map((s) => s.element);
+    expect(carriers).toHaveLength(2);
+    expect(carriers[0]).toBe(h3);
+    expect(carriers[1]).toBe(p);
     // 整元素段落：落点是 auto（渲染器按布局规则决定）。
     expect(segments.every((s) => s.anchor.kind === 'auto')).toBe(true);
     // 承载段落的 h3/p 拿到 id 与"已处理"标记；`<a>` 与中间容器一个都不许有

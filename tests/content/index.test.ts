@@ -9,6 +9,13 @@
  * `{ ok: true, results: [{ id, text: null, code, message }] }`（条目级，不是 `ok: false`）。
  * 这里不 import service worker 本身——它 import 时就要 `storage.session`、还会拉起
  * 缓存对账，与被测的编排层无关。
+ *
+ * 断言约定：断言"留下的还是原来那个节点"必须用 `toBe` / `===`，不能用 `toEqual`。
+ * vitest 的 `equals` 对 DOM 节点走 DOM3 `isEqualNode`（**结构比较**，见本仓库 vitest 5.0.0 的
+ * `node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289`）。实测探针读数：
+ *   `expect(宿主.cloneNode(true)).toEqual(宿主)` → **PASS**（克隆体连 shadow DOM 都没有、
+ *   `shadowRoot` 是 null，`toEqual` 照样绿） vs `expect(克隆体).toBe(宿主)` → FAIL。
+ * 所以"宿主被换成新挂的一个"这类回归，`toEqual(hosts(), firstHosts)` 看不见。
  */
 import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -622,7 +629,12 @@ describe('内容脚本编排：翻译整页', () => {
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
     expect(hosts()).toHaveLength(2);
-    expect(hosts()).toEqual(firstHosts);
+    // 身份比较：`toEqual` 在 DOM 节点上是结构比较（`isEqualNode`），宿主换成同构克隆体
+    //（`cloneNode` 连 shadow root 都不带）也会假通过。这里要钉的是"留下的还是那两个宿主对象"。
+    const hostsAfterRetrigger = hosts();
+    expect(hostsAfterRetrigger.map((host, index) => host === firstHosts[index])).toEqual(
+      firstHosts.map(() => true),
+    );
     expect(state).toEqual({ translated: true, mode: 'translated-only', total: 2, done: 2, failed: 0 });
     expect(translateRequests(worker)).toHaveLength(1);
     // 光数宿主钉不住这条守卫：首次翻译已经给原文打了 `data-jy-translated`，第二次采集本
@@ -776,11 +788,13 @@ describe('内容脚本编排：翻译整页', () => {
     // 第一轮先结束，第二轮还在飞：第一轮的 finally 不能把第二轮的 running 守卫清掉。
     releases.get(1)?.();
     await first;
-    expect(hosts()).toEqual([secondHost]);
+    // 身份比较：留下来的必须是**第二轮那一个**宿主对象，不是结构相同的新宿主（`toEqual`
+    // 对 DOM 节点是结构比较，换成同构克隆体照样绿）。
+    expect(hosts().map((host) => host === secondHost)).toEqual([true]);
 
     const thirdState = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
     expect(translateRequests(worker)).toHaveLength(2);
-    expect(hosts()).toEqual([secondHost]);
+    expect(hosts().map((host) => host === secondHost)).toEqual([true]);
     expect(thirdState).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 0, failed: 0 });
 
     releases.get(2)?.();

@@ -13,6 +13,17 @@
  * 「只扫新增子树」的复杂度断言靠的是把 extractor 的采集入口包成 spy（vi.mock）：
  * 调用**次数与实参**是最直接的证据，纯结果断言分不清"扫了三段"与"扫了整页后跳过"。
  */
+/**
+ * 断言约定：断言"还是原来那个节点"时必须用 `toBe` / `===`，不能用 `toEqual`。
+ *
+ * vitest 的 `equals` 对 DOM 节点走 DOM3 `isEqualNode`——**结构比较**，不是身份比较：
+ * 本仓库 vitest 5.0.0 的 `node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289`
+ *   `if (isDomNode(a) && isDomNode(b)) return a.isEqualNode(b);`
+ * 实测探针读数（取同一份夹具里的真实节点与它的克隆体）：
+ *   `expect(克隆体).toEqual(原节点)` → **PASS**（结构相同就绿，看不见身份被换掉）
+ *   `expect(克隆体).toBe(原节点)`   → FAIL
+ * 也就是说"指错了节点、但结构一模一样"（同构的兄弟、克隆体）在 `toEqual` 下是假通过。
+ */
 import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
@@ -253,7 +264,7 @@ describe('增量翻译：启用条件', () => {
     expect(findHostByText(translate('Hello world'))).toBeDefined();
     resetCounts(worker);
 
-    appendParagraph('Fresh paragraph here');
+    const fresh = appendParagraph('Fresh paragraph here');
     await runDebounceWindow();
 
     expect(sentTexts(worker)).toEqual(['Fresh paragraph here']);
@@ -264,6 +275,9 @@ describe('增量翻译：启用条件', () => {
     expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([
       expect.objectContaining({ textContent: 'Fresh paragraph here' }),
     ]);
+    // 补一条身份比较：上面那条 `toEqual` 在 DOM 节点上是**结构比较**（`isEqualNode`），
+    // 把根换成同构克隆体会照样绿；"扫的就是刚加的那个 p" 必须用 === 才看得见。
+    expect(subtreeCollect.mock.calls.map((call) => call[0] === fresh)).toEqual([true]);
     expect(fullPageCollect).not.toHaveBeenCalled();
   });
 
@@ -472,7 +486,10 @@ describe('增量翻译：扫描范围（只扫新增子树）', () => {
     // 调用次数 = 新增节点数（3），与页面既有 300 段无关。
     expect(subtreeCollect.mock.calls.length).toBe(3);
     const roots = new Set(subtreeCollect.mock.calls.map((call) => call[0]));
-    expect(roots).toEqual(new Set(added));
+    // 新增节点必须**就是**那三个刚 append 的元素：`toEqual` 对 Set 成员也走结构比较
+    //（DOM 节点 = `isEqualNode`），同构克隆体会假通过；`Set.has` 用 SameValueZero，才是身份。
+    expect(roots.size).toBe(added.length);
+    expect(added.every((node) => roots.has(node))).toBe(true);
     // 整页采集一个字都不重跑。
     expect(fullPageCollect).not.toHaveBeenCalled();
     expect(sentTexts(worker).sort()).toEqual(
@@ -961,7 +978,11 @@ describe('增量翻译：可见性变化（下拉菜单展开也要翻）', () =
       ['Explore content heading', 'Nobel prize roundup text', 'Quantum physics explainer text'].sort(),
     );
     // 候选根是**被改动的 li**（class 加在 li 上，变可见的是它的后代）——整轮只扫这一棵子树。
-    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.getElementById('mi')]);
+    // 身份比较：`toEqual` 在 DOM 节点上是结构比较（`isEqualNode`），换成与 `#mi` 同构的兄弟
+    // 或克隆体照样绿（探针：克隆体 toEqual=PASS / toBe=FAIL）。这里要的是**那一个** li。
+    const roots = subtreeCollect.mock.calls.map((call) => call[0]);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]).toBe(document.getElementById('mi'));
     expect(fullPageCollect).not.toHaveBeenCalled();
     expect(findHostByText(translate('Nobel prize roundup text'))).toBeDefined();
   });
@@ -1063,10 +1084,12 @@ describe('增量翻译：可见性变化（下拉菜单展开也要翻）', () =
     // 这一条提示）。保留这个"多一跳"是有意的：既不在这里提前过滤 `[data-jy-root]`
     // （那会把"自变更守卫哪天被改坏"的污染静默吞掉），也让本条的计数**更敏感**——
     // 自变更若真的滚出第三轮，多出来的扫描一样会让下面的相等断言见红。
-    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([
-      document.getElementById('mi'),
-      document.getElementById('jy-toast'),
-    ]);
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（`isEqualNode`），同构克隆体会假通过；
+    // 个数与顺序照旧钉死，但两个根必须是**那两个**节点本身。
+    const roots = subtreeCollect.mock.calls.map((call) => call[0]);
+    expect(roots).toHaveLength(2);
+    expect(roots[0]).toBe(document.getElementById('mi'));
+    expect(roots[1]).toBe(document.getElementById('jy-toast'));
     const scans = subtreeCollect.mock.calls.length;
     const requests = translateRequests(worker).length;
     expect(scans).toBe(2);
@@ -1256,7 +1279,10 @@ describe('增量翻译：观察根提到 documentElement（portal 是 body 的�
     expect(sentTexts(worker)).toEqual(['Portal panel text']);
     expect(findHostByText(translate('Portal panel text'))).toBeDefined();
     // 扫的是 portal 自己（它是新增元素、父 <html> 不是混合容器）。
-    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([portal]);
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（`isEqualNode`），同构克隆体会假通过。
+    const roots = subtreeCollect.mock.calls.map((call) => call[0]);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]).toBe(portal);
     expect(fullPageCollect).not.toHaveBeenCalled();
   });
 
@@ -1391,7 +1417,11 @@ describe('增量翻译：用户交互后的整页重扫', () => {
 
     // 一次点击恰好换来**一次**整页采集（`subtreeCollect` 的调用只有它）；
     // 根 = documentElement：与观察根同一个节点，portal 挂在它下面才捞得回来。
-    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.documentElement]);
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（探针：`documentElement.cloneNode(true)`
+    // 对 documentElement 的 toEqual=PASS、toBe=FAIL），"同一个节点"必须用 toBe 钉。
+    const roots = subtreeCollect.mock.calls.map((call) => call[0]);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]).toBe(document.documentElement);
     expect(fullRescanCount() - rescansBefore).toBe(1);
     // 整页重扫走的是**现有的**入口（collectSegmentsWithin），不是另起一条整页采集。
     expect(fullPageCollect).not.toHaveBeenCalled();

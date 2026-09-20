@@ -13,6 +13,11 @@
  * `collectSegmentsWithin`。护栏若失效、整页重扫真的跑起来，断言照样见红。
  *
  * 对端替身与时间伪造沿用 `observer.test.ts` 的既有做法（详见那边的文件头注释）。
+ *
+ * 断言约定（同 `observer.test.ts` 文件头）：DOM 节点的**身份**用 `toBe` / `===` 钉。
+ * vitest 的 `equals` 对 DOM 节点走 DOM3 `isEqualNode`（**结构比较**，见本仓库 vitest 5.0.0 的
+ * `node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289`）：探针读数 `expect(克隆体).toEqual(原节点)`
+ * = PASS、`expect(克隆体).toBe(原节点)` = FAIL，所以 `toEqual` 看不见"指错了同构节点"。
  */
 import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -186,6 +191,9 @@ describe('增量翻译：整页重扫的元素数护栏', () => {
       expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([
         expect.objectContaining({ textContent: 'Narrow path still works' }),
       ]);
+      // 补一条身份比较：上面那条 `toEqual` 在 DOM 节点上是**结构比较**（`isEqualNode`），
+      // 同构克隆体照样绿；"窄路径扫的就是刚加的那个 p" 必须用 === 才看得见。
+      expect(subtreeCollect.mock.calls.map((call) => call[0] === paragraph)).toEqual([true]);
       expect(paragraph.hasAttribute('data-jy-translated')).toBe(true);
     } finally {
       countSpy.mockRestore();
@@ -202,6 +210,10 @@ describe('增量翻译：整页重扫的元素数护栏', () => {
     );
 
     expect(fullRescanCount()).toBe(rescansBefore + 1);
-    expect(subtreeCollect.mock.calls.map((call) => call[0])).toEqual([document.documentElement]);
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（`isEqualNode`），`documentElement.cloneNode(true)`
+    // 那样的同构克隆体会假通过。整页重扫的根必须**就是** documentElement。
+    const roots = subtreeCollect.mock.calls.map((call) => call[0]);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]).toBe(document.documentElement);
   });
 });

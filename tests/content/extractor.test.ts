@@ -1,5 +1,12 @@
 /**
  * @vitest-environment jsdom
+ *
+ * 断言约定：断言"还是原来那个节点"必须用 `toBe` / `===`，不能用 `toEqual`。
+ * vitest 的 `equals` 对 DOM 节点走 DOM3 `isEqualNode`（**结构比较**，见本仓库 vitest 5.0.0 的
+ * `node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289`）。实测探针读数：
+ *   `expect(段落.cloneNode(true)).toEqual(段落)`             → **PASS**
+ *   `expect({kind:'before',node:克隆体}).toEqual({…原节点})`  → **PASS**
+ * 落点"指错成了一个同构节点"因此是假通过；要钉身份只能显式比。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { collectSegments, isBlockDisplay, pageHasKana } from '../../src/content/extractor';
@@ -407,7 +414,11 @@ describe('collectSegments', () => {
     expect(segments[0].textRun).toBe(true);
     expect(segments[0].element).toBe(div);
     // 容器开头那段：译文插到紧随其后的块级子元素之前，仍留在容器内部。
-    expect(segments[0].anchor).toEqual({ kind: 'before', node: paragraph });
+    // 身份比较：`toEqual` 对 DOM 节点是结构比较（`isEqualNode`），落点换成同构的兄弟段落或
+    // 克隆体会假通过（探针：克隆体 toEqual=PASS / toBe=FAIL），必须比身份。
+    const anchor = segments[0].anchor;
+    expect(anchor.kind).toBe('before');
+    expect(anchor.kind === 'before' ? anchor.node : undefined).toBe(paragraph);
     expect(segments[1].textRun).toBeUndefined();
     expect(segments[1].element).toBe(paragraph);
     expect(segments[1].anchor).toEqual({ kind: 'auto' });
@@ -445,7 +456,10 @@ describe('collectSegments', () => {
     expect(segments[1].textRun).toBe(true);
     // 落点是容器（不再借用后一个块级子元素当锚点），位置显式指向那个兄弟节点。
     expect(segments[1].element).toBe(div);
-    expect(segments[1].anchor).toEqual({ kind: 'before', node: second });
+    // 身份比较：`toEqual` 在 DOM 节点上是结构比较（`isEqualNode`），同构的兄弟段落会假通过。
+    const strayAnchor = segments[1].anchor;
+    expect(strayAnchor.kind).toBe('before');
+    expect(strayAnchor.kind === 'before' ? strayAnchor.node : undefined).toBe(second);
   });
 
   it('就地替换只留给「整块就是这一段文本」的元素', () => {
@@ -629,8 +643,12 @@ describe('抽出文本的不变量', () => {
 
     expect(loose.map((segment) => segment.text)).toEqual(expected.map((run) => run.text));
     // 落点必须正好是「这一段文本之后的下一个兄弟节点」，null = 容器末尾。
-    expect(
-      loose.map((segment) => (segment.anchor.kind === 'before' ? segment.anchor.node : undefined)),
-    ).toEqual(expected.map((run) => run.before));
+    // 身份比较：`toEqual` 在 DOM 节点上是结构比较（`isEqualNode`），换一个同构的兄弟节点会
+    // 假通过（探针：克隆体 toEqual=PASS / toBe=FAIL），所以逐项用 === 比，长度单独钉。
+    expect(loose).toHaveLength(expected.length);
+    loose.forEach((segment, index) => {
+      expect(segment.anchor.kind).toBe('before');
+      expect(segment.anchor.kind === 'before' ? segment.anchor.node : undefined).toBe(expected[index].before);
+    });
   });
 });
