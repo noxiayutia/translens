@@ -258,6 +258,23 @@ describe('状态点三态', () => {
     // 脱敏不是把整句删掉：服务商给的原因（除了 Key 那一段）照常显示。
     expect(status().textContent).toContain('invalid key');
   });
+
+  it('脱敏不看分支：成功路径显示出来的「译文」也一样过一遍', async () => {
+    const secret = 'sk-PROBE-SECRET-123';
+    // 这不是在断言服务商会把 Key 回显成译文（那是服务商的事），而是说**这条显示路径同样不该漏**：
+    // 成功分支的文案也进状态行，凭据一旦出现在里面就是同一个泄漏。删掉那一处脱敏，本条会红。
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(chatResponse(`<<<1>>>\n${secret}`)));
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ apiKey: secret })] });
+    await loadOptions();
+
+    rowOf('p-a').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    actionButton(editorOf('p-a'), 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'ok');
+
+    expect(status().textContent).toContain('***');
+    expect(status().textContent).not.toContain(secret);
+  });
 });
 
 describe('内置免费引擎那一行', () => {
