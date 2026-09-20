@@ -103,4 +103,10 @@ describe('设置页样式：键盘与窄窗口', () => {
     expect(wrap['display']).toBe('block');
     expect(nav['position']).toBe('static');
   });
+
+  it('`hidden` 有强制规则兜底：导航项是 flex，没有它就藏不住（搜索全靠这个属性）', () => {
+    // jsdom 没有布局，`element.hidden = true` 在测试里永远"看起来生效"——真正的显隐
+    // 靠这条 CSS。删掉它，搜索结果在真机上会「全都显示、只是变了颜色」。
+    expect(declarations(optionsCss, '[hidden]')['display']).toBe('none !important');
+  });
 });

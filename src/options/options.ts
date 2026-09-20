@@ -18,6 +18,7 @@ import { promptSection } from './sections/prompt';
 import { cacheSection } from './sections/cache';
 import { privacySection } from './sections/privacy';
 import type { Section, SectionContext } from './section';
+import { createSearch } from './search';
 import { currentSettings, loadSnapshot, patchSettings } from './store';
 import type { Settings } from '../shared/settings';
 
@@ -79,8 +80,18 @@ async function start(): Promise<void> {
   for (const section of SECTIONS) await section.mount(context);
 }
 
+/** 搜索框：只过滤区块与字段标签，不改 DOM 结构（规格 §4.2）。 */
+function bindSearch(): void {
+  const input = document.getElementById('search') as HTMLInputElement;
+  const search = createSearch(SECTIONS);
+  input.addEventListener('input', () => {
+    search.apply(input.value);
+  });
+}
+
 function init(): void {
   for (const section of SECTIONS) section.bind(context);
+  bindSearch();
   runSafely(engineStatus, '设置读取失败', start);
 }
 

@@ -38,6 +38,14 @@
       <main class="main">
         <h1 class="sr-only">浸译 设置</h1>
 
+        <!-- 搜索：只过滤区块与字段标签（规格 §4.2 的轻量版）。占位符刻意写「搜索设置」，
+              不写「搜索所有设置」——不承诺"搜不到的一切"。 -->
+        <div class="search">
+          <span class="mag" aria-hidden="true">⌕</span>
+          <input id="search" type="search" placeholder="搜索设置" autocomplete="off" aria-label="搜索设置" />
+        </div>
+        <p id="search-empty" class="search-empty" hidden>没找到匹配的设置。</p>
+
         <!-- 翻译引擎 -->
         <section class="sec" id="sec-engine" data-section="engine" aria-labelledby="sec-engine-title">
           <div class="sec-head">

@@ -67,6 +67,14 @@ body {
   background: var(--surface-2);
 }
 
+/*
+ * `hidden` 必须真的有效：导航项与导航分组都带了 display（flex），浏览器默认的
+ * `[hidden] { display: none }` 会被它们盖掉，而搜索全靠这个属性切显隐（规格 §4.2）。
+ */
+[hidden] {
+  display: none !important;
+}
+
 /* 键盘导航的统一焦点环。 */
 *:focus-visible {
   outline: 2px solid var(--accent);
@@ -719,4 +727,35 @@ details p {
     background: var(--surface);
     border: 1px solid var(--border);
   }
+}
+
+/* ------------------------------------------------------------------ 搜索 */
+
+.search {
+  position: relative;
+  margin-bottom: 26px;
+}
+
+.search input {
+  width: 100%;
+  padding: 10px 12px 10px 36px;
+  font-size: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+}
+
+.search .mag {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+.search-empty {
+  margin: 0 0 26px;
+  font-size: 13px;
+  color: var(--text-2);
 }
