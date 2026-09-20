@@ -1112,7 +1112,10 @@ git commit -m "feat(settings): 档案支持多个模型（CURRENT_VERSION 3→4�
 > | 弹窗提示区：`renderEngineHint`（`src/popup/popup.ts:230`）里追问一句 | **C5** Step 5f | C5 Step 5f 的片段 | C5 Step 1b 的「当前档案还没选模型：提示区说出那句可读的话」 |
 > | 设置页「测试连接」的本地闸：`handleTestProfile` 里 `if (problem !== undefined) { setStatus(err, problem); return; }` | **C4** Step 3l | C4 Step 3l 的片段（**已含**） | C4 Step 1 的「测试连接：没有当前模型时零请求」 |
 >
-> **§4 的前提**：`src/background/scheduler.ts:188-190` 的 `configHash` 里**已经含 `model`**（只读核过，本单元不改这个文件）——所以换模型天然不会命中上一个模型的译文。**今天存在的网只有单元级那一张**：`tests/background/scheduler.test.ts:290`「换模型后同一段文本不会命中旧模型的缓存」（它用的是 `engineConfig.model`）。**端到端那一张今天不存在**，它在 **C3 Step 1d** 补（`tests/background/service-worker.test.ts` 那条"同一个档案换 `activeModel`"）——因为只有 C3 才动 `src/background/**`。
+> **§4 的前提**：`src/background/scheduler.ts:188-190` 的 `configHash` 里**已经含 `model`**（只读核过，本单元不改这个文件）——所以换模型天然不会命中上一个模型的译文。**今天已有两张网，但只覆盖一条轴**：
+> - **单元级**：`tests/background/scheduler.test.ts:290`「换模型后同一段文本不会命中旧模型的缓存」（用 `engineConfig.model`）。
+> - **端到端**：`tests/background/service-worker.test.ts` 那条「两个档案同 baseUrl 同 model → 命中同一份缓存；换 model 不串」——它**早就存在**（变异 G4 = 去掉 `scheduler.ts:189` 的 `model` → 它会红）。⚠ **计划早先写成"端到端那张今天不存在"是说宽了**：真正缺的不是"端到端"，而是**"同一个档案换 `activeModel`"这条轴**（那条既有用例换的是**另一个档案**的 model）。
+> - 缺的那条轴在 **C3 Step 1d** 补（`tests/background/service-worker.test.ts` 的"同一个档案换 `activeModel`"）——因为只有 C3 才动 `src/background/**`。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1211,8 +1214,8 @@ Expected: 全绿。再跑一次 `npx vitest run tests/options tests/popup tests/
 | `resolveEngine` 里 `problem` 恒为 `undefined`（删掉那一支） | 「档案没有当前模型：给出规格 §3.3 那句可读原因」那条红 |
 | `resolveEngine` 里无条件返回 `problem`（恒真式） | 同一条的"成对两半"那两句红（有模型 / 免费引擎也开始背这句话） |
 | `.trim()` 去掉（退回 `profile.activeModel.length === 0`） | 「只填空格的合成档案」那条红（`activeModel: '   '`）。**注意它的可达路径**：存储边界上 `pickModels` 已经 trim 过、空白项根本进不来，所以这条读数的输入是**直接交给 `resolveEngine` 的合成档案**（设置页「测试连接」就是这么拼的：`handleTestProfile` 用面板里的值拼一个临时档案） |
-| `config.model` 改成 `profile.models[0] ?? ''` | **实测红 2 条**：① 既有那条「config.model 取的是 activeModel」（`expected 'a' to be 'b'`）② **C3 的**「档案没有当前模型：可读错误 + 一个请求都不发」（`models: ['m-1'], activeModel: ''` 时 `models[0]` 让 `problem` 消失 ⇒ 闸不触发）。**它在 `resolveEngine` 这一层就被杀掉了，走不到 `scheduler`/缓存那一层**——计划原来把落点写成「同一个档案换 activeModel：不命中上一个模型的缓存」是错的：那条只有在**端到端那条用例存在时**才成立，而它今天不存在（归 C3 Step 1d） |
-| `configHash` 里去掉 `model`（`scheduler.ts:189`） | **今天唯一存在的网是单元级那条**：`tests/background/scheduler.test.ts:290`「换模型后同一段文本不会命中旧模型的缓存」。**端到端读数（同一档案换 `activeModel`）由 C3 Step 1d 补**——在那条落地之前，这条变异的读数只有单元级那一张网，别写成"已经端到端钉住" |
+| `config.model` 改成 `profile.models[0] ?? ''` | **实测 3 红**（跨文件）：① 本文件的「config.model 取的是 activeModel」（`expected 'a' to be 'b'`）② `tests/background/service-worker.test.ts` 的 §4 端到端「同一个档案换 activeModel…」（`expected [ 'm-1' ] to deeply equal [ 'm-1', 'm-2' ]`：`config.model` 恒等于 `models[0]` ⇒ 第二次命中缓存）③ 第三条以命令输出为准（收口时补全名单）。⚠ **计划原先写的"'`models[0]` 让 `problem` 消失、零请求那条红"不成立**：`problem` 是**按 `activeModel`** 算的，与 `config.model` 无关，所以零请求那条**不会**红。**这条变异的真正价值**：只有在 `config.model` 被改成 `models[0]` 时才暴露**串味**，而它**只有"同一个档案、清单两项、当前项不是第一项"那种夹具**才看得见——与恒真断言第四例同一条教训 |
+| `configHash` 里去掉 `model`（`scheduler.ts:189`） | **实测（G4）**：红在 `tests/background/service-worker.test.ts` **那条早已存在的端到端用例**「两个档案同 baseUrl 同 model → 命中同一份缓存；换 model 不串」，以及 §4 那条「同一个档案换 activeModel…」。**另有单元级一张网**：`tests/background/scheduler.test.ts:290`。⚠ 计划早先写"端到端那张今天不存在"是**说宽了**——缺的是"同一个档案换 `activeModel`"这条**轴**，不是这个层级 |
 
 - [ ] **Step 6: 提交**
 
@@ -1229,9 +1232,12 @@ git commit -m "feat(engine): resolveEngine 在档案没有当前模型时返回�
 **Files:**
 - Modify: `src/shared/messages.ts`
 - Create: `src/background/models.ts`
-- Modify: `src/background/service-worker.ts`
+- Modify: `src/background/service-worker.ts`（路由 + **前置闸**，Step 5d）
 - Create: `tests/background/models.test.ts`
-- Modify: `tests/shared/messages.test.ts`、`tests/background/service-worker.test.ts`
+- Modify: `tests/background/service-worker.test.ts`
+- Modify: `tests/shared/messages.test.ts`（**只改这一个文件**：本单元里 `tests/shared/**` 的其它文件全归 C2（`settings.test.ts`），别碰）
+
+> ⚠ **边界措辞**（避免与派单口径冲突）：本 Task 在 `tests/shared/` 下的授权**恰好一个文件**——`tests/shared/messages.test.ts`（`isFetchModelsMessage` 的正反用例）。派单里若出现"不许碰 `tests/shared/**`"这种整目录禁令，以**本行**为准：那条约定的本意是"别动 C2 的 `settings.test.ts`"（执行者按计划做了、并如实报告，处理是对的）。**同目录其它文件、以及 `src/shared/settings.ts`，本 Task 一律不碰。**
 
 > **谁去发这个请求**：后台 service worker，不是设置页。设置页**只传 `profileId`**，后台自己从存储读那份档案的 `baseUrl` 与 `apiKey`（§5.1）。理由：设置页持有全量设置（含 Key），让它把 Key 塞进消息回传后台，等于把密钥又搬过一条通道，与现有「Key 不进内容脚本、不渲染进设置页 DOM」的隔离口径自相矛盾。
 >
@@ -1550,6 +1556,8 @@ describe('isFetchModelsMessage', () => {
 
 **1d. `tests/background/service-worker.test.ts`**：追加两条**从 Task C2 挪过来的**用例（C2 只许碰 `src/shared/settings.ts`，所以归这里）。第一条是 §3.3 的端到端 + 后台前置闸，第二条是 §4 的前提（端到端）。
 
+> **落地加强（执行者补，已收进下面的代码）**：第一条用例的**正向半边**加了 `expect(cacheEntries('local')).toHaveLength(1)` 与 `expect(cacheEntries('session')).toHaveLength(1)`。理由是负向那半句"两层缓存里也没留下条目"**只有在正向也读一次缓存时才有判别力**——否则取错层、取错键前缀都会让它永远绿（恒真式的老形状）。这条加强**只增不减**。
+
 ```ts
 // tests/background/service-worker.test.ts（片段：追加进 runtime.onMessage 消息路由 的 describe）
   it('档案没有当前模型：可读错误 + 一个请求都不发（成对：把 activeModel 填上就真的发）', async () => {
@@ -1594,6 +1602,10 @@ describe('isFetchModelsMessage', () => {
       results: [{ id: 'i2', text: '你好' }],
     });
     expect(calls).toEqual([{ model: 'm-1' }]);
+    // **落地加强**（执行者补的两行）：正向这一半也要读一次两层缓存——否则负向那条
+    // "两层缓存里也没留下条目"就**可能是恒真**（取错层 / 取错键前缀时它永远绿）。
+    expect(cacheEntries('local')).toHaveLength(1);
+    expect(cacheEntries('session')).toHaveLength(1);
   });
 
   it('同一个档案换 activeModel：不命中上一个模型的缓存（§4 的前提，端到端钉住）', async () => {
@@ -1934,26 +1946,28 @@ Expected: exit 0。
 | `modelNameOf` 里 `typeof record.id === 'string' ? record.id : record.name` 改成只看 `record.name` | 「认三种形状…」——`data[].id` 那条变成 `[]` |
 | `pickEntries` 里删掉 `models` 那一支 | 同一条的第二句红（`models[].name` 形状） |
 | `parseModelsPayload` 里把"解析不出"改成抛错 | 「整体解析不出任何一条时返回空数组」红 |
-| `describeModelsStatus` 里删掉 404 那一支（并入默认句） | 「五句各不相同」——`new Set(...).size` 变成 4，且 `missing` 不再含 `/models` |
-| 删掉 `if (!(await hasHostPermission(pattern)))` 那一支（不查权限直接发） | 「未授权访问这个地址：一个请求都不发…」——`calls` 不为空（fetch 真的发出去了），文案也不再指向"重新保存一次" |
-| `originPattern` 那一支删掉（非法地址直接拼 URL） | 「地址不是合法 URL：也不发请求…」红 |
+| `describeModelsStatus` 里删掉 404 那一支（并入默认句） | **实测落点**（执行者读数）：红在 `missing).toContain('/models')`——**同一条用例后面那句 `new Set([...]).size` 根本没跑到**（它排在后面被遮住了）。计划原先写"`Set.size` 变成 4"是**预测错了落点**（成因④的镜像：读数排在被遮住的位置）。**处置：保留实测落点、不改用例顺序**——用例已落地，本轮不动代码；"把 `Set.size` 提到前面"记在复盘的**可选加固**里（那是纯加强，谁做都行） |
+| 删掉 `if (!(await hasHostPermission(pattern)))` 那一支（不查权限直接发） | **实测落点**（执行者读数）：红在「未授权访问这个地址…」那条的 `messageOf` 抛 **「这次拉取是成功的」**——即"这次拉取居然成功了"这个读数先红；同一条里 `calls`/`expect(calls).toEqual([])` **根本没跑到**（`await fetchModels(...)` 那一句先炸）。计划原先写"`calls` 不为空"是**预测错了落点**。**处置同上：保留实测落点、不改用例顺序**；"先读 `calls` 再读文案"记在可选加固里 |
+| `originPattern` 那一支删掉（非法地址直接拼 URL） | 「地址不是合法 URL：也不发请求…」红（**只在这条直连 `fetchModels` 的单测里可达**——见复盘 §4 的表：走消息路径永远先命中"还没填接口地址"） |
 | 超时那一句去掉「添加模型」 | 「超时：…」——循环断言 `toContain('添加模型')` 红 |
-| `MODELS_TIMEOUT_MS` 改成 60_000 | 「超时：…」红（`advanceTimersByTimeAsync(10_000)` 之后 promise 仍未兑现 → 用例超时失败）。**注意**：这条用例读的是常量本身（`toBe(10_000)`），所以改常量会在断言处直接红，比等超时更早 |
+| `MODELS_TIMEOUT_MS` 改成 60_000 | **实测**：**约 0.5 秒内在断言处直接红**（`expected 60000 to be 10000`），**不是**"等超时失败"。机理：那条用例是按**常量本身**推进定时器的（`advanceTimersByTimeAsync(MODELS_TIMEOUT_MS)`），常量一改，推进量与断言的期望同时漂。⚠ **推论（要知道）**：这条用例**只钉住常量值**，**钉不住"abort 真的发生在 10 秒"这个行为**——把常量改成 10_000 以外的值仍会被断言抓住，但把 `setTimeout(…, MODELS_TIMEOUT_MS)` 写成别的表达式（例如硬编码 5_000）**今天没有读数**。可接受（行为由 `fetchModels` 的 abort 分支 + 那句超时文案共同覆盖），但别把它当成时序守卫 |
 | `fetchModels` 里 `if (!response.ok)` 那一行删掉（把 401 当成功去 parse） | 「401 / 404 / 非 JSON / 网络不可达」——`401` 那条从"含 API Key"变成 `ok: true`（`messageOf` 抛「这次拉取是成功的」） |
 | 路由里把拉取分支挪到 `isTranslateTextsMessage` **之后** | service-worker 的两条拉取用例红（翻译校验器不认领拉取消息 → 返回 `false`、通道不开） |
-| 拉取分支 `return true` 改成 `return false` | 同上（`dispatch.keepChannelOpen` 为 false，`response()` 直到超时才拒绝） |
-| `handleFetchModels` 里 `payload.profileId` 改成读 `payload` 里别的字段 | 「拉取的失败与"档案不在"…」第一条红（拿不到档案 → 消息不同） |
-| **`resolveEngine` 的 `config.model` 改成 `profile.models[0] ?? ''`** | **红 2 条**（实测口径，跨文件）：① `tests/shared/settings.test.ts` 的「config.model 取的是 activeModel」（`expected 'a' to be 'b'`）② 本文件 Step 1d 的「档案没有当前模型：可读错误 + 一个请求都不发」——`models: ['m-1'], activeModel: ''` 时 `models[0]` 让 `problem` 消失、闸不触发。**这条变异在 `resolveEngine` 层就被杀掉，走不到缓存那一层** |
-| **`configHash` 里去掉 `model`（`scheduler.ts:189`，本单元不改那个文件，只是"如果"）** | 「同一个档案换 activeModel：不命中上一个模型的缓存」（**Step 1d 第二条**）红：第二次命中缓存、`bodies` 只有一条。这条是 §4 的守卫本身——**在 Step 1d 落地之前它只有单元级的网**（`scheduler.test.ts:290`） |
+| 拉取分支 `return true` 改成 `return false` | **实测 1 红**：`expected [ false ] to deeply equal [ true ]`（那条 `expect(dispatch.returns).toEqual([true])`）。⚠ 计划原先写"'档案不在'也红、`response()` 直到超时才拒绝"**不成立**——替身的 `response()` 在 `sendResponse` 被调用时就兑现，**不看 `keepChannelOpen`**；只有"处理器根本没跑、`sendResponse` 从未被调用"那种形状才会报 `sendResponse 在 1000ms 内没有被调用` |
+| `handleFetchModels` 里 `payload.profileId` 改成读 `payload` 里别的字段 | **实测 2 红，但落点要写准**：① 那条隐私用例（`{ok:true, models:…}` 变成 `{ok:false, …}`）② 「拉取的失败与"档案不在"」那条的**第二半**——`expected '这个档案已经不在了，请重新打开设置页再试。' to contain 'HTTP 404'`。而它的**第一半**（`profileId: 'gone'`）**读不出差别**：改坏之后 `profileId` 是 undefined，照样找不到档案、照样回同一句「这个档案已经不在了…」，所以那一半对这条变异**没有判别力**（它不是白写——守的是"档案不存在"这条路径本身） |
+| **`resolveEngine` 的 `config.model` 改成 `profile.models[0] ?? ''`** | **实测 3 红**（执行者读数；跨文件）：① `tests/shared/settings.test.ts` 的「config.model 取的是 activeModel」（`expected 'a' to be 'b'`）② **本文件 Step 1d 的 §4 端到端**（`expected [ 'm-1' ] to deeply equal [ 'm-1', 'm-2' ]`——`config.model` 恒等于 `models[0]` ⇒ 第二次命中缓存、只发了一次）③ 第 3 条以命令输出为准（**收口时按实测名单补全**）。⚠ **计划原先写的"'`models[0]` 让 `problem` 消失、零请求那条红"是不成立的**：`problem` 由 **`activeModel`** 算，与 `config.model` 无关，所以零请求那条**不会**红。**这条变异的真正价值**：只有在 `config.model` 被改成 `models[0]` 时才暴露**串味**，而这**只有"同一个档案、清单两项、当前项不是第一项"那种夹具**才看得见——与恒真断言第四例同一条教训（夹具必须让两种口径读出不同结果） |
+| **`configHash` 里去掉 `model`（`scheduler.ts:189`，本单元不改那个文件，只是"如果"）** | **实测（G4）**：红在 `tests/background/service-worker.test.ts` **那条早已存在的端到端用例**「两个档案同 baseUrl 同 model → 命中同一份缓存；换 model 不串」，以及 Step 1d 第二条「同一个档案换 activeModel…」。这条是 §4 的守卫本身 |
 
 - [ ] **Step 8: 提交**
 
 ```bash
 git add -- src/background/models.ts tests/background/models.test.ts
-git commit -m "feat(background): /models 拉取（只传 profileId，容忍三种形状，10 秒独立超时）" -- src/shared/messages.ts src/background/models.ts src/background/service-worker.ts tests/background/models.test.ts tests/shared/messages.test.ts tests/background/service-worker.test.ts
+git commit -m "feat(background): /models 拉取 + problem 的第一处接线（后台前置闸）" -- src/shared/messages.ts src/background/models.ts src/background/service-worker.ts tests/background/models.test.ts tests/shared/messages.test.ts tests/background/service-worker.test.ts
 ```
 
 > 第一行处理两个**未跟踪的新文件**（硬规矩 14）。
+> **提交信息要把两件事都写上**：本 Task 同时装了 Step 5d 的**后台前置闸**（`problem` 的第一处接线）。落地提交 `ddc913b` 的信息只写了"`/models` 拉取"（历史不改写），于是它在"接线完成前不许合进 release"的过渡窗口里显得像一件完整的事——**这条记在落地读数表里**，别重犯。
+> **路径清单里 `tests/shared/` 只有一个文件**（`messages.test.ts`）：同目录的 `settings.test.ts` 属 C2，本 Task 不碰（见 Files 的边界措辞）。
 
 ## Task C4: 设置页档案行 / 编辑面板重排（图二布局 + 模型目录 + 取消 + 零自动拉取）
 
@@ -4230,7 +4244,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | 5 | 拉取消息体**不含 `apiKey`**（成对：后台确实拿到了 Key） | **两半分别在两处**：「消息里真的没有 Key」= **C4 Step 1 的零自动拉取用例**（`chromeStub.runtime.sentMessages` 对**设置页真的发出去的那条消息**做精确相等断言；payload 多一个字段就红）；「后台确实拿到了 Key」= C3 Step 1c 的 `Bearer sk-secret` 断言。⚠ **C3 侧不再放"消息里没有 Key"的断言**——那里手里的 `message` 是它自己造的字面量，那种断言是恒真式（测的是用例自己），不是守卫 |
 | 6 | 打开设置页 / 切换档案 / 聚焦输入框都不触发拉取 | C4 Step 1（零自动拉取用例，正负两半同条） |
 | 7 | 弹窗下拉 1 项无、2 项有；切回档案记住上次用的模型 | C5 Step 1/5（三态 + 往返用例） |
-| 8 | 换模型后 `configHash` 变化 | **C3 Step 1d 的第二条**（同一个档案换 `activeModel` → 不命中旧缓存，端到端）+ `tests/background/scheduler.test.ts:290` 的**既有单元网**。⚠ 端到端那条**今天不存在**（计划原写在 C2，而 C2 不碰 `src/background/**`）——在那条落地之前，唯一的网是单元级的 |
+| 8 | 换模型后 `configHash` 变化 | **C3 Step 1d 的第二条**（同一个档案换 `activeModel` → 不命中旧缓存）+ **两张已存在的网**：`tests/background/scheduler.test.ts:290`（单元级）+ `tests/background/service-worker.test.ts`「两个档案同 baseUrl 同 model → 换 model 不串」（端到端，变异 G4 是它的读数）。⚠ 计划早先写"端到端那条今天不存在"是**说宽了**：缺的是"同一个档案换 `activeModel`"这条轴，不是"端到端"这个层级 |
 | 9 | 全量 `npm test` / `typecheck` / `build` / `zip` 全绿 | C6 Step 5 |
 | 10 | 折叠行：名字 + `自定义`徽章（仅非预设）+ 三态点 + 编辑/删除 + 「使用中」 | C4 Step 1/3f |
 | 11 | 折叠行次级 meta（`接口地址 · 当前模型`，未填写占位） | C4 Step 1/3b（**偏离一**） |
@@ -4254,7 +4268,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | §3.1 不变量 + 删除自愈 | C1（读取边界）+ C4（`handleRemoveModel`） |
 | §3.2 迁移 v1/v2/v3 → v4 收敛 | C1 Step 3d（`liftProfileModels` 在折叠之后跑，三条路径同一形状） |
 | §3.3 没有模型时报错、不发请求 | **四处分开**：C2（`problem` 的定义 + 单元证明；**只定义、不接线**）+ C3 Step 5d（后台前置闸 = 失败粒度与文案）+ C4 Step 3l（设置页测试连接的本地闸）+ C5 Step 5f（弹窗提示区）。**"不发请求"由 `src/engines/openai-compat.ts:64-67` 构造性保证**（在 `fetch` 之前抛 AUTH），不是那三处接线带来的 |
-| §4 缓存正确性（`configHash` 已含 model） | 不改 `scheduler.ts`（`scheduler.ts:188-190` 只读核过）；**今天存在的是单元级那张网**（`scheduler.test.ts:290`），**端到端那条由 C3 Step 1d 补** |
+| §4 缓存正确性（`configHash` 已含 model） | 不改 `scheduler.ts`（`scheduler.ts:188-190` 只读核过）；**已有两张网但只覆盖一条轴**：单元级 `scheduler.test.ts:290` + 端到端 `service-worker.test.ts`「两个档案同 baseUrl 同 model → 换 model 不串」（它早就在，G4 是它的读数）；**缺的是"同一个档案换 `activeModel`"这条轴** → C3 Step 1d 补 |
 | §5.1 后台发、设置页只传 `profileId` | C3 Step 3/4/5（消息 + 处理器 + 路由） |
 | §5.2 三种形状的宽容解析 | C3 Step 4（`parseModelsPayload`）+ Step 1 的表格用例 |
 | §5.3 失败分类 + 10 秒独立超时 + 复用 `extractErrorDetail` | C3 Step 4（`describeModelsStatus` / `MODELS_TIMEOUT_MS` / `readDetail`） |
@@ -4301,6 +4315,12 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | --- | --- | --- |
 | M3：`liftProfileModels` 里不写 `delete lifted.model` | 「幂等：…`Object.keys` 精确相等」那条红（多一个 `model` 键） | **全绿（`63 passed`）——经公共边界不可观测（防御性）**。`pickProfile` 逐字段重建档案、`mergeSettings` 过滤未知键，旧键漏不到公共边界；而计划点名的那条用例种的是 `version: CURRENT_VERSION`，`migrate` 在版本闸门直接短路、`liftProfileModels` 根本不跑。**它的价值**是"防止 `pickProfile` 将来改成透传/浅拷贝时旧键漏出去"——**杀它要改 `pickProfile`，不是改迁移**（实现者读数：让 `pickProfile` 的返回值带上旧 `model` 键 → 「幂等」那条按 `Object.keys` 当场红，证明断言本身不是死的） |
 | M7：`if (storedVersion < 4)` 写成 `< 3` | 「v3 → v4 两条红；同时 `foldLegacyEngineConfig` 的 v2 用例也红」 | **红 3 条**：① 「model 有值 → …」② 「model 首尾空白被 trim 掉再进清单」③ F1 那条 v3 字面量的「幂等…不再迁移」（F1 修好之后它才成为第三个杀手）。**v2 折叠用例不红**（`2 < 3` 照样抬 v2 数据）、**v1 三步那条也不红**（`1 < 3`）——计划那句"v2 也会红"是错的。**「model 是空串或整个缺失」也不红**，这条最值得记：空/缺失时"抬起"与"不抬起"的结果**恰好一样**（都是 `[]` / `''`），所以那条判据在空值上**本来就不可观测**——它守的是夹具形状，不是版本闸门 |
+| **G3：`resolveEngine` 的 `config.model` 改成 `profile.models[0] ?? ''`** | 「红 2 条：`settings.test.ts` 的「config.model 取的是 activeModel」+ 零请求那条（理由是"`models[0]` 让 `problem` 消失"）」 | **实测 3 红**，且**计划给的理由不成立**：`problem` 是**按 `activeModel`** 算的，与 `config.model` 无关，所以零请求那条**不会**红。实测红的是 ① 「config.model 取的是 activeModel」② C3 Step 1d 的 §4 端到端（`expected [ 'm-1' ] to deeply equal [ 'm-1', 'm-2' ]`）③ 第三条以命令输出为准。**这条变异的真正价值**：它暴露的是**串味**，而**只有"同一个档案、清单两项、当前项不是第一项"那种夹具**才看得见（与恒真断言第四例同一条教训） |
+| **G4：`scheduler.ts:189` 的 `model` 从 `configHash` 里去掉** | 「端到端那张网今天不存在，只有单元级」 | **说宽了**：`tests/background/service-worker.test.ts` 里**早就有一条端到端网**「两个档案同 baseUrl 同 model → 命中同一份缓存；换 model 不串」，G4 就红在它身上（外加 C3 Step 1d 新增的那条）。**真正缺的是"同一个档案换 `activeModel`"这条轴**——"换另一个档案的 model"与"换同一个档案的 activeModel"是两件事 |
+| **M9：拉取分支 `return true` → `return false`** | 「同路由那条一样红；`dispatch.keepChannelOpen` 为 false ⇒ `response()` 直到超时才拒绝」 | **实测只 1 红**：`expected [ false ] to deeply equal [ true ]`。**机理错的**：替身的 `response()` 在 `sendResponse` 被调用时就兑现，**不看 `keepChannelOpen`**；只有"处理器根本没跑、`sendResponse` 从未被调用"那种形状才会报 `sendResponse 在 1000ms 内没有被调用` |
+| **M8：`MODELS_TIMEOUT_MS` → `60_000`** | 「推进 10 秒后 promise 仍未兑现 ⇒ 用例超时失败」 | **实测：约 0.5 秒内在断言处直接红**（`expected 60000 to be 10000`）——那条用例是按**常量本身**推进定时器的，常量一改，推进量与期望同时漂。**推论（要知道）**：这条用例**只钉住常量值**，**钉不住"abort 真的发生在 10 秒"**这个行为（把 `setTimeout(…, MODELS_TIMEOUT_MS)` 换成硬编码别的数字今天没有读数）。可接受，但别把它当时序守卫 |
+| **M12：`payload.profileId` 改成读别的字段** | 「"拉取的失败与档案不在"那条**第一条**红（拿不到档案 → 消息不同）」 | **实测 2 红，落点不同**：① 隐私那条（`{ok:true,…}` 变成 `{ok:false,…}`）② 「拉取的失败与档案不在」的**第二半**（`expected '这个档案已经不在了，请重新打开设置页再试。' to contain 'HTTP 404'`）。它的**第一半**（`profileId: 'gone'`）**对这条变异没有判别力**（改坏后照样回同一句）——那一半守的是"档案不存在"这条路径本身，不是这条变异 |
+| **M4 / M5：计划把落点写在"会被遮住的那一句"上** | M4「`new Set(...).size` 变成 4」/ M5「`calls` 不为空」 | **实测**：M4 红在它前面那句 `missing).toContain('/models')`、M5 红在 `messageOf` 抛「这次拉取是成功的」——**`Set.size` 与 `calls` 根本没跑到**。处置见 §3 第 5 条（本轮选择"按实测改写落点、不改用例顺序"，并把"提前读数"记为可选加固） |
 
 ### 2. 恒真断言清单（本单元第四例在 C1）
 
@@ -4322,16 +4342,21 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
    - **①把"零请求"的读数排在错误断言后面**：原写法是 `await expect(…).resolves.toEqual({ ok:false, code:'AUTH', … })` **然后**才 `expect(calls).toEqual([])`。错误码/文案一变，读者先看到的是那条断言，而"到底发没发请求"这个**更基本的读数**排在后面。改成：**先收响应 → 紧接着读 `calls` 与两层缓存 → 最后才断言错误码与文案**（C3 Step 1d 第一条就是这么写的）。
    - **②把"成对两半"与主断言挤在同一条用例**：`problem` 那条原本把"有模型 / 免费引擎**不背**这句话"与主断言放在一起，于是 M1（`problem` 恒真）时后半被前半遮住。**拆成两条用例**：一条测"该背的背"，一条测"不该背的不背"。
    - **一般规则**：一条用例里出现两个以上读数时，**按"越基本越先读"排序**（副作用次数 → 状态 → 文案），并把互相遮蔽的两个读数拆成两条用例。
+5. **成因④的镜像：计划把落点写在"会被遮住的那一句"上**（C3 落地实测两例，都是**计划预测错落点**、不是用例写错）：
+   - 「删掉 404 那一支」原预测"`new Set(...).size` 变成 4"，**实测红在它前面那句** `missing).toContain('/models')`——`Set.size` 根本没跑到。
+   - 「删掉权限闸」原预测"`calls` 不为空"，**实测红在 `messageOf` 抛「这次拉取是成功的」**——`calls` 根本没跑到。
+   - **处置（本轮选定：改写实测落点，不改用例顺序）**：两条用例**已经落地**，本轮是"只改计划"的一轮，动代码会引出重新提交与重跑；而两条用例的**判别力并没有损失**（各有一条断言先红），只是"哪一句先红"与计划的预测不同。**可选加固**（谁做都行、纯加强、不阻塞）：把 `calls` / `Set.size` 这两句提到 `messageOf` / `toContain` **之前**，读数会更贴近意图。⚠ 这条与第 4 条同族：**计划的"期望红在哪一句"必须按落地实测写，不能按直觉写**——直觉默认"我关心的那句先红"，而断言是按源码顺序运行的。
 
 ### 4. 有行为、无读数（**不许**为它们编一条恒真用例）
 
-本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这三处都没有任何用例杀得死：
+本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这四处都没有任何用例杀得死：
 
 | 代码 | 为什么今天杀不死 | 谁能杀它 / 留着它的理由 |
 | --- | --- | --- |
 | `if (actionEl === null || !row.contains(actionEl)) return;`（C4 Step 3m，`7991539` 引入） | `[data-action]` 今天只出现在行内，构造不出"动作元素在别的行里"的 DOM | 只有"把 `[data-action]` 挪进行内的嵌套结构、或让两行互相包含"的形状才杀得死——那种形状在真机上不存在。留着是**防御**（嵌套/无关元素串行） |
 | `editorDrafts.delete(savedId)`（C4 Step 3p） | 保存成功后 `renderProfiles` 按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor` | 草稿那一格（`NEW_DRAFT_ID`）**有**读数（「草稿保存成功后清掉草稿暂存」那条）；这一格留着是**对称性**（"暂存不活得比编辑会话更久"） |
 | `liftProfileModels` 里的 `delete lifted.model` | 见上表 M3：`pickProfile` 重建 + 版本闸门短路 | 改 `pickProfile`（让它透传旧键）才杀得死。留着是**防御**（防止将来 `pickProfile` 不再重建时旧键漏进存储） |
+| `fetchModels` 里 `if (pattern === undefined) return { ok: false, message: '接口地址不是合法的 URL…' }`（C3 Step 4） | **在消息路径上不可达**：`loadSettings → mergeSettings/pickProfile` 已经把非法 `baseUrl` 归一化成**空串**，所以 `handleFetchModels` 永远先命中"这个档案还没填接口地址"那一支，走不到"不是合法的 URL"。只有**直接调 `fetchModels` 的单测**可达（`tests/background/models.test.ts` 的「地址不是合法 URL：也不发请求…」就是直连） | 它是**防御性分支**：将来若有人把 `pickProfile` 的地址归一化去掉、或给 `fetchModels` 加别的调用方，它就活了。⚠ **不许**为它编一条"绕过边界"的用例来凑读数 |
 
 ### 4.1 结构缺口：**有意的零消费者公共表面**（C2 的 `problem`）
 
@@ -4355,6 +4380,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **B（同名函数）** | 只说"`renderEngineHint` 开头"，没说哪一个 | 全部带路径；硬规矩 15 列出三对同名函数 | C4 Step 3n / C5 Step 5f / 硬规矩 15 |
 | **D′（M9 落点）** | `config.model = models[0]` 的落点写成端到端缓存用例 | 按实测改成"在 `resolveEngine` 层红 2 条"，端到端那条的归属写死到 C3 Step 1d | C2 Step 5 的变异表 + C3 Step 7 |
 | **F（不设的变异）** | 未提及 | C3 Step 7 加一行为"不设此变异（已核实构造不出）"留痕 | C3 Step 7 |
+| **边界措辞冲突（第五轮）** | C3 的 Files 要改 `tests/shared/messages.test.ts`，而派单写了"不许碰 `tests/shared/**`"——**两者字面冲突**（执行者按计划做了并如实报告，处理是对的） | C3 的 Files 与 Step 8 现在写清"**只改 `tests/shared/messages.test.ts` 这一个文件**；同目录其它文件 `settings.test.ts` 属 C2"，并说明整目录禁令的本意是"别动 C2 的文件" | C3 的 Files + Step 8 |
 
 ## 落地读数表（执行者填，交付时与投影并列）
 
@@ -4371,6 +4397,10 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **C2 变异：`config.model` 换成 `models[0] ?? ''`** | 计划原测：「同一个档案换 activeModel：不命中上一个模型的缓存」 | **实测红 2 条**（`expected 'a' to be 'b'` + 零请求那条），**在 `resolveEngine` 层就被杀掉**；已改标落点，并把端到端那条的归属写死到 **C3 Step 1d** |
 | **C2 变异：`.trim()` 去掉** | —— | **有读数**（更严的那版才杀得死"只填空格的合成档案"）；计划早先的 `length === 0` 与 popup 片段"与引擎口径一致"互相矛盾，已按落地改成 `.trim()` 版（复盘 §3 / §5） |
 | **C2 实测：前置闸删掉** | 计划原测：「响应退回条目级」 | **`calls` 仍是 `[]`**（零请求不受它影响）——"闸 = 零请求守卫"这个说法本身就是错的，已在 C3 Step 7 第一行与验收项 3 写明 |
+| **C3 落地提交 `ddc913b`（6 路径 +625/−4）** | 计划把它当"C3 = `/models` 拉取" | ⚠ **这个提交同时装了 `problem` 的第一处接线（后台前置闸，Step 5d）**，而它的提交信息只写了"`/models` 拉取"（**历史不改写**）。**因此 `ddc913b` 落在"接线完成前不许合进 release"的过渡窗口里**——即使 C3 的拉取部分已经自洽，`problem` 的其余两处接线（C4 Step 3l / C5 Step 5f）还没落地。收口前请按这条判断能不能合 release |
+| **C3 变异轮的文件还原（可核）** | —— | G3 临时改过 `src/shared/settings.ts`、G4 临时改过 `src/background/scheduler.ts`（都按 Step 7 点名），**已按 SHA256 还原**：`src/shared/settings.ts` = `479AB5D5…`、`src/background/scheduler.ts` = `7673DD29…`（前缀；完整值以执行者报告为准）。**"变异已还原"因此是可核的**，而不是一句口头保证 |
+| **C3 全量读数（落地实测）** | 以命令输出为准 | **54 files / 1020 passed**；`typecheck` exit 0；`build` exit 0 |
+| **C3 成对用例的正向半边（落地加强）** | 计划只写了 `expect(calls).toEqual([{ model: 'm-1' }])` | 执行者补了 `expect(cacheEntries('local')).toHaveLength(1)` 与 `expect(cacheEntries('session')).toHaveLength(1)`——**使负向那条"两层缓存没留下条目"不可能是恒真**（取错层 / 取错前缀时它本来会永远绿）。已收进 C3 Step 1d 的代码块 |
 | 收口 `npm test` | 以命令输出为准 | |
 | 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
 | `sync-plan-code.mjs` | `已同步 0 个代码块` | |
