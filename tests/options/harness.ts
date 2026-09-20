@@ -61,19 +61,29 @@ export function profileWithModel(model: string, over: Record<string, unknown> = 
 /**
  * 把某一行的模型设成 `model`——**编辑面板里"改模型"这件事的唯一夹具入口**。
  *
- * 为什么要有这层：模型 UI 在单元 C 里换过一次形状（C1 还是"一个模型名输入框"，C4 换成模型目录
- * 清单），而十几条既有用例要表达的是同一件事——"把这一行的模型改成 X"。形状写在十几处，
- * 形状一换就是十几处一起改、而且很容易顺手改弱断言；写在一处，C4 只改这一个函数的实现。
+ * C4 之后走的是**真实用户路径**：点「+ 添加模型」→ 往手填框里填名字 → 点「添加」。
+ * 于是"空值与重复值不写入"的判据也被这些用例顺带走过（它们本来只关心"模型改了"）。
  */
 export function setModel(editor: Element, model: string): void {
-  const input = fieldOf(editor, '.profile-model-name');
-  input.value = model;
-  input.dispatchEvent(bubble('input'));
+  editor.querySelector<HTMLButtonElement>('[data-action="add-model"]')!.click();
+  fieldOf(editor, '.profile-model-new').value = model;
+  editor.querySelector<HTMLButtonElement>('[data-action="confirm-model"]')!.click();
 }
 
-/** 读回"这一行现在的模型"（C1：输入框的值；C4：清单里带 `data-current` 的那一项）。 */
+/** 读回"这一行现在的模型"：清单里带 `data-current` 的那一项（一项都没有就是空串）。 */
 export function currentModel(editor: Element): string {
-  return fieldOf(editor, '.profile-model-name').value;
+  const row = editor.querySelector<HTMLElement>('.model-row[data-current]');
+  return row === null ? '' : (row.dataset.model as string);
+}
+
+/**
+ * 折叠行右侧的行级按钮（`编辑` / `删除`）。它们**不在** `.profile-editor` 里，
+ * 所以 `actionButton(editor, …)` 找不到它们。
+ */
+export function rowButton(id: string, action: string): HTMLButtonElement {
+  const button = rowOf(id).querySelector<HTMLButtonElement>(`.row-actions [data-action="${action}"]`);
+  if (button === null) throw new Error(`档案行 ${id} 缺按钮 ${action}`);
+  return button;
 }
 
 export function pick<T extends HTMLElement>(id: string): T {
@@ -111,7 +121,7 @@ export function actionButton(editor: Element, action: string): HTMLButtonElement
   return button;
 }
 
-/** 展开某个档案的编辑区（点它自己那一行的摘要按钮；已经展开就原样返回，点了不重复收起）。 */
+/** 展开某个档案的编辑区（点它自己那一行右侧的「编辑」；已经展开就原样返回，点了不重复收起）。 */
 export function expand(id: string): Element {
   const row = rowOf(id);
   const existing = row.querySelector('.profile-editor');

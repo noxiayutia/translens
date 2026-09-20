@@ -147,9 +147,9 @@ describe('展开就地更新：代价不随档案数增长', () => {
 });
 
 /**
- * 行头是 `<button class="profile-summary">` **里面包着** `<span class="name">` /
- * `<span class="meta">` / `<span class="dot">`。用户点是点在**文字**上的，于是 `event.target`
- * 是那些 span，不是按钮自己——动作必须从**最近的带 `data-action` 的祖先**上取。
+ * 真机缺陷（`7991539` 修的）：行头当时是 `<button class="profile-summary">` **里面包着**
+ * `<span class="name">` / `<span class="meta">` / `<span class="dot">`。用户点是点在**文字**上的，
+ * 于是 `event.target` 是那些 span、不是按钮自己——动作必须从**最近的带 `data-action` 的祖先**上取。
  *
  * 真机读数（用户贴回来的临时探针，5 次点击）：
  * ```
@@ -162,43 +162,90 @@ describe('展开就地更新：代价不随档案数增长', () => {
  * 5 次点击里 4 次 `action="(none)"`，页面只有 294 个节点、点一次 3~7ms——所以"很慢 / 有时候
  * 没反应"**不是性能问题**：读 `target.dataset.action` 得到 `undefined`，`switch` 全部落空，
  * 只有恰好点在按钮自己的空白边距（padding）上才生效。
+ *
+ * ⚠ **C4 版式下这条口径的落点变了，读法必须跟着改（这是那一刀里唯一的测试契约变更）**：
+ * 折叠行不再是"一个按钮包着行头"，而是 `.grow`（名字 / 徽章 / 状态点 / meta）与
+ * `.row-actions`（`编辑` / `删除`）**并排**——行头文字不再挂在任何 `[data-action]` 上。于是：
+ * - 点行头文字**不再展开**（那是"整行不再是按钮"的直接后果，第一条用例钉住它，并钉住
+ *   展开开关现在是右侧那颗「编辑」）；
+ * - 口径本身在新版式里**没有现成的落点**：每个 `[data-action]` 控件都是叶子按钮，两种口径
+ *   （`target.dataset.action` 与 `closest('[data-action]')`）读数完全相同。所以后两条用例
+ *   **自己造出那个形状**——把按钮的文字包进一个子元素再点它（这正是旧版式的形状，也是将来
+ *   给按钮加图标 / 文案子元素时的形状）。少了这两条，真机缺陷会**静默**回来：本地全绿，
+ *   只有真机上"点在按钮里的文字上"没反应。
  */
 describe('点击委托：动作取自最近的 [data-action] 祖先，不是 event.target 自己', () => {
-  /** 行头里那块文字（`span.meta`）——真机上用户点的就是它。 */
+  /** 行头里那块文字（`span.meta`）——旧版式里真机上用户点的就是它。 */
   function headTextOf(id: string): HTMLElement {
     const text = rowOf(id).querySelector<HTMLElement>('.meta');
     if (text === null) throw new Error(`档案行 ${id} 没有 .meta`);
     return text;
   }
 
-  it('点行头里的文字（span.meta）就展开——不是只有点在按钮空白处才有反应', async () => {
+  /**
+   * 把触发按钮的文字包进一个子元素并返回它：点它就是"点在按钮**里面的**文字上"。
+   * 每次都现造一个（展开 / 收起时按钮文案会变，旧的那个子元素已经不在 DOM 里了）。
+   */
+  function nestedTextOf(button: HTMLButtonElement): HTMLElement {
+    const inner = document.createElement('span');
+    inner.className = 'probe-inner';
+    inner.textContent = button.textContent ?? '';
+    button.textContent = '';
+    button.append(inner);
+    return inner;
+  }
+
+  it('点行头里的文字（span.meta）**不再**展开——整行不是按钮，展开开关是右侧的「编辑」', async () => {
     await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
     await loadOptions();
 
     const head = headTextOf('p-a');
     // 先钉住"这确实是一次打在**子元素**上的点击"：它自己身上没有任何动作可读。
-    // 少了这两句，这条用例在有 bug 的实现下也可能因为"点到了别处"而变绿，读不出真东西。
     expect(head.dataset.action).toBeUndefined();
-    expect(triggerOf('p-a').contains(head)).toBe(true);
+    // 版式读数：行头文字**不在**触发按钮里（旧版式里它在）——所以它够不到任何动作。
+    // 这一句就是"整行不再是按钮"在委托这一层的读数（`row` 本身也不再是按钮）。
+    expect(triggerOf('p-a').contains(head)).toBe(false);
 
     head.click();
+    await settle();
+    expect(editorOf('p-a')).toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');
+
+    // 新契约的另一半：展开开关是那颗按钮，点它照常展开（点不动的东西才是回归）。
+    triggerOf('p-a').click();
+    await settle();
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('点按钮**里面的**文字就展开——不是只有点在按钮空白处才有反应', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    const inner = nestedTextOf(triggerOf('p-a'));
+    // 这条点击打的是**子元素**：它自己身上没有任何动作可读，只有祖先（那个按钮）有。
+    // 少了这两句，这条用例在退回 `target.dataset.action` 的实现下也可能因为"点到了别处"而变绿。
+    expect(inner.dataset.action).toBeUndefined();
+    expect(triggerOf('p-a').contains(inner)).toBe(true);
+
+    inner.click();
     await settle();
 
     expect(editorOf('p-a')).not.toBeNull();
     expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('连点行头文字两次 = 展开再收起（取值口径改了，toggle 语义不许跟着变）', async () => {
+  it('连点那块文字两次 = 展开再收起（取值口径改了，toggle 语义不许跟着变）', async () => {
     await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
     await loadOptions();
 
-    headTextOf('p-a').click();
+    nestedTextOf(triggerOf('p-a')).click();
     await settle();
     expect(editorOf('p-a')).not.toBeNull();
     expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
 
-    // 第二次点在**同一个** span 上：展开后编辑器挂在行尾，行头结构没变，取法也不该变。
-    headTextOf('p-a').click();
+    // 第二次点的是**新造的那个**子元素：按钮的文案在展开时已经换成「收起」，取法不该跟着变。
+    nestedTextOf(triggerOf('p-a')).click();
     await settle();
     expect(editorOf('p-a')).toBeNull();
     expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');

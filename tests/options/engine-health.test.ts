@@ -27,6 +27,7 @@ import {
   profileRows,
   profileSeed,
   resetOptionsPage,
+  rowButton,
   rowOf,
   seedSettings,
   setModel,
@@ -217,8 +218,8 @@ describe('状态点三态', () => {
     await loadOptions();
 
     profileRows()[0].querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
-    const editor = profileRows()[0].querySelector('.profile-editor') as Element;
-    editor.querySelector<HTMLButtonElement>('[data-action="delete-profile"]')!.click();
+    // 删除按钮在折叠行的 `.row-actions` 里（不在 `.profile-editor` 内）；该用例的 `profileRows()[0]` 就是 `p-a`。
+    rowButton('p-a', 'delete-profile').click();
 
     await waitFor(async () => (await storedHealth())[profileHealthKey('p-a')] === undefined);
     // 删的是**它的档案键**：邻居那条（`p:keep`）原样留着。
@@ -240,7 +241,10 @@ describe('状态点三态', () => {
     setModel(editor, 'm');
     fieldOf(editor, '.profile-api-key').value = 'sk-draft';
     actionButton(editor, 'test-profile').click();
-    await waitFor(() => status().dataset.kind === 'ok');
+    // ⚠ 等「连接成功」而不是 `kind === 'ok'`：`setModel` 走的是真实用户路径，它自己就会把状态行
+    // 写成 ok（「已加入…」），于是 `waitFor(kind === 'ok')` 会当场兑现、下面那条请求次数断言
+    // 跑在请求之前（实测读到 0 次）。这是本仓七种假信号里的成因④。
+    await waitFor(() => (status().textContent ?? '').includes('连接成功'));
 
     // 请求真的发出去了、状态行照常报结果；草稿行刻意**没有**状态点，删档案也删不到它，
     // 所以它不该在会话存储里留下一条谁也认领不了、也没人清理的幽灵记录。

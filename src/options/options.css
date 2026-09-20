@@ -270,24 +270,6 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   overflow: hidden;
 }
 
-.profile-summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 13px 16px;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  background: transparent;
-  border: none;
-}
-
-.profile-summary:hover {
-  background: var(--surface-2);
-}
-
 .grow {
   flex: 1;
   min-width: 0;
@@ -463,6 +445,96 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   font-size: 12px;
   font-weight: 400;
   color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------ 档案行右侧的行级按钮 */
+
+/*
+ * 折叠行右侧的 `编辑` / `删除`。整行**不再是按钮**：行里现在有「删除」，整行可点会把删除
+ * 变成一次误触（改版规格里"点整行展开"因此改成"点「编辑」"）。
+ */
+.row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 「自定义」徽章 = 次级配色版（与强调色版的「使用中」区分开）。不许用 opacity（§7）。 */
+.badge-muted {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+/* ------------------------------------------------------------------ 模型目录（规格 §6.2 第 4 条） */
+
+/* 这一块是"标题 + 清单 + 按钮"的竖排，不是 `.field` 那种"左标签右控件"的一行。 */
+.models-field {
+  display: block;
+}
+
+.models-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.models-head .lab {
+  flex: 1;
+}
+
+/* 清单长了就自己滚：有些网关列几百个（§10），本轮只做可滚动 + 勾选，不做搜索框。 */
+.models-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.model-name {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.model-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-new-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.model-new-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.models-empty {
+  margin: 8px 0 0;
+}
+
+.fetched-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  color: var(--text-2);
 }
 
 /* ------------------------------------------------------------------ 表单控件 */

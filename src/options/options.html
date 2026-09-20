@@ -70,9 +70,12 @@
             </p>
           </details>
           <p class="hint">
-            一个档案 = 一份接口地址 + 模型名 + API Key（走 OpenAI 兼容协议，可接 OpenAI、DeepSeek、
-            硅基流动、Ollama 等）。配好几个后，在<strong>弹窗</strong>的「翻译引擎」下拉里按名字直接切换。
-            每个档案的访问授权在点「保存档案」时按它自己的地址申请（Chrome 要求用户手势）。
+            一个档案 = 一份接口地址 + 一份模型清单 + API Key（走 OpenAI 兼容协议，可接 OpenAI、DeepSeek、
+            硅基流动、Ollama 等）。点某一行右侧的「编辑」展开：在那里把模型加进清单（手填，或点
+            「⟳ 获取可用模型」从接口拉一份回来勾选），并把其中一个设为「当前」。配好几个档案后，在
+            <strong>弹窗</strong>的「翻译引擎」下拉里按名字直接切换；某个档案有 2 个以上模型时，
+            弹窗里会多出一个模型下拉。每个档案的访问授权在点该档案的「保存」时按它自己的地址申请
+            （Chrome 要求用户手势）。
           </p>
           <p id="engine-status" class="status" role="status" aria-live="polite"></p>
         </section>
@@ -254,7 +257,7 @@
               <code>contenteditable</code> 可编辑区域（你正在写、还没保存的草稿）一律不采集。
             </li>
             <li>
-              每个档案接口地址的访问权限<strong>只在你点该档案的「保存档案」时</strong>按需申请，
+              每个档案接口地址的访问权限<strong>只在你点该档案的「保存」时</strong>按需申请，
               授权范围限定为那个地址的域名；免费引擎不需要额外授权。
             </li>
           </ul>

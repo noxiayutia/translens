@@ -41,6 +41,7 @@ import {
   profileSeed,
   profileWithModel,
   resetOptionsPage,
+  rowButton,
   rowOf,
   seedSettings,
   setModel,
@@ -326,10 +327,9 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect((await storedProfiles())[0]).toMatchObject({
       label: 'DeepSeek 备用',
       baseUrl: 'https://api.deepseek.com/v1',
-      // C1 的过渡映射是**有损的**：输入框里那一个模型名 = 整个清单，所以这里只剩一个。
-      // C4 把输入框换成模型目录后，"加一个模型"是**追加**，此处期望变成
-      // `['deepseek-chat', 'deepseek-chat-v2']`（形状变化由 C4 一并改）。
-      models: ['deepseek-chat-v2'],
+      // C4 之后"加一个模型"是**追加**：模板先并入了 deepseek-chat，用户又在它后面手填了一个。
+      // （C1 的过渡映射是有损的——那时这里只会剩一个 `deepseek-chat-v2`。）
+      models: ['deepseek-chat', 'deepseek-chat-v2'],
       activeModel: 'deepseek-chat-v2',
       apiKey: 'sk-ds',
     });
@@ -412,12 +412,17 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     fieldOf(editor, '.profile-base-url').value = 'http://localhost:11434/v1';
     setModel(editor, 'qwen2.5');
     actionButton(editor, 'save-profile').click();
-    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    // ⚠ 等的是**这次保存**写完的那句话，不是 `kind === 'ok'`：`setModel` 走的是真实用户路径，
+    // 它自己就会把状态行写成 ok（「已加入…」），于是 `waitFor(kind === 'ok')` 会当场兑现、
+    // 断言跑到保存之前（实测：落盘还是空的，读 `stored.baseUrl` 直接 TypeError）。
+    await waitFor(() => (engineStatus().textContent ?? '').includes('已保存档案'));
     expect(engineStatus().textContent).not.toContain('必须用 https://');
     const [stored] = await storedProfiles();
     expect(stored.baseUrl).toBe('http://localhost:11434/v1');
     expect(stored.activeModel).toBe('qwen2.5');
-    expect(stored.models).toEqual(['qwen2.5']);
+    // C4 之后"加一个模型"是**追加**：上面那次被拒的保存里已经加过 `m`，它还留在清单里
+    // （C1 的过渡映射是替换式的，那时这里只剩 `qwen2.5`——这条期望因此比 C1 更强）。
+    expect(stored.models).toEqual(['m', 'qwen2.5']);
     // 授权也按回环 origin 申请，恰好一次。
     expect(chromeStub.permissions.requests).toEqual([['http://localhost:11434/*']]);
   });
@@ -431,9 +436,10 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     fieldOf(editor, '.profile-label').value = '例子';
     fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
     setModel(editor, 'm');
-    fieldOf(editor, '.profile-api-key').value = 'sk-x';
+    fieldOf(editor, '.profile-api-key').value = 'sk-typed';
     actionButton(editor, 'save-profile').click();
-    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    // 同上：`setModel` 自己写的那句 ok 会满足 `kind === 'ok'`，这里等**保存**写完的那句。
+    await waitFor(() => (engineStatus().textContent ?? '').includes('已保存档案'));
     expect(chromeStub.permissions.requests).toEqual([[CUSTOM_ORIGIN_PATTERN]]);
     expect([...chromeStub.permissions.grantedOrigins]).toEqual([CUSTOM_ORIGIN_PATTERN]);
     expect(engineStatus().textContent).toContain('已授权访问');
@@ -441,8 +447,19 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
 
     // 再保存同一个档案：已经 contains 过，不再弹框。
     editor = expand((await storedProfiles())[0].id as string);
+    // ⚠ 这里等的必须是**第二次**保存写完，而不是状态行里那句「已保存档案」——那句话第一次
+    // 保存就已经写在页面上了，等它等于什么都没等（成因④），而下面那条 `requests` 断言恰恰
+    // 要证明"这次没有新申请"。存储写入是第二次保存独有的副作用（保存流程里权限判定在前、
+    // 写入在后，所以看到写入 = 权限判定已经做完）。
+    let writes = 0;
+    const realSet = chromeStub.storage.local.set.bind(chromeStub.storage.local);
+    chromeStub.storage.local.set = async (items: Record<string, unknown>) => {
+      writes += 1;
+      await realSet(items);
+    };
     actionButton(editor, 'save-profile').click();
-    await waitFor(() => (engineStatus().textContent ?? '').includes('已保存档案'));
+    await waitFor(() => writes >= 1);
+    chromeStub.storage.local.set = realSet;
     expect(chromeStub.permissions.requests).toEqual([[CUSTOM_ORIGIN_PATTERN]]);
   });
 
@@ -535,8 +552,8 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     });
     await loadOptions();
 
-    const editor = expand('p-a');
-    actionButton(editor, 'delete-profile').click();
+    expand('p-a'); // 删除前的展开状态是用户真实路径（保留）
+    rowButton('p-a', 'delete-profile').click();
 
     await waitFor(async () => (await storedProfiles()).length === 1);
     const stored = await storedSettings();
@@ -559,8 +576,8 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     });
     await loadOptions();
 
-    const editor = expand('p-b');
-    actionButton(editor, 'delete-profile').click();
+    expand('p-b');
+    rowButton('p-b', 'delete-profile').click();
 
     await waitFor(async () => (await storedProfiles()).length === 1);
     const stored = await storedSettings();
@@ -601,7 +618,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     };
     try {
       expand('p-a');
-      actionButton(editorOf('p-a'), 'delete-profile').click();
+      rowButton('p-a', 'delete-profile').click();
       // 等到**这条路径走完**（两条路都会写出下面这两句话之一），再断言最终留下的是哪一句。
       // 不用 `waitFor(含「列表刷新失败」)`：那句话恰恰是 bug 会覆盖掉的东西，等它等于把
       // "超时"当成失败信号——能红，但报出的是"条件始终不成立"，看不出真相。这里等的是
@@ -643,7 +660,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, engineId: 'p-a', profiles: [] } });
 
     expand('p-a');
-    actionButton(editorOf('p-a'), 'delete-profile').click();
+    rowButton('p-a', 'delete-profile').click();
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       const text = engineStatus().textContent ?? '';
@@ -675,7 +692,8 @@ describe('设置页：测试连接（按档案，测的是正在编辑的那一�
     const editor = expand('p-a');
     setModel(editor, 'new-model');
     actionButton(editor, 'test-profile').click();
-    await waitFor(() => engineStatus().dataset.kind === 'ok');
+    // ⚠ 等「连接成功」而不是 `kind === 'ok'`：`setModel` 自己写的那句 ok 会先兑现（成因④）。
+    await waitFor(() => (engineStatus().textContent ?? '').includes('连接成功'));
 
     expect(engineStatus().textContent).toContain('连接成功');
     // 返回的译文本身要显示出来——这是"真的通了"的唯一证据。
