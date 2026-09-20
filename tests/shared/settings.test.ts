@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
   LEGACY_PROFILE_ID,
+  NO_MODEL_PROBLEM,
   PROVIDER_PRESETS,
   SETTINGS_KEY,
   createProfileId,
@@ -15,6 +16,7 @@ import {
   type EngineProfile,
 } from '../../src/shared/settings';
 import { MemoryStorage } from '../helpers/memory-storage';
+import { openAiCompatEngine } from '../../src/engines/openai-compat';
 
 /** 构造一份形状完整合法的档案；`over` 覆盖单个字段，用例只写自己在意的那部分。 */
 function profile(over: Partial<EngineProfile> = {}): EngineProfile {
@@ -301,6 +303,145 @@ describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + �
       profiles: [profile({ models: ['a', 'b', 'c'], activeModel: 'b' })],
     });
     expect(config.model).toBe('b');
+  });
+
+  /**
+   * §3.3 那句话的**唯一来源**。
+   *
+   * 为什么这条用例非存在不可：引擎自己只会说「尚未填写模型名，请在设置中配置」——那是通用
+   * OpenAI 兼容适配器的说法，它不知道"档案""模型清单"这些词，用户照它去"设置"里找不到该点
+   * 哪儿。规格要的是**可行动**的一句（点「添加模型」），它只能由 `resolveEngine` 给出。
+   */
+  it('档案没有当前模型：给出规格 §3.3 那句可读原因', () => {
+    const empty = resolveEngine({ engineId: 'p1', profiles: [profile({ models: [], activeModel: '' })] });
+    // 送给引擎的仍然是空串（`config.model` 的语义没变），可读的那句话另走 `problem`。
+    expect(empty.config.model).toBe('');
+    expect(empty.problem).toBe(NO_MODEL_PROBLEM);
+    expect(empty.problem).toContain('还没有模型');
+    // 光有"还没有模型"还不够：它得说清去哪儿动手。规格 §3.3 的两个指路词一个都不能少。
+    expect(empty.problem).toContain('添加模型');
+    expect(empty.problem).toContain('拉取可用模型');
+  });
+
+  /**
+   * 上面那半的**成对反例**，独立成一条用例而不是挤在同一条里：同一条里先失败的那条断言会把
+   * 后面的读数藏起来（本仓教训），而这条要在"`problem` 恒真"的变异下单独亮红。
+   *
+   * 它杀的是恒真式：若 `problem` 无脑恒有值，弹窗会在**能用**的配置上也报"还没有模型"，
+   * 用户按那句提示去添加一个已经有的模型。
+   */
+  it('能用的配置不背那句"还没有模型"：有当前模型、免费引擎都不给 problem', () => {
+    expect(resolveEngine({ engineId: 'p1', profiles: [profile()] }).problem).toBeUndefined();
+    // 免费引擎没有"模型清单"这个概念，档案里的空 activeModel 与它无关（engineId 不指向任何档案）。
+    expect(
+      resolveEngine({ engineId: 'google', profiles: [profile({ models: [], activeModel: '' })] }).problem,
+    ).toBeUndefined();
+    expect(resolveEngine({ engineId: 'google', profiles: [] }).problem).toBeUndefined();
+    // `openai-compat` **不是**档案 id：它照样走"没命中档案"那一支（引擎可由 `getEngine` 归一，
+    // 与引擎有关的那条既有用例在下面「裸 openai-compat…」里守着）。
+    expect(resolveEngine({ engineId: 'openai-compat', profiles: [] }).problem).toBeUndefined();
+  });
+});
+
+/**
+ * 「零请求」这半是**构造性**的，不是新增的闸：`openai-compat` 的空 `model` 闸在 `fetch`
+ * 之前就抛 AUTH（`src/engines/openai-compat.ts:64-67`）。
+ *
+ * 为什么还要有用例：`resolveEngine` 与引擎分处两层，谁改动都不该悄悄把"带空 model 打接口"
+ * 放出去——上一个 `deepseek` 事故的形状就是"带着空配置发请求换回一句服务商 400"。这条用例把
+ * **两层之间的接缝**钉住：`resolveEngine` 交出来的空 model 配置，送到真引擎手里也是一个请求
+ * 都不发。成对的那半（填上 `activeModel` → 恰好一次请求、请求体带这个名字）防的是"整条路
+ * 根本不发请求"的实现把前半蒙过去。
+ */
+describe('零请求的构造性保证：空 model 的配置连一次 fetch 都到不了', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('档案没有当前模型：引擎在 fetch 之前抛 AUTH（成对：填上 activeModel 就恰好发一次）', async () => {
+    const calls: Array<{ model: string }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // 只留 `model` 一个字段：断言要比的是"用了哪个模型发出去的"，不是整份请求体的形状。
+      calls.push({ model: (JSON.parse(String(init?.body)) as { model: string }).model });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const signal = new AbortController().signal;
+    const request = { texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal };
+    /**
+     * 先收下错误、再断言，而且**先读 `calls` 再读错误码**——顺序是有意的。
+     *
+     * `await expect(...).rejects.toMatchObject({code:'AUTH'})` 在"根本没抛"或"抛了别的码"时会
+     * 先失败，把后面那句 `calls` 的读数整个藏起来（本仓教训：同一条用例里先失败的断言会遮住
+     * 后面的）。本单元的主断言是**零请求**，所以它必须第一个读到。
+     */
+    const translateQuietly = async (config: Parameters<typeof openAiCompatEngine.translate>[1]) => {
+      const error: { current?: unknown } = {};
+      try {
+        await openAiCompatEngine.translate(request, config);
+      } catch (raw) {
+        error.current = raw;
+      }
+      return error.current;
+    };
+
+    const empty = resolveEngine({ engineId: 'p1', profiles: [profile({ models: ['m-1'], activeModel: '' })] });
+    expect(empty.config.model).toBe('');
+    const emptyError = await translateQuietly(empty.config);
+    expect(calls).toEqual([]);
+    expect(emptyError).toMatchObject({ name: 'EngineError', code: 'AUTH' });
+
+    // 成对的另一半：只把 activeModel 填上，同一个引擎就真的发一次、且请求体带着那个名字。
+    const filled = resolveEngine({ engineId: 'p1', profiles: [profile({ models: ['m-1'], activeModel: 'm-1' })] });
+    expect(filled.config.model).toBe('m-1');
+    // 两半都不放松：既断言"这一次真的成功了"（`resolves` 与上面对称），也断言请求体的 model。
+    await expect(openAiCompatEngine.translate(request, filled.config)).resolves.toEqual(['你好']);
+    expect(calls).toEqual([{ model: 'm-1' }]);
+  });
+});
+
+/**
+ * `activeModel` 是**空白串**（不是空串）时的那一格。
+ *
+ * `mergeSettings` 会把空白 trim 成空串，所以这一格只能由脏输入或"手写了一份 profile 对象"的
+ * 调用方造出来——正因如此它容易被漏掉，而判据一旦写成 `activeModel.length === 0` 就会漏过它：
+ * 档案被判成"能用"（没有 `problem`，弹窗不提示），可引擎那边 `(config.model ?? '').trim()` 之后
+ * 是空的，用户拿到的是一句他自己照着找不到去哪儿的「尚未填写模型名」。
+ *
+ * 两半分别在两层上钉：`resolveEngine` 认它（`problem` 给出来），引擎也认它（抛 AUTH、零请求）。
+ * 后一半是构造性的（引擎本来就 trim），但它同时证明了"空白串根本发不出请求"，所以这一格不需要
+ * 任何新闸。
+ */
+describe('档案的当前模型是空白串：与"没有模型"同一条判据（两层都不许漏）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('只填了空格的模型名：resolveEngine 与引擎都按"没有模型"处理，且零请求', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', async () => {
+      calls.push('fetch');
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+
+    const blank = resolveEngine({ engineId: 'p1', profiles: [profile({ models: ['  '], activeModel: '  ' })] });
+    expect(blank.problem).toBe(NO_MODEL_PROBLEM);
+    expect(blank.config.model).toBe('  ');
+
+    // 同样是"先收下错误、先读 `calls` 再读错误码"，理由见上一条用例。
+    let blankError: unknown;
+    try {
+      await openAiCompatEngine.translate(
+        { texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal },
+        blank.config,
+      );
+    } catch (raw) {
+      blankError = raw;
+    }
+    expect(calls).toEqual([]);
+    expect(blankError).toMatchObject({ name: 'EngineError', code: 'AUTH' });
   });
 });
 

@@ -362,6 +362,32 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
 }
 
 /**
+ * {@link resolveEngine} 的解析结果：引擎 + 送给它的那份配置 + **能不能用**的一句原因。
+ */
+export interface ResolvedEngine {
+  engine: Translator;
+  config: EngineConfig;
+  /**
+   * 这个档案**今天不能用来翻译**时的一句可读原因；能用时为 `undefined`。
+   *
+   * 为什么是返回值而不是抛错：弹窗在**同步渲染函数**里调它（`renderEngineHint`），抛错会把
+   * 提示区变成异常路径。消费者只有两个：service worker（发请求前拦下）与弹窗（提示区）。
+   *
+   * **零请求不由这里保证**：`openai-compat` 的空 model 闸在 `fetch` 之前就已经拦住了
+   * （构造性成立）。这里负责给出规格 §3.3 那句**可行动**的话——引擎给不出它，因为引擎是
+   * 通用的 OpenAI 兼容适配器，它不知道"档案""模型清单"这些词。
+   */
+  problem?: string;
+}
+
+/**
+ * §3.3 那句话的**唯一来源**：后台与弹窗都读它（两处各写一份必然漂移，先例见 `isAllowedBaseUrl`）。
+ * 规格里它是「这个档案还没有模型，点『添加模型』或『拉取可用模型』」——外层引号属于规格的排版，
+ * 落到代码里内层标签统一用本仓的「」（界面文案引用标签一律如此）。
+ */
+export const NO_MODEL_PROBLEM = '这个档案还没有模型，点「添加模型」或「拉取可用模型」';
+
+/**
  * 「engineId → 用哪个引擎 + 用哪份配置」的**唯一一处**解析。
  *
  * service worker、弹窗、设置页全走它。写第二份 if 的代价是现成的：某天加一种引擎，
@@ -370,22 +396,23 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
  *
  * 解析规则（`engineId` 只有两种取值形态）：
  * - 命中某个档案 → OpenAI 兼容引擎 + **那份**档案的 `{apiKey, baseUrl, model}`；
+ *   `activeModel` 是空串时**额外**给出 `problem`（{@link NO_MODEL_PROBLEM}）。空模型这
+ *   件事只有这里能说清：引擎是通用适配器，它不知道"档案""模型清单"这些词，只会说一句
+ *   用户照着找不到去哪儿的「尚未填写模型名」。
  * - 没命中 → `getEngine` 的既有语义（'google' 即免费引擎；未知 id 回落免费引擎）。
  *   档案被别处删掉后留下的失效 engineId 因此照常可用，只是安静地用免费接口——
  *   设置页删除当前档案时承诺过把 engineId 落到存在的目标，这里是最后一道防线。
  */
-export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>): {
-  engine: Translator;
-  config: EngineConfig;
-} {
+export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>): ResolvedEngine {
   const profile = settings.profiles.find((item) => item.id === settings.engineId);
   if (profile === undefined) return { engine: getEngine(settings.engineId), config: {} };
-  return {
-    engine: getEngine(OPENAI_COMPAT_ENGINE_ID),
-    // 送给引擎的仍然是 `EngineConfig.model`（引擎层不必知道"清单"这件事）；
-    // 它取的是**用户选定的那一个**。空串时引擎自己会在发请求前抛出可行动的 AUTH。
-    config: { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.activeModel },
-  };
+  const engine = getEngine(OPENAI_COMPAT_ENGINE_ID);
+  const config: EngineConfig = { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.activeModel };
+  // 判空口径与引擎实现**一致**：只有空白字符也算"没填"（`openai-compat` 取 `config.model` 时
+  // 先 `.trim()`）。写成 `activeModel.length === 0` 会漏过"只填了空格"这一格——档案被判成能用，
+  // 用户却在发请求时拿到引擎那句通用的「尚未填写模型名」，白跑一趟。
+  if (profile.activeModel.trim().length === 0) return { engine, config, problem: NO_MODEL_PROBLEM };
+  return { engine, config };
 }
 
 /** 版本号必须能原样读回，否则无从判断来源版本；非正整数一律按当前版本处理。 */
