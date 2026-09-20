@@ -22,7 +22,7 @@
 //    `.model-row` / `.profile-model-new`）是**契约**：`readEditor` / `validateProfileForm` /
 //    `applyProviderTemplate` / `readModels` / `renderModels` / `toggleKeyVisibility` 与
 //    `tests/options` 的 `fieldOf(editor, …)` 全都按这组名字找控件。改名要一起改（含测试），
-//    否则运行时才炸、且是在"保存档案"那一刻才炸。
+//    否则运行时才炸、且是在点「保存」那一刻才炸。
 // 3. 两个渲染函数的**数据来源不同，别混用**：`renderProfiles` 渲染的是**内存快照**
 //    （`ctx.settings()`，可能与存储已经不一致）；`renderFromStorage` 是"先 `ctx.reload()`
 //    重读存储、成功了再渲染"，并**返回是否真的刷新成功**。调用方只有在拿到 `true` 时才许宣称
@@ -148,7 +148,7 @@ interface HostPermissionResult {
 
 /**
  * 确认一个档案的端点已被授权。**必须在用户手势的调用栈里调用**：Chrome 只在手势中弹授权框，
- * 而「保存档案」「测试连接」都是用户点下来的。已经授权过的不再弹框（先问 `contains`）。
+ * 而「保存」「测试连接」都是用户点下来的。已经授权过的不再弹框（先问 `contains`）。
  */
 async function ensureHostPermission(baseUrl: string): Promise<HostPermissionResult> {
   const pattern = originPattern(baseUrl);
