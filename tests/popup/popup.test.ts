@@ -50,11 +50,14 @@ interface PopupUi {
   selectionToggle: HTMLInputElement;
   targetLang: HTMLSelectElement;
   engine: HTMLSelectElement;
+  /** 模型那一整行（`hidden` 是"这个档案只有 ≤ 1 个模型"的读数）；它自己也是判据之一。 */
+  modelField: HTMLLabelElement;
+  model: HTMLSelectElement;
   hint: HTMLParagraphElement;
   optionsButton: HTMLButtonElement;
 }
 
-/** `popup.html` 里的九个控件；按 id 取，取不到直接失败。 */
+/** `popup.html` 里的十一个控件；按 id 取，取不到直接失败。 */
 function ui(): PopupUi {
   const pick = <T extends HTMLElement>(id: string): T => {
     const found = document.getElementById(id);
@@ -69,6 +72,8 @@ function ui(): PopupUi {
     selectionToggle: pick<HTMLInputElement>('selection-translate'),
     targetLang: pick<HTMLSelectElement>('target-lang'),
     engine: pick<HTMLSelectElement>('engine'),
+    modelField: pick<HTMLLabelElement>('model-field'),
+    model: pick<HTMLSelectElement>('model'),
     hint: pick<HTMLParagraphElement>('engine-hint'),
     optionsButton: pick<HTMLButtonElement>('open-options'),
   };
@@ -86,6 +91,12 @@ async function seedSettings(patch: Record<string, unknown>): Promise<void> {
 async function storedSettings(): Promise<Record<string, unknown>> {
   const raw = await chromeStub.storage.local.get([SETTINGS_KEY]);
   return (raw[SETTINGS_KEY] ?? {}) as Record<string, unknown>;
+}
+
+/** 某个档案在存储里的 `activeModel`（直读存储：验证"真的落盘了"）。 */
+async function storedActiveModel(id: string): Promise<unknown> {
+  const profiles = ((await storedSettings()).profiles ?? []) as Array<Record<string, unknown>>;
+  return profiles.find((profile) => profile.id === id)?.activeModel;
 }
 
 /**
@@ -215,8 +226,10 @@ describe('popup.html 结构', () => {
     expect(script?.getAttribute('src')).toBe('./popup.ts');
     // 测试靠这些 id 取控件；HTML 里少一个，上面 `ui()` 就会失败——这里再钉一次更直白的原因。
     // 9 个控件（7 个原有 + 「悬停翻译」「划词翻译」两个快捷开关，规格 §7.1 第 5 项）
-    // + 站点规则提示行 `#site-rule-hint` 与它的「解除」按钮 `#site-rule-unblock`（Task 3）。
-    expect(parsed.querySelectorAll('[id]').length).toBe(11);
+    // + 站点规则提示行 `#site-rule-hint` 与它的「解除」按钮 `#site-rule-unblock`（Task 3）
+    // + 模型那一行 `#model-field` 与它的下拉 `#model`（Task C5，规格 §7：**只在**该档案有
+    //   2 个以上模型时可见——可见性归 `hidden` 管，这里只钉"两个 id 都在 HTML 里"）。
+    expect(parsed.querySelectorAll('[id]').length).toBe(13);
   });
 });
 
@@ -565,6 +578,29 @@ describe('引擎提示区（判据看的是 resolveEngine 解析出来的那一�
     await waitFor(() => hint.classList.contains('warn'));
     expect(hint.textContent).toBe('该引擎需要 API Key，请先在设置中填写。');
   });
+
+  it('当前档案还没选模型：提示区说出那句可读的话（不静默，也不冒充"缺 Key"）', async () => {
+    await seedSettings({
+      engineId: 'p-empty',
+      profiles: [
+        {
+          id: 'p-empty',
+          label: '空档案',
+          baseUrl: 'https://api.example.com/v1',
+          models: [],
+          activeModel: '',
+          apiKey: 'sk-a',
+        },
+      ],
+    });
+    await loadPopup();
+
+    const hint = ui().hint;
+    expect(hint.textContent).toContain('还没有模型');
+    expect(hint.classList.contains('warn')).toBe(true);
+    // 两件事的处置完全不同（这里该去加模型，不是去填 Key），所以不许串成一句。
+    expect(hint.textContent).not.toContain('需要 API Key');
+  });
 });
 
 describe('语言与引擎选择的持久化', () => {
@@ -641,6 +677,148 @@ describe('语言与引擎选择的持久化', () => {
     await waitFor(() => status.textContent.includes('重新翻译此页生效'));
     expect(status.textContent).toBe('目标语言已更新，重新翻译此页生效。');
     expect((await storedSettings()).targetLang).toBe('fr');
+  });
+});
+
+describe('模型下拉（规格 §7：只有 > 1 个模型时才出现）', () => {
+  /** 一份多模型档案；`models.length` 决定下拉出不出来。 */
+  const profile = (models: string[], activeModel: string) => ({
+    id: 'p-a',
+    label: 'A 家',
+    baseUrl: 'https://a.example/v1',
+    models,
+    activeModel,
+    apiKey: 'sk-a',
+  });
+
+  it('0 个模型：整行不显示（该说的是"去设置页加模型"，那不是下拉的事）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profile([], '')] });
+    await loadPopup();
+
+    const { modelField, model } = ui();
+    expect(modelField.hidden).toBe(true);
+    expect(model.options).toHaveLength(0);
+  });
+
+  it('1 个模型：也不显示（一个只有一项的下拉是噪声）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profile(['only'], 'only')] });
+    await loadPopup();
+
+    const { modelField, model } = ui();
+    expect(modelField.hidden).toBe(true);
+    expect(model.options).toHaveLength(0);
+  });
+
+  it('2 个模型：下拉出现，选项就是清单、选中 activeModel', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profile(['a1', 'a2'], 'a2')] });
+    await loadPopup();
+
+    const { modelField, model } = ui();
+    expect(modelField.hidden).toBe(false);
+    expect(Array.from(model.options).map((option) => [option.value, option.textContent])).toEqual([
+      ['a1', 'a1'],
+      ['a2', 'a2'],
+    ]);
+    expect(model.value).toBe('a2');
+  });
+
+  it('切档案：模型下拉换成那个档案的清单与它上次用的模型，**存储里的 activeModel 一个都不动**', async () => {
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [
+        profile(['a1', 'a2'], 'a2'),
+        { id: 'p-b', label: 'B 家', baseUrl: 'https://b.example/v1', models: ['b1', 'b2'], activeModel: 'b1', apiKey: 'sk-b' },
+      ],
+    });
+    await loadPopup();
+    const { engine, model, modelField } = ui();
+    expect(model.value).toBe('a2');
+
+    engine.value = 'p-b';
+    engine.dispatchEvent(new Event('change'));
+    await waitFor(() => model.value === 'b1');
+    expect(modelField.hidden).toBe(false);
+
+    // 切回 A 家：还是它上次用的 a2（"记住上次用的模型"就是 activeModel 本身）。
+    engine.value = 'p-a';
+    engine.dispatchEvent(new Event('change'));
+    await waitFor(() => model.value === 'a2');
+
+    // 切换档案**不是**用户改模型：两个档案的 activeModel 都不该被动过。
+    expect(await storedActiveModel('p-a')).toBe('a2');
+    expect(await storedActiveModel('p-b')).toBe('b1');
+  });
+
+  it('换模型：只写那一个档案的 activeModel，其它档案与字段原样（存储里的 Key 一个都没丢）', async () => {
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [
+        profile(['a1', 'a2'], 'a1'),
+        { id: 'p-b', label: 'B 家', baseUrl: 'https://b.example/v1', models: ['b1', 'b2'], activeModel: 'b2', apiKey: 'sk-keep-b' },
+      ],
+      targetLang: 'ja',
+    });
+    await loadPopup();
+
+    const { model, status } = ui();
+    model.value = 'a2';
+    model.dispatchEvent(new Event('change'));
+    await waitFor(async () => (await storedActiveModel('p-a')) === 'a2');
+
+    expect(await storedActiveModel('p-b')).toBe('b2');
+    expect((await storedSettings()).targetLang).toBe('ja');
+    // 整份回写不许把别的档案的 Key 抹成空（弹窗手里拿的是完整设置）。
+    const profiles = (await storedSettings()).profiles as Array<Record<string, unknown>>;
+    expect(profiles.map((entry) => entry.apiKey)).toEqual(['sk-a', 'sk-keep-b']);
+    expect(status.textContent).toContain('重新翻译');
+  });
+
+  it('换模型后不自动重翻，并给"要重新翻译才生效"那句提示——页面没翻译时**也给**（§7 明确要求）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profile(['a1', 'a2'], 'a1')] });
+    respondWithState(() => pageState({ translated: false }));
+    await loadPopup();
+
+    const { model, status } = ui();
+    model.value = 'a2';
+    model.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('重新翻译'));
+    expect(status.textContent).toContain('Alt+T');
+    expect(status.textContent).toContain('a2');
+    expect(await storedActiveModel('p-a')).toBe('a2');
+    // 不自动重翻：一个 TOGGLE_PAGE 都不许发。
+    expect(sentTypes()).not.toContain(MSG.TOGGLE_PAGE);
+  });
+
+  it('页面已翻译时换模型：同样那句提示（与本文件其它下拉的"不打扰"口径不同，理由见 popup.ts 注释）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profile(['a1', 'a2'], 'a1')] });
+    respondWithState(() => pageState({ translated: true, total: 2, done: 2 }));
+    await loadPopup();
+
+    const { model, status } = ui();
+    expect(status.textContent).toBe('已翻译 2 / 2 段');
+
+    model.value = 'a2';
+    model.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('重新翻译'));
+    expect(sentTypes()).not.toContain(MSG.TOGGLE_PAGE);
+  });
+
+  it('换模型保存被拒：下拉拨回这个档案真正生效的模型，并说明原因', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profile(['a1', 'a2'], 'a1')] });
+    await loadPopup();
+
+    const { model, status } = ui();
+    // 真实可达：存储里的版本高于本代码时 saveSettings 明确拒绝（用户回退过版本）。
+    await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION + 1 } });
+
+    model.value = 'a2';
+    model.dispatchEvent(new Event('change'));
+
+    await waitFor(() => status.textContent.includes('设置未能保存'));
+    expect(model.value).toBe('a1');
+    expect(status.textContent).toContain('已跳过保存');
   });
 });
 

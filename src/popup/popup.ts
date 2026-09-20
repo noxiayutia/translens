@@ -29,6 +29,8 @@ const hoverCheckbox = document.getElementById('hover-translate') as HTMLInputEle
 const selectionCheckbox = document.getElementById('selection-translate') as HTMLInputElement;
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
+const modelField = document.getElementById('model-field') as HTMLLabelElement;
+const modelSelect = document.getElementById('model') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
 const optionsButton = document.getElementById('open-options') as HTMLButtonElement;
 
@@ -85,6 +87,7 @@ function applySettings(next: Settings): void {
     settings.targetLang,
   );
   fillSelect(engineSelect, engineOptions(settings), settings.engineId);
+  renderModelSelect();
   renderEngineHint();
 }
 
@@ -217,6 +220,57 @@ function setInFlight(value: boolean): void {
 }
 
 /**
+ * 模型下拉：**只在该档案的模型数 > 1 时渲染**（§7）。
+ * 0 项也不显示——那件事该由提示区说（`resolveEngine` 的 `problem`），不是一个空下拉：
+ * 一个只有一项的下拉是噪声，一个空的下拉是"点了没得选"的死控件。
+ */
+function renderModelSelect(): void {
+  const profile = settings.profiles.find((item) => item.id === settings.engineId);
+  const models = profile?.models ?? [];
+  modelField.hidden = models.length <= 1;
+  if (modelField.hidden) {
+    modelSelect.textContent = '';
+    return;
+  }
+  fillSelect(modelSelect, models.map((name) => ({ value: name, label: name })), profile?.activeModel ?? '');
+}
+
+/**
+ * 换模型：**只写设置，当场不重翻**（§7）。缓存 key 含 model，所以重翻不会命中旧模型的译文。
+ *
+ * 不用 `saveSettingsOrReport`：那个辅助的契约是"回滚三个下拉之一"（`field` 只收
+ * `targetLang` / `engineId` / `displayMode`），而这里回滚的是**下拉里那一项**（`activeModel`）。
+ * 与 `siteRuleUnblock` 当初拒绝硬套那个辅助是同一条理由（见 init 里那段注释）。
+ */
+function onModelChange(): void {
+  const previous = settings;
+  const chosen = modelSelect.value;
+  const next: Settings = {
+    ...settings,
+    profiles: settings.profiles.map((profile) =>
+      profile.id === previous.engineId ? { ...profile, activeModel: chosen } : profile,
+    ),
+  };
+  void (async () => {
+    try {
+      await saveSettings(next);
+    } catch (raw) {
+      // 保存被拒（存储版本高于本代码）：把下拉拨回这个档案**真正生效**的那个模型。
+      const active = previous.profiles.find((profile) => profile.id === previous.engineId)?.activeModel ?? '';
+      modelSelect.value = active;
+      statusText.textContent = errorText('设置未能保存', raw);
+      return;
+    }
+    settings = next;
+    renderEngineHint();
+    // §7 明确要求换完就给这句话——**不管当前页面翻没翻译**。与目标语言/显示模式那两处的
+    // "页面已翻译时才说"不同：那两处改的是已经译好的页面怎么显示（没译文时没什么可说），
+    // 这里改的是"下一次请求用哪个模型"，页面没翻译时这句话同样是用户要知道的。
+    statusText.textContent = `当前模型已切换为「${chosen}」。换模型后需重新翻译（Alt+T）才会用新模型。`;
+  })();
+}
+
+/**
  * 提示区。判据全部走 `resolveEngine` 解析出来的那一份配置——档案列表时代 "Key 填没填"
  * 不再是单字段问题，看的是**当前选中的那个档案**的 Key。
  *
@@ -229,12 +283,19 @@ let hintRevision = 0;
 
 function renderEngineHint(): void {
   const revision = (hintRevision += 1);
-  const { engine, config } = resolveEngine(settings);
+  const { engine, config, problem } = resolveEngine(settings);
   // 判空口径与引擎实现一致：只有空白字符也算**没填**（见 openai-compat 的构造）。
   const missingKey = engine.needsKey && (config.apiKey ?? '').trim().length === 0;
   if (missingKey) {
     engineHint.classList.add('warn');
     engineHint.textContent = '该引擎需要 API Key，请先在设置中填写。';
+    return;
+  }
+  // 排在"缺 Key"之后：没有 Key 时"去加个模型"不是用户当下该做的事（先得有凭据才能翻译）。
+  // 这句话本身来自 `resolveEngine`（唯一来源），这里只负责显示。
+  if (problem !== undefined) {
+    engineHint.classList.add('warn');
+    engineHint.textContent = problem;
     return;
   }
   // 前瞻分支：现存两个引擎的 supportsGlossary 都是 true，今天恒不成立。留着是接口预留
@@ -483,6 +544,7 @@ function onEngineChange(): void {
   void saveSettingsOrReport(next, previous, engineSelect, 'engineId').then(() => {
     // 存储里没变就说明刚才拒绝过，提示区别再按没生效的引擎重算一遍。
     if (settings !== next) return;
+    renderModelSelect();
     renderEngineHint();
   });
 }
@@ -508,6 +570,7 @@ function init(): void {
     onFeatureToggleChange(selectionCheckbox, 'selectionTranslate', '划词翻译'),
   );
   engineSelect.addEventListener('change', onEngineChange);
+  modelSelect.addEventListener('change', onModelChange);
   optionsButton.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
   // 站点规则的「解除」：**必须**在这第一个 await 之前挂好（同上）。解除按钮只在命中

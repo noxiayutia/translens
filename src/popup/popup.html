@@ -80,6 +80,13 @@
         <select id="engine"></select>
       </label>
 
+      <!-- 模型下拉：<strong>只在该档案有 2 个以上模型时</strong>出现（规格 §7）。只有一个模型时不给下拉——
+           一个只有一项的下拉是噪声；一个模型都没有时该说的是"去设置页加模型"，走下面的提示区。 -->
+      <label class="field" id="model-field" hidden>
+        <span>模型</span>
+        <select id="model"></select>
+      </label>
+
       <p id="engine-hint" class="hint"></p>
     </div>
 
