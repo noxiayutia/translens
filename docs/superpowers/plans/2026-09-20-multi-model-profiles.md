@@ -87,7 +87,7 @@
 6. **手填 `+ 添加模型` 成功即设为当前；拉取并入只在清单原本为空时把并入的第一项设为当前。** 详规 §6.2 第 4 条（不这么定，"点『添加模型』"这句提示就解决不了 §3.3 那个错误）。
 7. **参考图那句虚线说明必须改写**，因为它的两句对我们都不成立（§6.2 第 4 条的引文）。新句子逐句为真，并由一条用例钉住（C4）。
 8. **两个折叠行元素是对参考图的偏离**：次级 meta 行（`接口地址 · 当前模型`）与可编辑的名字输入框。记账见「参考图 → DOM 映射」。
-9. **`resolveEngine` 加 `problem?: string`，不抛错。** 弹窗在同步渲染函数里调它，抛错会把整个提示区变成异常路径。零请求由**两处**保证：引擎自己的空 `model` 闸（`openai-compat.ts:67`，已存在、构造性成立）+ 后台的前置闸（C2 新增，负责给出规格指定的那句话）。为什么不把这句话塞进引擎：引擎是通用的 OpenAI 兼容适配器，它不知道"档案""模型清单"这些词。
+9. **`resolveEngine` 加 `problem?: string`，不抛错。** 弹窗在同步渲染函数里调它（**弹窗的** `renderEngineHint`，`src/popup/popup.ts:230`），抛错会把提示区变成异常路径。**零请求由引擎那道闸构造性保证**（`src/engines/openai-compat.ts:64-67` 在 `fetch` 之前抛 AUTH），后台的前置闸**不改变零请求、只改变失败粒度与文案**（整条 `{ok:false, code:'AUTH', message:problem}` ↔ 条目级 `{ok:true, results:[{code:'AUTH', message:'尚未填写模型名…'}]}`）。这句话的唯一来源是 `resolveEngine` 的 `problem`，接线三处：C3（后台前置闸）、C4（设置页测试连接）、C5（弹窗提示区）——**C2 只定义、不接线**。
 10. **`/models` 超时用独立常量 `MODELS_TIMEOUT_MS = 10_000`**，放 `src/background/models.ts`；**不复用** `src/content/index.ts:86` 的 `BACKGROUND_TIMEOUT_MS`（那是 60 秒的整页翻译预算，语义完全不同）。
 11. **"零自动拉取"的成对断言只能落在 C4**，因为那里才有「获取可用模型」这个**正极**。C3 阶段不写这条：那时没有任何调用方，负向断言会因为"分支根本没执行"而永远绿（本仓总结的七种假信号成因②）。C3 只做后台侧与消息形状。
 12. **换模型后的提示总是显示**（不管当前页面翻没翻译）。规格 §7 明确要求换完就给那句话；本文件其它下拉（目标语言、显示模式）用的是"页面已翻译时才说"，那是它们的口径（改动只在**下一次**翻译生效、页面没翻译时没什么可说的）。这里照 §7 走，并在注释里写明为什么与邻居不同。
@@ -139,6 +139,11 @@
     `if (isDomNode(a) && isDomNode(b)) return a.isEqualNode(b);`（判据函数 `isDomNode` 在同文件 `:1356`，只看 `nodeType` / `nodeName` / `isEqualNode` 在不在）。
     ⚠ 那个 chunk 文件名里的哈希是**装出来的**（版本一变就换名），所以引用时用**符号**（`isDomNode` / `isEqualNode`）定位，别只记路径。DOM 节点是**宿主对象**、没有可枚举的自有属性（`Object.keys(node)` 是 `[]`），所以结构比较**完全**由上面那个 DOM 分支实现；`toStrictEqual` 走同一条分支，一样失效（全仓 `tests/` 今天一处都没用它）。反过来也一样——要断言"结构/内容一样"就用 `toEqual`，别用 `toBe`。
 14. **对未跟踪的新文件，路径限定 commit 必须先把路径 `git add` 一遍**：`git commit -m … -- <新文件>` 会报 `error: pathspec '<新文件>' did not match any file(s) known to git`（git 只认它已知的路径）。正确形态：**先 `git add -- <显式路径>`，再跑同一条路径限定 commit**。仍然**不许**整树 `git add -A` / `git add .`。C0 / C3 / C4 三个 Task 各新建了测试文件或源码文件，它们的提交步骤都已经按这条写好了。
+15. **引用函数名一律带文件路径——本仓至少有三对同名函数。** 只写函数名会让执行者改错地方（本单元真发生过一次：C2 的"`renderEngineHint` 开头"到底指哪一个）。三对是：
+    - `renderEngineHint`：**设置页** `src/options/sections/engine.ts:422`（区块顶部说明行）/ **弹窗** `src/popup/popup.ts:230`（提示区）；
+    - `runSafely`：`src/options/dom.ts:62` / `src/popup/popup.ts:270`；
+    - `fillSelect`：`src/options/dom.ts:37` / `src/popup/popup.ts:46`。
+    写法示例："**弹窗的** `renderEngineHint`（`src/popup/popup.ts:230`）"。片段块的首行标记本来就带路径，但**正文里**提到时也要带——正文才是执行者读的那一层。
 
 ### 附：DOM 身份断言盲区的清理账（`e9f7dd5`，写在这里防止后人夸大）
 
@@ -161,8 +166,8 @@
 | `src/shared/settings.ts` | 修改（C1/C2） | v4 数据模型、迁移、`pickProfile` 容错、`resolveEngine` 的 `problem` |
 | `src/shared/messages.ts` | 修改（C3） | `MSG.FETCH_MODELS` + 请求/响应类型 + 运行时校验器 |
 | `src/background/models.ts` | **新建**（C3） | `/models` 拉取：URL、鉴权、10 秒超时、三种形状的宽容解析、失败分类 |
-| `src/background/service-worker.ts` | 修改（C2/C3） | 前置闸（无当前模型 → 零请求 + 可读错误）；第二条消息路由 |
-| `src/popup/popup.ts` | 修改（C2/C5） | 提示区认 `problem`；模型下拉（仅 > 1 项）+ 换模型写 `activeModel` + 那句提示 |
+| `src/background/service-worker.ts` | 修改（**C3**） | 前置闸（无当前模型 → 整条可读错误；**零请求由引擎那道闸保证**）+ 第二条消息路由。⚠ 原写"C2/C3"，落地校正：**前置闸的接线归 C3**（C2 只碰 `src/shared/settings.ts`） |
+| `src/popup/popup.ts` | 修改（**C5**） | 提示区认 `problem`；模型下拉（仅 > 1 项）+ 换模型写 `activeModel` + 那句提示。⚠ 原写"C2/C5"，落地校正：**提示区的接线归 C5** |
 | `src/popup/popup.html` | 修改（C5） | `#model-field` + `#model`（默认 `hidden`） |
 | `src/popup/popup.css` | 修改（C5） | `.field[hidden] { display: none }`（`.field` 是 flex，会盖掉 UA 的 `[hidden]`——与已有的 `.hint[hidden]` 同一条道理） |
 | `tests/options/harness.ts` | 修改（C1/C4） | `profileSeed` 换 v4 形状；新增 `setModel` / `currentModel` / `rowButton` |
@@ -170,9 +175,9 @@
 | `tests/options/engine-models.test.ts` | **新建**（C4） | 折叠行结构、编辑面板、模型目录、取消、零自动拉取、拉取结果勾选 |
 | `tests/shared/settings.test.ts` | 修改（C1/C2） | v4 迁移、`pickModels`/`activeModel` 边界、`resolveEngine` 的 `problem` |
 | `tests/background/models.test.ts` | **新建**（C3） | 三种形状、失败分类、超时、URL/鉴权 |
-| `tests/background/service-worker.test.ts` | 修改（C2/C3） | 前置闸的零请求（成对）、拉取的隐私断言（成对）、既有档案字面量迁移 |
+| `tests/background/service-worker.test.ts` | 修改（**C3**） | 前置闸的零请求（成对，从 C2 挪来）、§4 的端到端换模型（从 C2 挪来）、拉取的隐私断言（成对）、既有档案字面量迁移 |
 | `tests/shared/messages.test.ts` | 修改（C3） | `isFetchModelsMessage` 的正反用例 |
-| `tests/popup/popup.test.ts` | 修改（C2/C5） | 提示区认 `problem`；模型下拉三态、切档案记住、换模型的提示与回滚；既有档案字面量迁移 |
+| `tests/popup/popup.test.ts` | 修改（**C5**） | 提示区认 `problem`（从 C2 挪来）；模型下拉三态、切档案记住、换模型的提示与回滚；既有档案字面量迁移 |
 | `tests/options/options.test.ts` | 修改（C1/C4） | 既有契约迁移（全部只增不减） |
 | `tests/options/engine-health.test.ts` | 修改（C4） | 2 处迁移（`setModel` / 行上的删除按钮） |
 | `README.md` | 修改（C6） | 功能范围 + 已知限制 + 全量读数 |
@@ -187,8 +192,8 @@
 | --- | --- | --- | --- |
 | C0 | 展开就地更新（修用户报的"点一下很慢"） | — | `sections/engine.ts` 的 `applyExpansion` / `insertDraftRow`、`engine-expansion.test.ts` |
 | C1 | 数据模型 v4（`models` + `activeModel`）+ 迁移 + 容错 + 过渡映射 | C0 | `shared/settings.ts`、`sections/engine.ts`（映射）、`harness.ts`、既有夹具迁移 |
-| C2 | `activeModel === ''` → 可读错误 + 零请求；`configHash` 前提 | C1 | `shared/settings.ts` 的 `problem`、`service-worker.ts` 前置闸、`popup.ts` 提示 |
-| C3 | `/models` 后台拉取（消息 + 容忍解析 + 失败分类 + 隐私） | C1 | `shared/messages.ts`、`background/models.ts`、`service-worker.ts` 路由 |
+| C2 | `problem` 的**定义 + 单元证明**（接线在 C3/C4/C5） | C1 | `shared/settings.ts` 的 `ResolvedEngine` / `NO_MODEL_PROBLEM` / `problem`（**落地校正：只碰 `settings.ts` + 它的测试**；接线三处见 C3 Step 5d / C4 Step 3l / C5 Step 5f） |
+| C3 | `/models` 后台拉取（消息 + 容忍解析 + 失败分类 + 隐私）**+ 后台前置闸的接线** | C1、C2 | `shared/messages.ts`、`background/models.ts`、`service-worker.ts` 路由 + 前置闸、两条从 C2 挪来的 service-worker 用例 |
 | C4 | 设置页档案行 / 编辑面板重排 + 模型目录 + 取消 + 零自动拉取 | C1、C2、C3 | `sections/engine.ts` 大改、`options.html` / `options.css`、`engine-models.test.ts` |
 | C5 | 弹窗模型下拉 + 记住上次用的模型 + 换模型提示 | C1、C2 | `popup.ts` / `popup.html` / `popup.css` |
 | C6 | README 已知限制与收口（全量命令 + 读数） | C0–C5 | `README.md`、全量读数 |
@@ -1082,19 +1087,32 @@ Expected: exit 0。`EngineProfile` 的字段改名会让所有还在写 `model:`
 git commit -m "feat(settings): 档案支持多个模型（CURRENT_VERSION 3→4，model → models + activeModel）" -- src/shared/settings.ts src/options/sections/engine.ts tests/options/harness.ts tests/shared/settings.test.ts tests/options/options.test.ts tests/options/engine-health.test.ts tests/popup/popup.test.ts tests/background/service-worker.test.ts
 ```
 
-## Task C2: `activeModel === ''` → 可读错误 + 零请求；`configHash` 前提
+## Task C2: `problem` 的定义与单元证明（**接线在 C3 / C4 / C5**）
 
-**Files:**
-- Modify: `src/shared/settings.ts`（`resolveEngine` 加 `problem`）
-- Modify: `src/background/service-worker.ts`（发请求前的前置闸）
-- Modify: `src/popup/popup.ts`（提示区认 `problem`）
-- Modify: `tests/shared/settings.test.ts`、`tests/background/service-worker.test.ts`、`tests/popup/popup.test.ts`
+**Files（**落地校正**：本 Task 只碰这两个——见下面的"零消费者"说明）：**
+- Modify: `src/shared/settings.ts`（`ResolvedEngine` + `NO_MODEL_PROBLEM` + `resolveEngine` 返回 `problem`）
+- Modify: `tests/shared/settings.test.ts`（单元证明）
+- ~~`src/background/service-worker.ts`~~ → **接线挪到 C3**（那里本来就要动这个文件）
+- ~~`src/popup/popup.ts`~~ → **接线挪到 C5**（弹窗提示区归它）
+- ~~`tests/background/service-worker.test.ts` / `tests/popup/popup.test.ts`~~ → 随接线一起挪到 C3 / C5
 
-> **零请求是构造性的，可读错误是新增的**。`openai-compat.ts` 的 `translate()` 在 `fetch` **之前**就有 `if (!model) throw new EngineError('AUTH', '尚未填写模型名，请在设置中配置')`——所以"带着空 model 打接口"这条路今天就走不通。规格 §3.3 要的是一个**指定的、可行动的**说法（告诉用户去点「添加模型」），而不是引擎那句通用的「尚未填写模型名」。
+> **零请求是构造性的，"可读错误"才是新增的**。`src/engines/openai-compat.ts:64-67` 的 `translate()` 在 `fetch` **之前**就有 `if (!model) throw new EngineError('AUTH', '尚未填写模型名，请在设置中配置')`——所以"带着空 model 打接口"这条路今天**在引擎层就走不通**，**零请求由它一道闸构造性保证**。规格 §3.3 要的是一个**指定的、可行动的**说法（告诉用户去点「添加模型」），而不是引擎那句通用的「尚未填写模型名」。
 >
-> **为什么不把这句写进引擎**：引擎是通用的 OpenAI 兼容适配器，它不知道"档案""模型清单"这些词。这句话的唯一来源是 `resolveEngine` 的 `problem`，消费者只有两个：service worker（发请求前拦下）与弹窗（提示区）。
+> ⚠ **后台前置闸（C3）不改变"零请求"，它改变的是失败粒度与文案**：没有它时是**条目级**失败（`{ ok: true, results: [{ code: 'AUTH', message: '尚未填写模型名，请在设置中配置' }] }`，一个请求都不发），有了它是**整条请求失败**（`{ ok: false, code: 'AUTH', message: problem }`）。别把"零请求"记在它头上——少了它也不会多发一次请求（这一点由 C3 的变异表正面钉住）。
 >
-> **§4 的前提已经成立**（`scheduler.ts:188-190` 的 `configHash` 里已经含 `model`），但端到端那一半要补：`tests/background/service-worker.test.ts:187` 那条「两个档案同 baseUrl 同 model → 命中同一份缓存；换 model 不串」是**单元级**的网，C2 补一条"同一个档案换 `activeModel`"的**端到端**读数。
+> **为什么不把这句写进引擎**：引擎是通用的 OpenAI 兼容适配器，它不知道"档案""模型清单"这些词。这句话的唯一来源是 `resolveEngine` 的 `problem`。
+>
+> ### ⚠ 落地状态：`problem` 目前是**有意的零消费者公共表面**（`18a0e87`）
+>
+> C2 的指令当时明令不许碰 `src/background/**` 与 `src/popup/**`（避并发冲突），所以落地提交只改了 `src/shared/settings.ts` + `tests/shared/settings.test.ts`：**`service-worker.ts:93` 与 `popup.ts:232` 仍是 `const { engine, config } = resolveEngine(...)`**——`problem` 今天**没有任何渲染方**。本仓明令禁止"零消费者公共表面"，所以这里把它的**归属、接线代码与读数逐处写死**，并规定**过渡窗口纪律**：C2 落地后到 C3/C5 接线完成前，**不许把本分支合进 release**（与 C1 的过渡映射同一条纪律）。
+>
+> | 接线处 | 归属 | 接线代码 | 读数（用例） |
+> | --- | --- | --- | --- |
+> | 后台前置闸：整条 `{ ok: false, code: 'AUTH', message: problem }` | **C3** Step 5d | C3 Step 5d 的片段 | C3 Step 1d 的「档案没有当前模型：可读错误 + 一个请求都不发（成对）」 |
+> | 弹窗提示区：`renderEngineHint`（`src/popup/popup.ts:230`）里追问一句 | **C5** Step 5f | C5 Step 5f 的片段 | C5 Step 1b 的「当前档案还没选模型：提示区说出那句可读的话」 |
+> | 设置页「测试连接」的本地闸：`handleTestProfile` 里 `if (problem !== undefined) { setStatus(err, problem); return; }` | **C4** Step 3l | C4 Step 3l 的片段（**已含**） | C4 Step 1 的「测试连接：没有当前模型时零请求」 |
+>
+> **§4 的前提**：`src/background/scheduler.ts:188-190` 的 `configHash` 里**已经含 `model`**（只读核过，本单元不改这个文件）——所以换模型天然不会命中上一个模型的译文。**今天存在的网只有单元级那一张**：`tests/background/scheduler.test.ts:290`「换模型后同一段文本不会命中旧模型的缓存」（它用的是 `engineConfig.model`）。**端到端那一张今天不存在**，它在 **C3 Step 1d** 补（`tests/background/service-worker.test.ts` 那条"同一个档案换 `activeModel`"）——因为只有 C3 才动 `src/background/**`。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1115,121 +1133,18 @@ git commit -m "feat(settings): 档案支持多个模型（CURRENT_VERSION 3→4�
   });
 ```
 
-**1b. `tests/background/service-worker.test.ts`**：追加两条（第一条是 §3.3 的端到端，第二条是 §4 的前提）。
-
-```ts
-// tests/background/service-worker.test.ts（片段：追加进 runtime.onMessage 消息路由 的 describe）
-  it('档案没有当前模型：可读错误 + 一个请求都不发（成对：把 activeModel 填上就真的发）', async () => {
-    const calls: Array<{ model: string }> = [];
-    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ model: (JSON.parse(String(init?.body)) as { model: string }).model });
-      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-    stub.permissions.grantedOrigins.add('https://api.example.com/*');
-    const noModel = {
-      id: 'p-a',
-      label: 'A 家',
-      baseUrl: 'https://api.example.com/v1',
-      models: ['m-1'],
-      activeModel: '',
-      apiKey: 'sk-a',
-    };
-    await useSettings({ engineId: 'p-a', profiles: [noModel] });
-
-    await expect(translateTexts({ items: [{ id: 'i1', text: 'Hello' }] }).response()).resolves.toEqual({
-      ok: false,
-      code: 'AUTH',
-      message: '这个档案还没有模型，点「添加模型」或「拉取可用模型」',
-    });
-    // 零请求的读数有两半，缺一条都会被"走到别的分支去了"骗过去：
-    // ① 一次 fetch 都没有；② 两层缓存里也没留下任何条目。
-    expect(calls).toEqual([]);
-    expect(cacheEntries('local')).toHaveLength(0);
-    expect(cacheEntries('session')).toHaveLength(0);
-
-    // 成对的另一半：同一份设置，只把 activeModel 填上，就该真的发一次请求并成功。
-    // 没有这一半，上面那条在"整条链路都坏了 / 永远返回 AUTH"的实现下照样是绿的。
-    await useSettings({ engineId: 'p-a', profiles: [{ ...noModel, activeModel: 'm-1' }] });
-    await expect(translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response()).resolves.toEqual({
-      ok: true,
-      results: [{ id: 'i2', text: '你好' }],
-    });
-    expect(calls).toEqual([{ model: 'm-1' }]);
-  });
-
-  it('同一个档案换 activeModel：不命中上一个模型的缓存（§4 的前提，端到端钉住）', async () => {
-    // `scheduler.test.ts` 已有一条单元级的网（`engineConfig.model` 变 → key 变）；这一条补的是
-    // **链路上游**：`resolveEngine` 到底把 `activeModel` 映射进了 `config.model`。
-    // 少了它，"映射写错字段（比如取 models[0]）"只会在真机上表现为"换模型没生效"。
-    const bodies: Array<{ model: string; messages: unknown }> = [];
-    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)) as { model: string; messages: unknown });
-      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-    stub.permissions.grantedOrigins.add('https://api.example.com/*');
-    const both = {
-      id: 'p-a',
-      label: 'A 家',
-      baseUrl: 'https://api.example.com/v1',
-      models: ['m-1', 'm-2'],
-      activeModel: 'm-1',
-      apiKey: 'sk-a',
-    };
-
-    await useSettings({ engineId: 'p-a', profiles: [both] });
-    await translateTexts({ items: [{ id: 'i1', text: 'Hello' }] }).response();
-    expect(bodies).toHaveLength(1);
-
-    // 同一个档案、同一段文本、只把 activeModel 换成 m-2：必须再请求一次（缓存不许串味）。
-    await useSettings({ engineId: 'p-a', profiles: [{ ...both, activeModel: 'm-2' }] });
-    await translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response();
-
-    expect(bodies.map((body) => body.model)).toEqual(['m-1', 'm-2']);
-  });
-```
-
-**1c. `tests/popup/popup.test.ts`**：追加一条（放在「引擎提示区」那条 describe 里）。
-
-```ts
-// tests/popup/popup.test.ts（片段：追加进 describe('引擎提示区…')）
-  it('当前档案还没选模型：提示区说出那句可读的话（不静默，也不冒充"缺 Key"）', async () => {
-    await seedSettings({
-      engineId: 'p-empty',
-      profiles: [
-        {
-          id: 'p-empty',
-          label: '空档案',
-          baseUrl: 'https://api.example.com/v1',
-          models: [],
-          activeModel: '',
-          apiKey: 'sk-a',
-        },
-      ],
-    });
-    await loadPopup();
-
-    const hint = ui().hint;
-    expect(hint.textContent).toContain('还没有模型');
-    expect(hint.classList.contains('warn')).toBe(true);
-    // 两件事的处置完全不同（这里该去加模型，不是去填 Key），所以不许串成一句。
-    expect(hint.textContent).not.toContain('需要 API Key');
-  });
-```
+> **1b / 1c 原本在这里，已按落地校正挪走**（这一节只保留归属说明，代码不重复留两份）：
+> - 「后台前置闸的成对零请求」+「§4 的端到端换模型」两条用例 → **C3 Step 1d**。
+> - 「弹窗提示区说出那句话」一条用例 → **C5 Step 1b**。
+>
+> 挪走的理由就是本节开头那张落地状态表：C2 只许碰 `src/shared/settings.ts`，而 `src/background/**` 与 `src/popup/**` 分别归 C3 / C5。**代码块和读数都跟着归属走**（本计划的任务之间不许互相引用，所以那两处给的是完整代码，不是"见 C2"）。
 
 - [ ] **Step 2: 跑到红**
 
-Run: `npx vitest run tests/shared/settings.test.ts tests/background/service-worker.test.ts tests/popup/popup.test.ts`
+Run: `npx vitest run tests/shared/settings.test.ts`
 
-Expected:
-- `settings.test.ts` 新条红：`problem` 是 `undefined`（`expected undefined to be '这个档案还没有模型…'`）。
-- `service-worker.test.ts` 第一条红：收到的是**条目级**的 `{ ok: true, results: [{ code: 'AUTH', message: '尚未填写模型名，请在设置中配置' }] }`，而不是整条失败的 `{ ok: false, code: 'AUTH', … }`。第二条**已经绿**（`configHash` 本来就含 model——它是**前提**，不是回归）。
-- `popup.test.ts` 新条红：提示区是「已配置你自己的 API Key.」那句（缺 Key 判据不成立，而 `problem` 还不存在）。
+Expected: **只有 `settings.test.ts` 那一条红**：`problem` 是 `undefined`（`expected undefined to be '这个档案还没有模型…'`）。
+（`service-worker.test.ts` / `popup.test.ts` 此刻**没有**新用例——它们跟着接线挪到 C3 Step 1d / C5 Step 1b 了。）
 
 - [ ] **Step 3: 实现**
 
@@ -1243,12 +1158,15 @@ export interface ResolvedEngine {
   /**
    * 这个档案**今天不能用来翻译**时的一句可读原因；能用时为 `undefined`。
    *
-   * 为什么是返回值而不是抛错：弹窗在**同步渲染函数**里调它（`renderEngineHint`），抛错会把
-   * 提示区变成异常路径。消费者只有两个：service worker（发请求前拦下）与弹窗（提示区）。
+   * 为什么是返回值而不是抛错：弹窗在**同步渲染函数**里调它（弹窗的 `renderEngineHint`，
+   * `src/popup/popup.ts:230`），抛错会把提示区变成异常路径。
+   * 接线有三处（本 Task **只定义、不接线**，见开头的落地状态表）：C3 的后台前置闸、
+   * C4 的设置页「测试连接」本地闸、C5 的弹窗提示区。
    *
-   * **零请求不由这里保证**：`openai-compat` 的空 model 闸在 `fetch` 之前就已经拦住了
-   * （构造性成立）。这里负责给出规格 §3.3 那句**可行动**的话——引擎给不出它，因为引擎是
-   * 通用的 OpenAI 兼容适配器，它不知道"档案""模型清单"这些词。
+   * **零请求不由这里保证，也不由后台那道闸保证**：`src/engines/openai-compat.ts:64-67` 的
+   * 空 model 闸在 `fetch` **之前**就拦住了（构造性成立）。这里负责给出规格 §3.3 那句
+   * **可行动**的话——引擎给不出它，因为引擎是通用的 OpenAI 兼容适配器，它不知道"档案"
+   * "模型清单"这些词。
    */
   problem?: string;
 }
@@ -1265,72 +1183,44 @@ export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>)
   if (profile === undefined) return { engine: getEngine(settings.engineId), config: {} };
   const engine = getEngine(OPENAI_COMPAT_ENGINE_ID);
   const config: EngineConfig = { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.activeModel };
-  if (profile.activeModel.length === 0) return { engine, config, problem: NO_MODEL_PROBLEM };
+  // **判空口径必须带 `.trim()`**（落地校正）：与引擎实现（`openai-compat.ts:64-67` 的
+  // `(config.model ?? '').trim()`）以及弹窗那句"只有空白字符也算没填"**同一口径**。
+  // 计划早先写的是 `profile.activeModel.length === 0`——那是**同一份计划的两半互相不满足**
+  // （popup 片段说"与引擎口径一致"，这里却更松），已按落地改成 trim 版，并记进复盘。
+  if (profile.activeModel.trim().length === 0) return { engine, config, problem: NO_MODEL_PROBLEM };
   return { engine, config };
 }
 ```
 
-**3b. `src/background/service-worker.ts`：前置闸**（改动处，前后各引一行上下文）。
-
-```ts
-// src/background/service-worker.ts（片段：handleTranslateTexts 开头）
-    const settings = await loadSettings(persistentArea);
-    // 「用哪个引擎 + 用哪份配置」只有一处解析（shared/settings 的 resolveEngine）：
-    // engineId 现在是 `google` 或某个档案的 id，别处各写一份 if 迟早和这里漂移。
-    const { engine, config, problem } = resolveEngine(settings);
-    // 档案没有当前模型：**在这里就返回**，一个请求都不发（§3.3）。规格要的是一句可行动的话，
-    // 而不是带着空 model 去打接口换回一句 HTTP 400（上次 `deepseek` 那次事故的形状）。
-    // 整条请求失败（不是条目级失败）：这件事对这批里的每一条都成立，没有"逐条重试"的意义。
-    if (problem !== undefined) return { ok: false, code: 'AUTH', message: problem };
-    const targetLang = payload.targetLang ?? settings.targetLang;
-```
-
-**3c. `src/popup/popup.ts`：提示区认 `problem`**（改动处，插在 `missingKey` 那一段之后）。
-
-```ts
-// src/popup/popup.ts（片段：renderEngineHint 开头）
-function renderEngineHint(): void {
-  const revision = (hintRevision += 1);
-  const { engine, config, problem } = resolveEngine(settings);
-  // 判空口径与引擎实现一致：只有空白字符也算**没填**（见 openai-compat 的构造）。
-  const missingKey = engine.needsKey && (config.apiKey ?? '').trim().length === 0;
-  if (missingKey) {
-    engineHint.classList.add('warn');
-    engineHint.textContent = '该引擎需要 API Key，请先在设置中填写。';
-    return;
-  }
-  // 排在"缺 Key"之后：没有 Key 时"去加个模型"不是用户当下该做的事（先得有凭据才能翻译）。
-  // 这句话本身来自 `resolveEngine`（唯一来源），这里只负责显示。
-  if (problem !== undefined) {
-    engineHint.classList.add('warn');
-    engineHint.textContent = problem;
-    return;
-  }
-```
+**3b / 3c 原本在这里，已按落地校正挪走**（本 Task **只定义**，接线跟着归属走）：
+- 后台前置闸 → **C3 Step 5d**（含它的成对零请求用例 = C3 Step 1d）。
+- 弹窗提示区（**弹窗的** `renderEngineHint`，`src/popup/popup.ts:230`）→ **C5 Step 5f**（含用例 = C5 Step 1b）。
 
 - [ ] **Step 4: 跑到绿**
 
-Run: `npx vitest run tests/shared/settings.test.ts tests/background/service-worker.test.ts tests/popup/popup.test.ts tests/options`
+Run: `npx vitest run tests/shared/settings.test.ts`
 
-Expected: 全绿。`options.test.ts` 里「测试连接」的三条既有用例**必须一条都不红**——C2 只给 `resolveEngine` 加了一个返回值，`handleTestProfile` 拿到的 `config` 形状没变。
+Expected: 全绿。再跑一次 `npx vitest run tests/options tests/popup tests/background` 确认**没有任何既有用例红**——`resolveEngine` 只多了一个可选返回值 + 判空更严（`.trim()`），`config` 的形状没变。
 
 - [ ] **Step 5: 变异验证**
 
-| 变异 | 期望红在哪一条 |
+> 本表的**全部**读数都落在 `tests/shared/settings.test.ts`（C2 只碰这一个测试文件）；后台/弹窗那几行的读数跟着接线去了 C3 / C5 的变异表。
+
+| 变异 | 期望红在哪一条（落地校正过） |
 | --- | --- |
-| 删掉 `if (problem !== undefined) return {…}` 那行（前置闸） | 「档案没有当前模型：可读错误 + 一个请求都不发」——响应退回条目级 `ok: true` + 「尚未填写模型名」 |
-| 把 `code: 'AUTH'` 改成 `'BAD_REQUEST'` | 同一条（`code` 是精确相等断言） |
-| `resolveEngine` 里 `problem` 恒为 `undefined`（删掉那一支） | `settings.test.ts` 那条 + service-worker 那条 + popup 那条三处一起红 |
-| `resolveEngine` 里无条件返回 `problem`（恒真式） | 「成对的两半」两句红（有模型 / 免费引擎也开始背这句话） |
-| 把 `problem` 分支挪到 `missingKey` **之前** | popup 那条「切到**未授权**的档案…」不受影响，但既有「需要 API Key 但没填时给出警告」那条**不**红——**说明两处判据互不覆盖**：要真正杀死"顺序错"，得造一份"既缺 Key 又缺模型"的设置（本条变异**不设**：规格没规定这时该说哪一句，两种顺序都说得通。写在这里是为了让后来者知道"查过、且这是有意的"） |
-| `config.model` 改成 `profile.models[0] ?? ''` | 「同一个档案换 activeModel：不命中上一个模型的缓存」——`bodies` 两半都是 `m-1` |
-| `configHash` 里去掉 `model`（`scheduler.ts:189`） | 「同一个档案换 activeModel…」红（第二次命中缓存、`bodies` 只有一条）。**这条是 §4 的守卫本身**，它今天活着，但值得每次收口都确认它还在 |
+| `resolveEngine` 里 `problem` 恒为 `undefined`（删掉那一支） | 「档案没有当前模型：给出规格 §3.3 那句可读原因」那条红 |
+| `resolveEngine` 里无条件返回 `problem`（恒真式） | 同一条的"成对两半"那两句红（有模型 / 免费引擎也开始背这句话） |
+| `.trim()` 去掉（退回 `profile.activeModel.length === 0`） | 「只填空格的合成档案」那条红（`activeModel: '   '`）。**注意它的可达路径**：存储边界上 `pickModels` 已经 trim 过、空白项根本进不来，所以这条读数的输入是**直接交给 `resolveEngine` 的合成档案**（设置页「测试连接」就是这么拼的：`handleTestProfile` 用面板里的值拼一个临时档案） |
+| `config.model` 改成 `profile.models[0] ?? ''` | **实测红 2 条**：① 既有那条「config.model 取的是 activeModel」（`expected 'a' to be 'b'`）② **C3 的**「档案没有当前模型：可读错误 + 一个请求都不发」（`models: ['m-1'], activeModel: ''` 时 `models[0]` 让 `problem` 消失 ⇒ 闸不触发）。**它在 `resolveEngine` 这一层就被杀掉了，走不到 `scheduler`/缓存那一层**——计划原来把落点写成「同一个档案换 activeModel：不命中上一个模型的缓存」是错的：那条只有在**端到端那条用例存在时**才成立，而它今天不存在（归 C3 Step 1d） |
+| `configHash` 里去掉 `model`（`scheduler.ts:189`） | **今天唯一存在的网是单元级那条**：`tests/background/scheduler.test.ts:290`「换模型后同一段文本不会命中旧模型的缓存」。**端到端读数（同一档案换 `activeModel`）由 C3 Step 1d 补**——在那条落地之前，这条变异的读数只有单元级那一张网，别写成"已经端到端钉住" |
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git commit -m "feat(engine): 没有当前模型时给出可读错误并零请求（§3.3）" -- src/shared/settings.ts src/background/service-worker.ts src/popup/popup.ts tests/shared/settings.test.ts tests/background/service-worker.test.ts tests/popup/popup.test.ts
+git commit -m "feat(engine): resolveEngine 在档案没有当前模型时返回一句可读原因（§3.3，接线见 C3/C5）" -- src/shared/settings.ts tests/shared/settings.test.ts
 ```
+
+> **落地校正**：本 Task 落地为 `18a0e87`，只改了 `src/shared/settings.ts` + `tests/shared/settings.test.ts` ✓（与上面这条命令一致）。**`problem` 此刻仍是零消费者**——接线在 C3 Step 5d / C4 Step 3l / C5 Step 5f，各自的用例在 C3 Step 1d / C4 Step 1 / C5 Step 1b。**过渡窗口内不许合进 release**。
 
 ---
 
@@ -1658,6 +1548,89 @@ describe('isFetchModelsMessage', () => {
   });
 ```
 
+**1d. `tests/background/service-worker.test.ts`**：追加两条**从 Task C2 挪过来的**用例（C2 只许碰 `src/shared/settings.ts`，所以归这里）。第一条是 §3.3 的端到端 + 后台前置闸，第二条是 §4 的前提（端到端）。
+
+```ts
+// tests/background/service-worker.test.ts（片段：追加进 runtime.onMessage 消息路由 的 describe）
+  it('档案没有当前模型：可读错误 + 一个请求都不发（成对：把 activeModel 填上就真的发）', async () => {
+    const calls: Array<{ model: string }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ model: (JSON.parse(String(init?.body)) as { model: string }).model });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    const noModel = {
+      id: 'p-a',
+      label: 'A 家',
+      baseUrl: 'https://api.example.com/v1',
+      models: ['m-1'],
+      activeModel: '',
+      apiKey: 'sk-a',
+    };
+    await useSettings({ engineId: 'p-a', profiles: [noModel] });
+
+    const dispatch = translateTexts({ items: [{ id: 'i1', text: 'Hello' }] });
+    // ⚠ **顺序是承重的（落地校正）**：先收响应、**紧接着就读 `calls` 与缓存**，最后才断言错误码与文案。
+    // 原来写成"先 `await expect(...).resolves.toEqual({…})` 再读 `calls`"，于是"一个请求都没发"这个读数
+    // 排在了错误断言后面——那正是"测量安排本身让读数看不见"的形状（复盘 §3）。
+    const response = await dispatch.response();
+    expect(calls).toEqual([]); // ① 一次 fetch 都没有
+    expect(cacheEntries('local')).toHaveLength(0); // ② 两层缓存也没留下条目
+    expect(cacheEntries('session')).toHaveLength(0);
+    expect(response).toEqual({
+      ok: false,
+      code: 'AUTH',
+      message: '这个档案还没有模型，点「添加模型」或「拉取可用模型」',
+    });
+
+    // 成对的另一半：同一份设置，只把 activeModel 填上，就该真的发一次请求并成功。
+    // 没有这一半，上面那条在"整条链路都坏了 / 永远返回 AUTH"的实现下照样是绿的。
+    await useSettings({ engineId: 'p-a', profiles: [{ ...noModel, activeModel: 'm-1' }] });
+    await expect(translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: true,
+      results: [{ id: 'i2', text: '你好' }],
+    });
+    expect(calls).toEqual([{ model: 'm-1' }]);
+  });
+
+  it('同一个档案换 activeModel：不命中上一个模型的缓存（§4 的前提，端到端钉住）', async () => {
+    // `scheduler.test.ts:290` 已有一条**单元级**的网（`engineConfig.model` 变 → key 变）；这一条补的是
+    // **链路上游**：`resolveEngine` 到底把 `activeModel` 映射进了 `config.model`。
+    // ⚠ 这条用例**今天不存在**（计划原来把它写在 C2，而 C2 不碰 `src/background/**`）——本 Step 是它的归属地。
+    // 少了它，"映射写错字段（比如取 models[0]）"只会在真机上表现为"换模型没生效"。
+    const bodies: Array<{ model: string; messages: unknown }> = [];
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as { model: string; messages: unknown });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    stub.permissions.grantedOrigins.add('https://api.example.com/*');
+    const both = {
+      id: 'p-a',
+      label: 'A 家',
+      baseUrl: 'https://api.example.com/v1',
+      models: ['m-1', 'm-2'],
+      activeModel: 'm-1',
+      apiKey: 'sk-a',
+    };
+
+    await useSettings({ engineId: 'p-a', profiles: [both] });
+    await translateTexts({ items: [{ id: 'i1', text: 'Hello' }] }).response();
+    expect(bodies).toHaveLength(1);
+
+    // 同一个档案、同一段文本、只把 activeModel 换成 m-2：必须再请求一次（缓存不许串味）。
+    await useSettings({ engineId: 'p-a', profiles: [{ ...both, activeModel: 'm-2' }] });
+    await translateTexts({ items: [{ id: 'i2', text: 'Hello' }] }).response();
+
+    expect(bodies.map((body) => body.model)).toEqual(['m-1', 'm-2']);
+  });
+```
+
 - [ ] **Step 2: 跑到红**
 
 Run: `npx vitest run tests/background/models.test.ts tests/shared/messages.test.ts`
@@ -1921,11 +1894,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!isTranslateTextsMessage(message)) return false;
 ```
 
+**5d. 后台前置闸**（**从 Task C2 挪到这里**——C2 只许碰 `src/shared/settings.ts`，而 `src/background/**` 归本 Task）。改动处，前后各引一行上下文：
+
+```ts
+// src/background/service-worker.ts（片段：handleTranslateTexts 开头）
+    const settings = await loadSettings(persistentArea);
+    // 「用哪个引擎 + 用哪份配置」只有一处解析（shared/settings 的 resolveEngine）：
+    // engineId 现在是 `google` 或某个档案的 id，别处各写一份 if 迟早和这里漂移。
+    const { engine, config, problem } = resolveEngine(settings);
+    // 档案没有当前模型：**在这里就返回**（§3.3）。规格要的是一句可行动的话，而不是带着空 model
+    // 去打接口换回一句 HTTP 400（上次 `deepseek` 那次事故的形状）。
+    // 整条请求失败（不是条目级失败）：这件事对这批里的每一条都成立，没有"逐条重试"的意义。
+    //
+    // ⚠ **这道闸不负责"零请求"**：零请求由 `src/engines/openai-compat.ts:64-67` 的空 model 闸
+    // **构造性**保证（它在 `fetch` 之前就抛 AUTH）。这道闸改变的是**失败粒度与文案**：
+    // 没有它 → 条目级 `{ ok: true, results: [{ code: 'AUTH', message: '尚未填写模型名…' }] }`；
+    // 有它 → 整条 `{ ok: false, code: 'AUTH', message: problem }`。别把它记成"少发一次请求的守卫"。
+    if (problem !== undefined) return { ok: false, code: 'AUTH', message: problem };
+    const targetLang = payload.targetLang ?? settings.targetLang;
+```
+
 - [ ] **Step 6: 跑到绿**
 
 Run: `npx vitest run tests/background tests/shared/messages.test.ts`
 
-Expected: 全绿。**既有的两条路由用例一条都不许红**：「不是本插件的消息返回 false」（`returns` 仍是 `[false]`）与「形状不对的翻译消息也返回 false」——拉取分支只认自己的 `type`，不认领别的消息。
+Expected: 全绿。**既有的两条路由用例一条都不许红**：「不是本插件的消息返回 false」（`returns` 仍是 `[false]`）与「形状不对的翻译消息也返回 false」——拉取分支只认自己的 `type`，不认领别的消息。**另外 Step 1d 那两条也要绿**（本 Step 补上了后台前置闸）。
 
 Run: `npm run typecheck`
 
@@ -1935,6 +1928,9 @@ Expected: exit 0。
 
 | 变异 | 期望红在哪一条 |
 | --- | --- |
+| **删掉前置闸那行 `if (problem !== undefined) return { ok: false, code: 'AUTH', message: problem };`** | 「档案没有当前模型：可读错误 + 一个请求都不发」——响应退回**条目级** `{ ok: true, results: [{ code: 'AUTH', message: '尚未填写模型名，请在设置中配置' }] }`；**`calls` 仍然是 `[]`**（零请求由引擎那道闸保证，不受这条影响——这正是要看清的一点） |
+| 把前置闸的 `code: 'AUTH'` 改成 `'BAD_REQUEST'` | 同一条（`code` 是精确相等断言） |
+| **`if (problem !== undefined) await fetch(...)` 这种"闸在 fetch 之后、错误码仍是 AUTH"的形状** | **不设此变异（已核实构造不出想要的读数）**：把闸挪到 `fetch` 之后必然**连带改错误分类**（引擎会先抛 AUTH 在 fetch 之前，或改完变成 NETWORK/空响应体），所以"错误码仍是 AUTH 却多发一次请求"这个形状**不存在**；真杀它的仍是 `code` 断言，与上两行**重复**。执行者两次尝试构造都失败（第一次写成死代码）——写在这里是为了**留痕**，别让后人以为漏了一行 |
 | `modelNameOf` 里 `typeof record.id === 'string' ? record.id : record.name` 改成只看 `record.name` | 「认三种形状…」——`data[].id` 那条变成 `[]` |
 | `pickEntries` 里删掉 `models` 那一支 | 同一条的第二句红（`models[].name` 形状） |
 | `parseModelsPayload` 里把"解析不出"改成抛错 | 「整体解析不出任何一条时返回空数组」红 |
@@ -1947,6 +1943,8 @@ Expected: exit 0。
 | 路由里把拉取分支挪到 `isTranslateTextsMessage` **之后** | service-worker 的两条拉取用例红（翻译校验器不认领拉取消息 → 返回 `false`、通道不开） |
 | 拉取分支 `return true` 改成 `return false` | 同上（`dispatch.keepChannelOpen` 为 false，`response()` 直到超时才拒绝） |
 | `handleFetchModels` 里 `payload.profileId` 改成读 `payload` 里别的字段 | 「拉取的失败与"档案不在"…」第一条红（拿不到档案 → 消息不同） |
+| **`resolveEngine` 的 `config.model` 改成 `profile.models[0] ?? ''`** | **红 2 条**（实测口径，跨文件）：① `tests/shared/settings.test.ts` 的「config.model 取的是 activeModel」（`expected 'a' to be 'b'`）② 本文件 Step 1d 的「档案没有当前模型：可读错误 + 一个请求都不发」——`models: ['m-1'], activeModel: ''` 时 `models[0]` 让 `problem` 消失、闸不触发。**这条变异在 `resolveEngine` 层就被杀掉，走不到缓存那一层** |
+| **`configHash` 里去掉 `model`（`scheduler.ts:189`，本单元不改那个文件，只是"如果"）** | 「同一个档案换 activeModel：不命中上一个模型的缓存」（**Step 1d 第二条**）红：第二次命中缓存、`bodies` 只有一条。这条是 §4 的守卫本身——**在 Step 1d 落地之前它只有单元级的网**（`scheduler.test.ts:290`） |
 
 - [ ] **Step 8: 提交**
 
@@ -3265,6 +3263,8 @@ function handleCancelFetched(id: string): void {
 
 **3l. `handleTestProfile` 用表单里的清单 + 没有当前模型时不发请求**（替换 C1 的合成档案那一段）：
 
+> 这是 `problem` 的**第三处接线**（另两处：C3 Step 5d 的后台前置闸、C5 Step 5f 的弹窗提示区）。它是**本地的**：设置页自己拼一个临时档案喂给 `resolveEngine`，拿到 `problem` 就地写状态行、直接 `return`——**不经过后台**，所以它的读数是 C4 Step 1 的「测试连接：没有当前模型时零请求」，与 C3 那条互不依赖。
+
 ```ts
 // src/options/sections/engine.ts（片段：handleTestProfile 的合成档案 + 零请求闸）
   const storedProfile = ctx.settings()?.profiles.find((profile) => profile.id === id);
@@ -3397,6 +3397,8 @@ function handleCancelFetched(id: string): void {
 ```
 
 **3n. `renderEngineHint` 的文案**（改动处：不再说"点档案行展开"）：
+
+> ⚠ **这是设置页那一个 `renderEngineHint`**（`src/options/sections/engine.ts:422`，区块顶部的说明行）。**弹窗有一个同名函数**（`src/popup/popup.ts:230`，提示区），它与这里无关——引用时一律带路径（硬规矩 15）。
 
 ```ts
 // src/options/sections/engine.ts（片段：renderEngineHint 的那两句）
@@ -3741,7 +3743,7 @@ function ui(): PopupUi {
 }
 ```
 
-**1b. 追加一个 helper 与五条用例**：
+**1b. 追加一个 helper 与六条用例**（第六条**从 Task C2 挪过来**：弹窗提示区认 `problem`）：
 
 ```ts
 // tests/popup/popup.test.ts（片段：helper，放在 storedSettings 之后）
@@ -3750,6 +3752,32 @@ async function storedActiveModel(id: string): Promise<unknown> {
   const profiles = ((await storedSettings()).profiles ?? []) as Array<Record<string, unknown>>;
   return profiles.find((profile) => profile.id === id)?.activeModel;
 }
+```
+
+```ts
+// tests/popup/popup.test.ts（片段：追加进 describe('引擎提示区…')；这条从 Task C2 挪来）
+  it('当前档案还没选模型：提示区说出那句可读的话（不静默，也不冒充"缺 Key"）', async () => {
+    await seedSettings({
+      engineId: 'p-empty',
+      profiles: [
+        {
+          id: 'p-empty',
+          label: '空档案',
+          baseUrl: 'https://api.example.com/v1',
+          models: [],
+          activeModel: '',
+          apiKey: 'sk-a',
+        },
+      ],
+    });
+    await loadPopup();
+
+    const hint = ui().hint;
+    expect(hint.textContent).toContain('还没有模型');
+    expect(hint.classList.contains('warn')).toBe(true);
+    // 两件事的处置完全不同（这里该去加模型，不是去填 Key），所以不许串成一句。
+    expect(hint.textContent).not.toContain('需要 API Key');
+  });
 ```
 
 ```ts
@@ -3950,7 +3978,7 @@ const modelSelect = document.getElementById('model') as HTMLSelectElement;
   renderEngineHint();
 ```
 
-**5c. 三个新函数**（加在 `renderEngineHint` 之前）：
+**5c. 三个新函数**（加在**弹窗的** `renderEngineHint`（`src/popup/popup.ts:230`）之前）：
 
 ```ts
 // src/popup/popup.ts（片段：renderModelSelect / onModelChange）
@@ -4030,16 +4058,43 @@ function onEngineChange(): void {
   modelSelect.addEventListener('change', onModelChange);
 ```
 
+**5f. 提示区认 `problem`**（**从 Task C2 挪到这里**——`src/popup/**` 归本 Task；改动处，插在 `missingKey` 那一段之后）：
+
+> 这是 `problem` 的**第二处接线**（另两处：C3 Step 5d 的后台前置闸、C4 Step 3l 的设置页测试连接）。⚠ **弹窗有两个同名 `renderEngineHint`**：这一个是 `src/popup/popup.ts:230`；设置页那个在 `src/options/sections/engine.ts:422`，两者互不相关（硬规矩 15）。
+
+```ts
+// src/popup/popup.ts（片段：弹窗的 renderEngineHint 开头）
+function renderEngineHint(): void {
+  const revision = (hintRevision += 1);
+  const { engine, config, problem } = resolveEngine(settings);
+  // 判空口径与引擎实现一致：只有空白字符也算**没填**（见 openai-compat 的构造）。
+  const missingKey = engine.needsKey && (config.apiKey ?? '').trim().length === 0;
+  if (missingKey) {
+    engineHint.classList.add('warn');
+    engineHint.textContent = '该引擎需要 API Key，请先在设置中填写。';
+    return;
+  }
+  // 排在"缺 Key"之后：没有 Key 时"去加个模型"不是用户当下该做的事（先得有凭据才能翻译）。
+  // 这句话本身来自 `resolveEngine`（唯一来源），这里只负责显示。
+  if (problem !== undefined) {
+    engineHint.classList.add('warn');
+    engineHint.textContent = problem;
+    return;
+  }
+```
+
 - [ ] **Step 6: 跑到绿**
 
 Run: `npx vitest run tests/popup`
 
-Expected: 全绿——八个新用例 + 既有 50 余条一条都不红。特别确认这三条仍在：`引擎提示区` 那一组（`renderEngineHint` 只多了一个分支）、`切换引擎后提示区跟着重算`（`onEngineChange` 里多了一句 `renderModelSelect`，不改文案）、`保存被拒绝时说明原因并回滚下拉`（那个辅助没动）。
+Expected: 全绿——九个新用例（八条下拉 + 一条提示区）+ 既有 50 余条一条都不红。特别确认这三条仍在：`引擎提示区` 那一组（**弹窗的** `renderEngineHint`，`src/popup/popup.ts:230`，只多了一个分支）、`切换引擎后提示区跟着重算`（`onEngineChange` 里多了一句 `renderModelSelect`，不改文案）、`保存被拒绝时说明原因并回滚下拉`（那个辅助没动）。
 
 - [ ] **Step 7: 变异验证**
 
 | 变异 | 期望红在哪一条 |
 | --- | --- |
+| **删掉 5f 那个 `if (problem !== undefined) { … }` 分支** | 「当前档案还没选模型：提示区说出那句可读的话」（Step 1b 第六条）红——提示区会退回「已配置你自己的 API Key.」那句 |
+| 把 5f 的分支插到 `missingKey` **之前** | 本条**不设变异**：规格没规定"既缺 Key 又缺模型"时该说哪一句，两种顺序都说得通（同上，本条在 C2 的旧变异表里也标过"不设"） |
 | `modelField.hidden = models.length <= 1` 改成 `< 1`（1 项也显示） | 「1 个模型：也不显示」红 |
 | 改成 `models.length > 0`（0 项也显示） | 「0 个模型：整行不显示」红 |
 | 恒 `false`（永远显示） | 前两条都红 |
@@ -4170,12 +4225,12 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | --- | --- | --- |
 | 1 | v3 单 `model` → `models:[model]` + `activeModel:model`，Key/地址不丢 | C1 Step 1/3 |
 | 2 | 删当前模型自愈且不变量成立；清空列表为 `''` | C1（读取边界，Step 1/3）+ C4（UI 自愈，Step 1/8） |
-| 3 | `activeModel === ''` → 可读错误 + **零网络请求** | C2 Step 1/3（成对用例） |
+| 3 | `activeModel === ''` → 可读错误 + **零网络请求** | **可读错误**：C3 Step 1d 的成对用例（整条 `{ok:false, code:'AUTH', message:problem}`，前置闸 = C3 Step 5d）+ C5 Step 1b（弹窗提示区）+ C4 Step 1（测试连接本地闸）；**零网络请求**：**由 `src/engines/openai-compat.ts:64-67` 构造性保证**（在 `fetch` 之前抛 AUTH），C3 Step 1d 与 C4 Step 1 各自把 `fetch` 计数钉成 0。⚠ **不是那三处接线带来的**——删掉前置闸，`calls` 仍然是 `[]`（C3 Step 7 第一行就是这个读数） |
 | 4 | 三种响应形状各解析正确；解析不出时文案指向手填 | C3 Step 1/3 |
 | 5 | 拉取消息体**不含 `apiKey`**（成对：后台确实拿到了 Key） | **两半分别在两处**：「消息里真的没有 Key」= **C4 Step 1 的零自动拉取用例**（`chromeStub.runtime.sentMessages` 对**设置页真的发出去的那条消息**做精确相等断言；payload 多一个字段就红）；「后台确实拿到了 Key」= C3 Step 1c 的 `Bearer sk-secret` 断言。⚠ **C3 侧不再放"消息里没有 Key"的断言**——那里手里的 `message` 是它自己造的字面量，那种断言是恒真式（测的是用例自己），不是守卫 |
 | 6 | 打开设置页 / 切换档案 / 聚焦输入框都不触发拉取 | C4 Step 1（零自动拉取用例，正负两半同条） |
 | 7 | 弹窗下拉 1 项无、2 项有；切回档案记住上次用的模型 | C5 Step 1/5（三态 + 往返用例） |
-| 8 | 换模型后 `configHash` 变化 | C2 Step 1b（端到端）+ `tests/background/scheduler.test.ts:290` 既有单元网 |
+| 8 | 换模型后 `configHash` 变化 | **C3 Step 1d 的第二条**（同一个档案换 `activeModel` → 不命中旧缓存，端到端）+ `tests/background/scheduler.test.ts:290` 的**既有单元网**。⚠ 端到端那条**今天不存在**（计划原写在 C2，而 C2 不碰 `src/background/**`）——在那条落地之前，唯一的网是单元级的 |
 | 9 | 全量 `npm test` / `typecheck` / `build` / `zip` 全绿 | C6 Step 5 |
 | 10 | 折叠行：名字 + `自定义`徽章（仅非预设）+ 三态点 + 编辑/删除 + 「使用中」 | C4 Step 1/3f |
 | 11 | 折叠行次级 meta（`接口地址 · 当前模型`，未填写占位） | C4 Step 1/3b（**偏离一**） |
@@ -4198,8 +4253,8 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | §3 类型定义（`models` / `activeModel`） | C1 Step 3a |
 | §3.1 不变量 + 删除自愈 | C1（读取边界）+ C4（`handleRemoveModel`） |
 | §3.2 迁移 v1/v2/v3 → v4 收敛 | C1 Step 3d（`liftProfileModels` 在折叠之后跑，三条路径同一形状） |
-| §3.3 没有模型时报错、不发请求 | C2（`problem` + 后台前置闸 + 弹窗提示） |
-| §4 缓存正确性（`configHash` 已含 model） | 不改 `scheduler.ts`；C2 补端到端前提用例 |
+| §3.3 没有模型时报错、不发请求 | **四处分开**：C2（`problem` 的定义 + 单元证明；**只定义、不接线**）+ C3 Step 5d（后台前置闸 = 失败粒度与文案）+ C4 Step 3l（设置页测试连接的本地闸）+ C5 Step 5f（弹窗提示区）。**"不发请求"由 `src/engines/openai-compat.ts:64-67` 构造性保证**（在 `fetch` 之前抛 AUTH），不是那三处接线带来的 |
+| §4 缓存正确性（`configHash` 已含 model） | 不改 `scheduler.ts`（`scheduler.ts:188-190` 只读核过）；**今天存在的是单元级那张网**（`scheduler.test.ts:290`），**端到端那条由 C3 Step 1d 补** |
 | §5.1 后台发、设置页只传 `profileId` | C3 Step 3/4/5（消息 + 处理器 + 路由） |
 | §5.2 三种形状的宽容解析 | C3 Step 4（`parseModelsPayload`）+ Step 1 的表格用例 |
 | §5.3 失败分类 + 10 秒独立超时 + 复用 `extractErrorDetail` | C3 Step 4（`describeModelsStatus` / `MODELS_TIMEOUT_MS` / `readDetail`） |
@@ -4232,8 +4287,8 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 **2. 占位符扫描**：全文没有 `TBD` / `TODO` / "类似 Task N" / "加适当的错误处理" 这类空话。每个改动都给了**能唯一定位的改动前文本**或完整函数；每步都有命令与期望输出形态；三处"决策点"都已定下来（`自定义`徽章判据、`自定义设置` 默认展开规则、添加/拉取谁设为当前），文档里没有"你选一个"的句子。唯一留给执行者填的是**实测读数表**（C0 Step 5 与 C6 Step 5），那是读数、不是决策。
 
 **3. 类型一致性**：后面 Task 用到的每个字段名/函数名/消息名都与前面定义的一致——
-`models` / `activeModel`（C1 定义；C3/C4/C5 使用）、`modelsFromSingleInput`（C1 定义、C4 删除）、`NO_MODEL_PROBLEM` / `problem`（C2 定义；C4 的 `handleTestProfile`、C5 的提示区使用）、`ResolvedEngine`（C2）、`MSG.FETCH_MODELS` / `FetchModelsMessage` / `FetchModelsResponse` / `isFetchModelsMessage`（C3 定义；C4 的用例按这几个名字用）、`MODELS_TIMEOUT_MS` / `ModelsFetchResult` / `parseModelsPayload` / `describeModelsStatus` / `fetchModels`（C3）、`applyExpansion` / `insertDraftRow` / `applyTriggerState` / `readModels` / `renderModels` / `modelsFieldOf` / `markCustomTemplate` / `openModelInput` / `isPresetProfile` / `metaTextOf` / `renderFetchedModels` / `handleAddModel` / `handleUseModel` / `handleRemoveModel` / `handleCancelProfile` / `handleFetchModels` / `handleMergeModels` / `handleCancelFetched`（C0/C4）、`setModel` / `currentModel` / `rowButton` / `profileSeed` / `profileWithModel`（C1/C4 的夹具，被 C0/C4 的用例使用）、`#model-field` / `#model` / `renderModelSelect` / `onModelChange`（C5）。
-**核对方式**：把上面这张名单与每个 Task 的代码块逐个对照过一遍；`handleFetchModels` 这个名字在 **C3（后台）与 C4（设置页）各有一个**——它们**故意同名**（一个是 `src/background/service-worker.ts` 里的处理器、一个是 `src/options/sections/engine.ts` 里的处理器），互不引用、各自私有，不导出。若担心混淆，读的时候先看文件路径。
+`models` / `activeModel`（C1 定义；C3/C4/C5 使用）、`modelsFromSingleInput`（C1 定义、C4 删除）、`NO_MODEL_PROBLEM` / `problem`（**C2 定义、只定义不接线**；接线三处 = C3 Step 5d 的后台前置闸、C4 Step 3l 的 `handleTestProfile`、C5 Step 5f 的弹窗提示区）、`ResolvedEngine`（C2）、`MSG.FETCH_MODELS` / `FetchModelsMessage` / `FetchModelsResponse` / `isFetchModelsMessage`（C3 定义；C4 的用例按这几个名字用）、`MODELS_TIMEOUT_MS` / `ModelsFetchResult` / `parseModelsPayload` / `describeModelsStatus` / `fetchModels`（C3）、`applyExpansion` / `insertDraftRow` / `applyTriggerState` / `readModels` / `renderModels` / `modelsFieldOf` / `markCustomTemplate` / `openModelInput` / `isPresetProfile` / `metaTextOf` / `renderFetchedModels` / `handleAddModel` / `handleUseModel` / `handleRemoveModel` / `handleCancelProfile` / `handleFetchModels` / `handleMergeModels` / `handleCancelFetched`（C0/C4）、`setModel` / `currentModel` / `rowButton` / `profileSeed` / `profileWithModel`（C1/C4 的夹具，被 C0/C4 的用例使用）、`#model-field` / `#model` / `renderModelSelect` / `onModelChange`（C5）。
+**核对方式**：把上面这张名单与每个 Task 的代码块逐个对照过一遍。**两处同名必须靠路径分辨**：① `handleFetchModels` 在 **C3（后台，`src/background/service-worker.ts`）与 C4（设置页，`src/options/sections/engine.ts`）各有一个**——故意同名、互不引用、各自私有、不导出；② `renderEngineHint` 在**设置页**（`src/options/sections/engine.ts:422`）与**弹窗**（`src/popup/popup.ts:230`）各有一个——所以 C4 Step 3n 与 C5 Step 5f 都写明了路径（硬规矩 15 还把 `runSafely`、`fillSelect` 两对同名函数一起列了）。
 
 ## 复盘记录（计划说错的读数、恒真断言、有行为无读数——逐条记账）
 
@@ -4258,11 +4313,15 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | ③ | 本单元 C3 的 `expect(JSON.stringify(message)).not.toContain('sk-secret')` | 断言的是**用例自己两行前造的字面量**（永远不可能含 Key） | 改断言**真的发出去的那条消息**（C4 的 `runtime.sentMessages` 精确相等）；C3 侧删掉（已改） |
 | ④ | 本单元 C1 的「展开已存在的档案不重放服务商模板」 | 夹具是"单模型对齐"的，`buildEditor` 的 `profile?.activeModel ?? ''` **恒等于夹具值**——"读 `activeModel`"与"读 `models[0]`"读数完全一样 | 夹具改成**清单两项、当前项不是第一项**。读数：对齐夹具下把回填换成 `models[0]` → **31 条全绿**（看不见）；改后 → **恰好那一条红**（`expected 'deepseek-chat' to be 'deepseek-chat-selfhost'`） |
 
-### 3. 测量侧的三个缺陷型（"怎么取读数"）
+### 3. 测量侧的四个缺陷型（"怎么取读数"）
 
 1. **夹具默认参数吞掉 `undefined`**：计划写的 `loadV3(model: unknown = 'deepseek-chat')` 会把 `loadV3(undefined)` 悄悄换回 `'deepseek-chat'`——于是"**整个键缺失**"那一半**永远种不进去**，测的还是"有 model"。修法：去掉默认参数、`model !== undefined` 才写键、调用方显式传值（用例体 `['', undefined]` 一字不动）。
 2. **一条用例里前面的失败会遮住后面的读数**：同一条用例的 `['', undefined]` 两轮，第一轮（`''`）先红，Step 2 只看到 `expected [ Array(3) ] to deeply equal [ '', [], '' ]`，第二轮的真实读数（`expected [ Array(3) ] to deeply equal [ undefined, [], '' ]`）**根本看不见**——上面那个默认参数缺陷就是这么藏了一整轮。**规则：取读数要一轮一条**，红了先只让这一轮绿、再看下一轮；不许因为"这条已经红了"就跳过剩下几轮。
 3. **探针复制了被测对象的错误口径**（见硬规矩 2 的 ⑦）：`perf-probe.ts` 里 `action: target.dataset.action ?? '(none)'` 与被查的委托 bug 同源 ⇒ 修复落地后真机上仍打印 `action="(none)"`，**把"修好了"测成"没好"**。教训：**探针要独立于被测逻辑的假设，否则比没有探针更坏**。（探针那一格已在 `e91a274` 改成 `target.closest('[data-action]')` 并留了注释。）
+4. **用例内部的语句顺序会决定读数可见性**（与第 2 条同族，C2 落地时抓到两例，都已修）：
+   - **①把"零请求"的读数排在错误断言后面**：原写法是 `await expect(…).resolves.toEqual({ ok:false, code:'AUTH', … })` **然后**才 `expect(calls).toEqual([])`。错误码/文案一变，读者先看到的是那条断言，而"到底发没发请求"这个**更基本的读数**排在后面。改成：**先收响应 → 紧接着读 `calls` 与两层缓存 → 最后才断言错误码与文案**（C3 Step 1d 第一条就是这么写的）。
+   - **②把"成对两半"与主断言挤在同一条用例**：`problem` 那条原本把"有模型 / 免费引擎**不背**这句话"与主断言放在一起，于是 M1（`problem` 恒真）时后半被前半遮住。**拆成两条用例**：一条测"该背的背"，一条测"不该背的不背"。
+   - **一般规则**：一条用例里出现两个以上读数时，**按"越基本越先读"排序**（副作用次数 → 状态 → 文案），并把互相遮蔽的两个读数拆成两条用例。
 
 ### 4. 有行为、无读数（**不许**为它们编一条恒真用例）
 
@@ -4274,13 +4333,28 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | `editorDrafts.delete(savedId)`（C4 Step 3p） | 保存成功后 `renderProfiles` 按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor` | 草稿那一格（`NEW_DRAFT_ID`）**有**读数（「草稿保存成功后清掉草稿暂存」那条）；这一格留着是**对称性**（"暂存不活得比编辑会话更久"） |
 | `liftProfileModels` 里的 `delete lifted.model` | 见上表 M3：`pickProfile` 重建 + 版本闸门短路 | 改 `pickProfile`（让它透传旧键）才杀得死。留着是**防御**（防止将来 `pickProfile` 不再重建时旧键漏进存储） |
 
-### 5. 契约迁移里落地偏离计划的三处（正文已改，此处只索引）
+### 4.1 结构缺口：**有意的零消费者公共表面**（C2 的 `problem`）
+
+**这是本轮最要紧的一条，而且是指令造成的**：C2 的 Files 清单原写着三个文件（含 `src/background/service-worker.ts`、`src/popup/popup.ts`），但派单时为了避并发冲突**明令不许碰**这两层——**结果 `problem` 定义出来了、没有任何渲染方**（`service-worker.ts:93` 与 `popup.ts:232` 仍是 `const { engine, config } = resolveEngine(...)`），而本仓明令禁止"零消费者公共表面"。
+
+处置（已写进正文）：
+1. **C2 收窄成"定义 + 单元证明"**：Files 只留 `src/shared/settings.ts` + 它的测试（落地提交 `18a0e87` 正好只改了这两个文件）。
+2. **三处接线各自写明归属、代码与读数**：后台前置闸 → **C3 Step 5d**（读数 = C3 Step 1d）；设置页「测试连接」本地闸 → **C4 Step 3l**（读数 = C4 Step 1）；弹窗提示区 → **C5 Step 5f**（读数 = C5 Step 1b）。代码块**跟着归属走**，不留"见 C2"这种跨任务引用（硬规矩 10）。
+3. **过渡窗口纪律**：C2 落地到 C3/C5 接线完成之前，**不许把本分支合进 release**——与 C1 的过渡映射同一条纪律。这条写在 C2 节头的"落地状态"表里，读者第一眼就能看到。
+4. **教训（写进硬规矩之外，也值得记在这里）**：**"定义"与"接线"必须落在同一个任务的 Files 清单里，或者显式分派给另一个任务**——中间态只要是"公共表面无人消费"，就必须在计划里**看得见**（否则它会被当成"已完成"，一直到收口才被发现）。
+
+### 5. 落地偏离计划的地方（正文已改，此处只索引）
 
 | 偏离 | 计划原来 | 落地改成 | 正文位置 |
 | --- | --- | --- | --- |
 | F1 | 用升级后的 v4 夹具去种 `version: 3` 的数据（伪造了"v3 里不可能存在"的形状） | 用 **v3 字面量**种数据，期望仍用 v4 夹具 | C1 Step 5b 的 `:399-413` 行 |
 | D | `loadV3` 带默认参数 | 去掉默认参数 + `!== undefined` 才写键 | C1 Step 1 的夹具 + Step 2 的盲区提示 |
 | C | 模板用例用"单模型对齐"夹具（恒真） | 清单两项、当前项不是第一项 | C1 Step 5b 的 `:143` 行 |
+| **E（判空口径，成因⑥）** | C2 代码写 `profile.activeModel.length === 0`，**同一份计划**的 popup 片段却写"判空口径与引擎实现一致：只有空白字符也算没填"——**两半互相不满足** | 统一成 `profile.activeModel.trim().length === 0`（与 `src/engines/openai-compat.ts:64-67` 的 `(config.model ?? '').trim()` 同口径） | C2 Step 3a 的 `resolveEngine` + 复盘 §3 第 4 条 |
+| **A（接线归属）** | C2 的 Files 写了三个文件，实际只许碰 `settings.ts` ⇒ `problem` 零消费者 | C2 收窄成"定义 + 单元证明"；三处接线分派给 C3 Step 5d / C4 Step 3l / C5 Step 5f | C2 节头的落地状态表 + 复盘 §4.1 |
+| **B（同名函数）** | 只说"`renderEngineHint` 开头"，没说哪一个 | 全部带路径；硬规矩 15 列出三对同名函数 | C4 Step 3n / C5 Step 5f / 硬规矩 15 |
+| **D′（M9 落点）** | `config.model = models[0]` 的落点写成端到端缓存用例 | 按实测改成"在 `resolveEngine` 层红 2 条"，端到端那条的归属写死到 C3 Step 1d | C2 Step 5 的变异表 + C3 Step 7 |
+| **F（不设的变异）** | 未提及 | C3 Step 7 加一行为"不设此变异（已核实构造不出）"留痕 | C3 Step 7 |
 
 ## 落地读数表（执行者填，交付时与投影并列）
 
@@ -4294,6 +4368,9 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **C1 变异 M3**（`liftProfileModels` 不写 `delete lifted.model`） | 计划原测："幂等"那条红 | **实测全绿（`63 passed`）**——经公共边界不可观测，已改标"防御性"（见「复盘记录 › 1」） |
 | **C1 变异 M7**（`if (storedVersion < 4)` → `< 3`） | 计划原测：v3→v4 两条 + v2 折叠用例 | **实测红 3 条**（`有值` / `trim` / F1 那条）；**v2 与 v1 用例不红**，`空串或缺失` 那条也不红（空值上判据不可观测） |
 | **C1 模板用例的夹具加强**（第 4 例恒真断言） | —— | **已取到**：对齐夹具下把回填换成 `models[0]` → **31 条全绿**（看不见）；夹具改成"清单两项、当前项在后" → **恰好那一条红** |
+| **C2 变异：`config.model` 换成 `models[0] ?? ''`** | 计划原测：「同一个档案换 activeModel：不命中上一个模型的缓存」 | **实测红 2 条**（`expected 'a' to be 'b'` + 零请求那条），**在 `resolveEngine` 层就被杀掉**；已改标落点，并把端到端那条的归属写死到 **C3 Step 1d** |
+| **C2 变异：`.trim()` 去掉** | —— | **有读数**（更严的那版才杀得死"只填空格的合成档案"）；计划早先的 `length === 0` 与 popup 片段"与引擎口径一致"互相矛盾，已按落地改成 `.trim()` 版（复盘 §3 / §5） |
+| **C2 实测：前置闸删掉** | 计划原测：「响应退回条目级」 | **`calls` 仍是 `[]`**（零请求不受它影响）——"闸 = 零请求守卫"这个说法本身就是错的，已在 C3 Step 7 第一行与验收项 3 写明 |
 | 收口 `npm test` | 以命令输出为准 | |
 | 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
 | `sync-plan-code.mjs` | `已同步 0 个代码块` | |
