@@ -27,7 +27,7 @@
 //    重读存储、成功了再渲染"，并**返回是否真的刷新成功**。调用方只有在拿到 `true` 时才许宣称
 //    "列表已刷新"——这条没写下来的后果就是一个真出现过的 bug：刷新失败时列表没换、提示却说换了。
 import { getEngine, DEFAULT_ENGINE_ID } from '../../engines/registry';
-import { toEngineError } from '../../engines/types';
+import { toEngineError, type EngineConfig, type Translator } from '../../engines/types';
 import {
   hasHostPermission,
   originPattern,
@@ -43,7 +43,9 @@ import {
   type EngineProfile,
   type Settings,
 } from '../../shared/settings';
-import { describe, element, fillSelect, requireWithin, runSafely, setStatus } from '../dom';
+import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';
+// 状态点的记录（§4.3）：独立于 `store.ts` 的会话内记忆，见 `engine-health.ts` 顶部的说明。
+import { forgetEngineHealth, loadEngineHealth, saveEngineHealth, type EngineHealth } from '../engine-health';
 // 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 import type { Section, SectionContext } from '../section';
@@ -67,6 +69,12 @@ const TEST_TIMEOUT_MS = 20_000;
 
 /** 当前展开编辑的档案 id（或 NEW_DRAFT_ID）；null = 全部收起。一次只展开一个。 */
 let expandedId: string | null = null;
+
+/**
+ * 状态点的记录（§4.3）。三态里"从没测过"是**没有记录**，所以这里只存有结果的那些。
+ * `mount` 时从 `chrome.storage.session` 读一次，之后每次测试连接就地更新。
+ */
+let health: Record<string, EngineHealth> = {};
 
 /** 档案编辑表单的原始值。保存与测试连接共用它，保证两条路走的是同一份输入。 */
 interface ProfileFormValues {
@@ -140,6 +148,52 @@ function deniedHint(result: HostPermissionResult): string {
 }
 
 /* ------------------------------------------------------------------ 渲染 */
+
+/**
+ * 三态：绿 = 最近一次测试连接通过；**灰 = 从没测过（不代表可用）**；红 = 最近一次失败。
+ * 刻意**不**做"填了 Key 就点绿"——填了 Key 不代表能用（模型名写错就是 HTTP 400）。
+ */
+function applyDot(dot: HTMLElement, record: EngineHealth | undefined): void {
+  if (record === undefined) {
+    dot.dataset.state = 'idle';
+    dot.title = '从没测过（不代表可用）';
+    return;
+  }
+  if (record.state === 'ok') {
+    dot.dataset.state = 'ok';
+    dot.title = '最近一次测试连接通过';
+    return;
+  }
+  dot.dataset.state = 'bad';
+  dot.title = `最近一次测试连接失败：${record.detail}`;
+}
+
+/**
+ * 内置免费引擎那一行：名字 + 内置徽章 + 状态点 + 测试连接。
+ * **没有删除、没有编辑**（§3.1：内置免费引擎不可删，也没有可编辑的配置）。
+ * 它不带 `data-profile-id`：既有用例的 `profileRows()` 只数真实档案。
+ */
+function buildFreeEngineRow(ctx: SectionContext): HTMLElement {
+  const engine = getEngine(DEFAULT_ENGINE_ID);
+  const row = element('div', 'item');
+  row.dataset.engineFree = '';
+
+  const line = element('span', 'line');
+  line.append(element('span', 'name', engine.name), element('span', 'badge', '内置'));
+  const dot = element('span', 'dot');
+  applyDot(dot, health[DEFAULT_ENGINE_ID]);
+  line.append(dot);
+
+  const grow = element('span', 'grow');
+  grow.append(line, element('span', 'meta', '无需 API Key'));
+  row.append(grow);
+
+  const test = element('button', 'ghost tiny', '测试连接');
+  test.type = 'button';
+  test.dataset.action = 'test-free';
+  row.append(test);
+  return row;
+}
 
 function buildEditor(id: string, profile: EngineProfile | undefined): HTMLElement {
   const editor = element('div', 'profile-editor');
@@ -254,6 +308,12 @@ function buildProfileRow(ctx: SectionContext, id: string): HTMLElement {
   if (!isNew && snapshot.engineId === id) {
     line.append(element('span', 'badge', '使用中'));
   }
+  if (!isNew) {
+    // 草稿行没有 id，也就没有"最近一次测试"可言——不给它一个永远灰的点。
+    const dot = element('span', 'dot');
+    applyDot(dot, health[id]);
+    line.append(dot);
+  }
   const grow = element('span', 'grow');
   grow.append(
     line,
@@ -280,6 +340,8 @@ function renderProfiles(ctx: SectionContext): void {
   if (expandedId === NEW_DRAFT_ID) {
     profilesList.append(buildProfileRow(ctx, NEW_DRAFT_ID));
   }
+  // 内置免费引擎永远排在最后（§3.1：它不可删），每次重绘都跟着列表一起画。
+  profilesList.append(buildFreeEngineRow(ctx));
 }
 
 /** 档案区顶部的说明：当前在用哪一档（选择器的真相在弹窗，这里如实指路）。 */
@@ -360,6 +422,77 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
 }
 
 /**
+ * 真发一次极短请求并上报结果——档案与内置免费引擎**走同一条路**。
+ * 抽出来的理由不是"少写几行"：状态点的记录、超时、错误码展开这三件事必须两处一致，
+ * 各写一份必然漂移。
+ */
+async function runConnectionTest(
+  ctx: SectionContext,
+  healthId: string,
+  engine: Translator,
+  config: EngineConfig,
+  label: string,
+): Promise<void> {
+  setStatus(engineStatus, 'pending', `正在用${label}翻译一次「${TEST_TEXT}」…`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
+  try {
+    const [translation] = await engine.translate(
+      {
+        texts: [TEST_TEXT],
+        from: 'auto',
+        to: ctx.settings()?.targetLang ?? DEFAULT_SETTINGS.targetLang,
+        signal: controller.signal,
+      },
+      config,
+    );
+    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${translation ?? ''}`);
+    await recordHealth(ctx, healthId, { state: 'ok', detail: '' }, 'ok');
+  } catch (raw) {
+    // 错误码要显示出来（AUTH / RATE_LIMIT / NETWORK……）：它是用户判断"该改 Key 还是
+    // 该稍后重试"的唯一依据，只给一句自然语言会把这两件事混在一起。
+    const error = toEngineError(raw);
+    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${error.message}`);
+    await recordHealth(ctx, healthId, { state: 'bad', detail: `${error.code}：${error.message}` }, 'err');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 找某一行的状态点。档案行走 `data-profile-id`；**内置免费引擎那一行刻意没有 id**
+ * （见 `buildFreeEngineRow`），所以只能按它自己的标记找。少了这一支，免费引擎的
+ * 测试连接能成功、点却永远停在灰：`rowById` 只认档案行。
+ */
+function healthDot(id: string): HTMLElement | null {
+  const row =
+    rowById(id) ??
+    (id === DEFAULT_ENGINE_ID ? profilesList.querySelector<HTMLElement>('[data-engine-free]') : null);
+  return row?.querySelector<HTMLElement>('.dot') ?? null;
+}
+
+/**
+ * 记下这次测试的结果，并**就地**更新那一行的点（不整表重绘：重绘会把用户正在编辑的表单丢掉）。
+ * 记录写不进去时，把原因**追加**在刚才那句话后面——本次测试的结果是真的，不该被它改掉颜色。
+ */
+async function recordHealth(
+  ctx: SectionContext,
+  id: string,
+  record: EngineHealth,
+  kind: StatusKind,
+): Promise<void> {
+  health = { ...health, [id]: record };
+  const dot = healthDot(id);
+  if (dot !== null) applyDot(dot, record);
+  try {
+    await saveEngineHealth(id, record);
+  } catch (raw) {
+    setStatus(engineStatus, kind, `${engineStatus.textContent ?? ''}（测试结果没能记住：${describe(raw)}）`);
+  }
+}
+
+/**
  * 测试连接：**真的发一次翻译请求**，走的是生产引擎代码本身。测的是**这一行正在编辑的
  * 档案**（表单当前值，未保存也算），不是全局某份配置——多个档案时代"测一下"必须说得清测的是谁。
  */
@@ -391,30 +524,13 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
     profiles: [{ id, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey }],
   });
 
-  setStatus(engineStatus, 'pending', `正在用档案「${values.label}」翻译一次「${TEST_TEXT}」…`);
+  await runConnectionTest(ctx, id, engine, config, `档案「${values.label}」`);
+}
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
-  try {
-    const [translation] = await engine.translate(
-      {
-        texts: [TEST_TEXT],
-        from: 'auto',
-        // 目标语言取当前快照（即时保存之后，下拉里选的就是存储里的那一份）。
-        to: ctx.settings()?.targetLang ?? DEFAULT_SETTINGS.targetLang,
-        signal: controller.signal,
-      },
-      config,
-    );
-    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${translation ?? ''}`);
-  } catch (raw) {
-    // 错误码要显示出来（AUTH / RATE_LIMIT / NETWORK……）：它是用户判断"该改 Key 还是
-    // 该稍后重试"的唯一依据，只给一句自然语言会把这两件事混在一起。
-    const error = toEngineError(raw);
-    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${error.message}`);
-  } finally {
-    clearTimeout(timer);
-  }
+/** 内置免费引擎的测试连接：没有表单值可读，配置就是空的（免费接口零配置）。 */
+async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
+  const { engine, config } = resolveEngine({ engineId: DEFAULT_ENGINE_ID, profiles: [] });
+  await runConnectionTest(ctx, DEFAULT_ENGINE_ID, engine, config, `免费引擎「${engine.name}」`);
 }
 
 /**
@@ -462,6 +578,18 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
       ? `已删除当前在用的档案「${target.label}」，引擎已回落到「${getEngine(DEFAULT_ENGINE_ID).name}」，请在弹窗里重新选择。`
       : `已删除档案「${target.label}」。`,
   );
+  // 它的测试记录一并清掉。内存里的那份**立刻**扔掉（在 `try` 之前）：否则界面下一次重绘
+  // 还可能画出它的点。存储里那份删不掉只影响下次打开设置页，如实说一句就够。
+  delete health[id];
+  try {
+    await forgetEngineHealth(id);
+  } catch (raw) {
+    setStatus(
+      engineStatus,
+      'ok',
+      `${engineStatus.textContent ?? ''}（它的测试记录没清掉：${describe(raw)}）`,
+    );
+  }
 }
 
 /**
@@ -530,6 +658,11 @@ export const engineSection: Section = {
         toggleKeyVisibility(target);
         return;
       }
+      // 免费引擎那一行不在 `[data-profile-id]` 里，必须在行判断之前处理。
+      if (target.dataset.action === 'test-free') {
+        runSafely(engineStatus, '测试连接失败', () => handleTestFreeEngine(ctx));
+        return;
+      }
       const row = target.closest('[data-profile-id]');
       if (!(row instanceof HTMLElement)) return;
       const id = row.dataset.profileId as string;
@@ -580,7 +713,14 @@ export const engineSection: Section = {
     });
   },
 
-  mount(ctx: SectionContext): void {
+  async mount(ctx: SectionContext): Promise<void> {
+    try {
+      health = await loadEngineHealth();
+    } catch (raw) {
+      // 读不出来不是致命错误：所有点回到"从没测过"，但要如实说一句。
+      health = {};
+      setStatus(engineStatus, 'err', `读取上次的测试结果失败：${describe(raw)}`);
+    }
     renderProfiles(ctx);
     renderEngineHint(ctx);
   },

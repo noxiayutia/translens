@@ -325,6 +325,25 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   white-space: nowrap;
 }
 
+/* 状态点（§4.3）：三态各自一个令牌，`data-state` 是契约、class 只管样式。 */
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.dot[data-state="ok"] {
+  background: var(--ok);
+}
+
+.dot[data-state="bad"] {
+  background: var(--danger);
+}
+
 .profile-editor {
   padding: 12px;
   background: var(--surface-2);
