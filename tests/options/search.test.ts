@@ -135,6 +135,11 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
 
     search('源语言');
     expect(visibleSections()).toEqual(['language']);
+    // 反向也要守：组里**还有可见链接**时不能连整个组一起藏。把 `every` 写成 `some` 就会——
+    // 语言与显示明明命中了，却被「翻译」这一组的隐藏一起带走，而只查"命中的区块可见"的断言
+    // 看不见它（那条只看 `[data-section]`，不看导航项，更不看分组）。实测：`every` → `some`
+    // 跑完全绿，补上这一条才当场红（变异表外的第 11 行，记账见提交信息）。
+    expect(document.querySelector<HTMLElement>('[data-nav-group]')?.hidden).toBe(false);
 
     search('并发');
     expect(visibleSections()).toEqual(['cache']);
