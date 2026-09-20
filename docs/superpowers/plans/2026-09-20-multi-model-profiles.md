@@ -349,13 +349,9 @@ describe('展开就地更新：代价不随档案数增长', () => {
   });
 
   it('新增档案那一行也是就地追加：不动已有的行', async () => {
-    // 草稿行的插入走 `insertDraftRow`（只 append 一行，排在免费引擎行之前），不是 `renderProfiles`。
-    // 断言的读数是"已有行的 **DOM 节点身份**没变"。
-    //
-    // ⚠ **身份只能用 `toBe` / `===` 证明**（硬规矩 13，含 vitest 源码级的机制出处）：`toEqual` 对
-    // DOM 元素是**结构比较**（vitest 里走 `isDomNode` → `a.isEqualNode(b)`）——jsdom 里两个各造一次
-    // 的 `<div class="profile-row item" data-profile-id="p-0">` 属性一样就算"相等"。
-    // 拿 `toEqual` 当身份断言会**假绿**（实测：整表重建的旧实现下 `toEqual(before)` 照样通过）。
+    // 草稿行的插入走 `insertDraftRow`（只 append 一行，排在免费引擎行之前），
+    // 不是 `renderProfiles`。断言的读数是"已有行的 DOM 节点身份没变"——
+    // 整表重建时这些引用会全部失效（`isConnected` 变 false）。
     await seedSettings({ engineId: 'p-0', profiles: seeds(3) });
     await loadOptions();
     const before = profileRows();
@@ -367,13 +363,125 @@ describe('展开就地更新：代价不随档案数增长', () => {
     const after = profileRows();
     expect(after).toHaveLength(4);
     expect(after[3].dataset.profileId).toBe('__new__');
-    // 前三行还是原来那三个节点（逐项 `===`：身份，不是结构）。
+    // 前三行还是原来那三个节点（同一个对象）。
+    expect(after.slice(0, 3)).toEqual(before);
+    // 上面那句 `toEqual` **证明不了"同一个对象"**：vitest 对 DOM 元素做的是**结构**比较。
+    // 实测（jsdom 元素探针）：两个 class/文本都不同的 div → NOT-EQUAL；两个 class/文本相同的
+    // **不同对象** → EQUAL；游离的旧节点 vs 已挂上的新节点（结构相同）→ EQUAL。
+    // 于是"只追加、不动已有的行"这个读数必须逐行钉**身份**——`insertDraftRow` 哪天换回
+    // `renderProfiles`（整表重建），节点身份全变，这一行当场红（读数是 `[false, false, false]`）。
     expect(after.slice(0, 3).map((row, index) => row === before[index])).toEqual([true, true, true]);
-    // 免费引擎那一行也还是原来那个节点（`toBe` 是身份比较），而且排在草稿行之后。
+    // 免费引擎那一行也还是原来那个节点，而且排在草稿行之后。
     expect(pick<HTMLElement>('profiles').querySelector('[data-engine-free]')).toBe(freeBefore);
     expect(after[3].nextElementSibling).toBe(freeBefore);
     // 草稿行展开着（新增档案的语义就是"当场开始填"）。
     expect(after[3].querySelector('.profile-editor')).not.toBeNull();
+  });
+});
+
+/**
+ * 真机缺陷（`7991539` 修的）：行头当时是 `<button class="profile-summary">` **里面包着**
+ * `<span class="name">` / `<span class="meta">` / `<span class="dot">`。用户点是点在**文字**上的，
+ * 于是 `event.target` 是那些 span、不是按钮自己——动作必须从**最近的带 `data-action` 的祖先**上取。
+ *
+ * 真机读数（用户贴回来的临时探针，5 次点击）：
+ * ```
+ * target="span.meta"  action="(none)"  row="p-0a90…"  expandedBefore=1 expandedAfter=1 jsMs=0.3 frameMs=4.3
+ * target="span.grow"  action="(none)"  row="p-49e2…"  expandedBefore=1 expandedAfter=1 jsMs=0.3 frameMs=3.2
+ * target="span.meta"  action="(none)"  row="p-ccca…"  expandedBefore=1 expandedAfter=1 jsMs=0.4 frameMs=4.4
+ * target="span.meta"  action="(none)"  row="p-0a90…"  expandedBefore=1 expandedAfter=1 jsMs=0.3 frameMs=6.7
+ * target="button.profile-summary" action="toggle" row="p-ccca…" …nodes=294 layoutMs=0
+ * ```
+ * 5 次点击里 4 次 `action="(none)"`，页面只有 294 个节点、点一次 3~7ms——所以"很慢 / 有时候
+ * 没反应"**不是性能问题**：读 `target.dataset.action` 得到 `undefined`，`switch` 全部落空，
+ * 只有恰好点在按钮自己的空白边距（padding）上才生效。
+ *
+ * ⚠ **C4 版式下这条口径的落点变了，读法必须跟着改（这是那一刀里唯一的测试契约变更）**：
+ * 折叠行不再是"一个按钮包着行头"，而是 `.grow`（名字 / 徽章 / 状态点 / meta）与
+ * `.row-actions`（`编辑` / `删除`）**并排**——行头文字不再挂在任何 `[data-action]` 上。于是：
+ * - 点行头文字**不再展开**（那是"整行不再是按钮"的直接后果，第一条用例钉住它，并钉住
+ *   展开开关现在是右侧那颗「编辑」）；
+ * - 口径本身在新版式里**没有现成的落点**：每个 `[data-action]` 控件都是叶子按钮，两种口径
+ *   （`target.dataset.action` 与 `closest('[data-action]')`）读数完全相同。所以后两条用例
+ *   **自己造出那个形状**——把按钮的文字包进一个子元素再点它（这正是旧版式的形状，也是将来
+ *   给按钮加图标 / 文案子元素时的形状）。少了这两条，真机缺陷会**静默**回来：本地全绿，
+ *   只有真机上"点在按钮里的文字上"没反应。
+ */
+describe('点击委托：动作取自最近的 [data-action] 祖先，不是 event.target 自己', () => {
+  /** 行头里那块文字（`span.meta`）——旧版式里真机上用户点的就是它。 */
+  function headTextOf(id: string): HTMLElement {
+    const text = rowOf(id).querySelector<HTMLElement>('.meta');
+    if (text === null) throw new Error(`档案行 ${id} 没有 .meta`);
+    return text;
+  }
+
+  /**
+   * 把触发按钮的文字包进一个子元素并返回它：点它就是"点在按钮**里面的**文字上"。
+   * 每次都现造一个（展开 / 收起时按钮文案会变，旧的那个子元素已经不在 DOM 里了）。
+   */
+  function nestedTextOf(button: HTMLButtonElement): HTMLElement {
+    const inner = document.createElement('span');
+    inner.className = 'probe-inner';
+    inner.textContent = button.textContent ?? '';
+    button.textContent = '';
+    button.append(inner);
+    return inner;
+  }
+
+  it('点行头里的文字（span.meta）**不再**展开——整行不是按钮，展开开关是右侧的「编辑」', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    const head = headTextOf('p-a');
+    // 先钉住"这确实是一次打在**子元素**上的点击"：它自己身上没有任何动作可读。
+    expect(head.dataset.action).toBeUndefined();
+    // 版式读数：行头文字**不在**触发按钮里（旧版式里它在）——所以它够不到任何动作。
+    // 这一句就是"整行不再是按钮"在委托这一层的读数（`row` 本身也不再是按钮）。
+    expect(triggerOf('p-a').contains(head)).toBe(false);
+
+    head.click();
+    await settle();
+    expect(editorOf('p-a')).toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');
+
+    // 新契约的另一半：展开开关是那颗按钮，点它照常展开（点不动的东西才是回归）。
+    triggerOf('p-a').click();
+    await settle();
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('点按钮**里面的**文字就展开——不是只有点在按钮空白处才有反应', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    const inner = nestedTextOf(triggerOf('p-a'));
+    // 这条点击打的是**子元素**：它自己身上没有任何动作可读，只有祖先（那个按钮）有。
+    // 少了这两句，这条用例在退回 `target.dataset.action` 的实现下也可能因为"点到了别处"而变绿。
+    expect(inner.dataset.action).toBeUndefined();
+    expect(triggerOf('p-a').contains(inner)).toBe(true);
+
+    inner.click();
+    await settle();
+
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('连点那块文字两次 = 展开再收起（取值口径改了，toggle 语义不许跟着变）', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ id: 'p-a' })] });
+    await loadOptions();
+
+    nestedTextOf(triggerOf('p-a')).click();
+    await settle();
+    expect(editorOf('p-a')).not.toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('true');
+
+    // 第二次点的是**新造的那个**子元素：按钮的文案在展开时已经换成「收起」，取法不该跟着变。
+    nestedTextOf(triggerOf('p-a')).click();
+    await settle();
+    expect(editorOf('p-a')).toBeNull();
+    expect(triggerOf('p-a').getAttribute('aria-expanded')).toBe('false');
   });
 });
 ```
@@ -2286,6 +2394,27 @@ describe('模型目录：三条写入规则 + 自愈 + 空态说明', () => {
     expect(stored.activeModel).toBe('');
   });
 
+  it('删**非当前**项时当前项一动不动——夹具必须让"当前项"不是"剩下的最后一项"', async () => {
+    // 为什么单独一条：上面那条里"删非当前项"的那一步**抓不住**"永远取剩下的最后一个"这个实现
+    // ——那时清单只剩一项、而那一项恰好就是当前项，两种口径读数完全相同（恒真式，本仓假信号
+    // 成因⑦：夹具与被测逻辑同源）。这里把当前项放在**清单第一项**上，删掉中间那一项之后
+    // 剩下的最后一项是 `c` 而不是当前项 `a`，改错了当场读得出。
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [profileSeed({ models: ['a', 'b', 'c'], activeModel: 'a' })],
+    });
+    await loadOptions();
+    const editor = expand('p-a');
+
+    editor.querySelector<HTMLButtonElement>('.model-row[data-model="b"] [data-action="remove-model"]')!.click();
+    await settle();
+
+    expect(currentModel(editor)).toBe('a');
+    expect(
+      Array.from(editor.querySelectorAll<HTMLElement>('.model-row')).map((row) => row.dataset.model),
+    ).toEqual(['a', 'c']);
+  });
+
   it('清单为空时那句说明逐句可核，有了一项就收起', async () => {
     await seedSettings({
       engineId: 'p-a',
@@ -2537,13 +2666,11 @@ describe('未保存输入的暂存：隐式收起保住它，取消丢弃它（�
     expect((await storedProfiles())[0]?.label).toBe('我的 DeepSeek');
   });
 
-  it('草稿保存成功后：再点「新增档案」是一张白纸（**这条不是"清暂存"的读数**，见下）', async () => {
-    // ⚠ **落地实测把这条用例的身份改了**：它**不是**"保存后清暂存"的见证——把
-    // `editorDrafts.delete(NEW_DRAFT_ID)` 删掉，**全量 1043 条仍全绿（变异存活）**。
-    // 机理：`bind` 先把 `expandedId` 落成 `NEW_DRAFT_ID`，`buildProfileRow` 因此**直接造好编辑器**，
-    // `applyExpansion` 见 `existing !== null` 就**不走** `restoreEditor` —— 残留的那一格永远读不到。
-    // 所以"草稿保存后暂存清空"= **不可观察**，与 `delete(savedId)` 并列进「复盘记录 › 4. 有行为、无读数」。
-    // 这条用例仍然要留着：它守的是"新草稿是干净的"这个**用户可见**的结果（无论靠哪条路径达成）。
+  it('草稿保存成功后清掉草稿暂存：再点「新增档案」是一张白纸，不是上一次那份草稿', async () => {
+    // 为什么存在：草稿保存后 id 会从 `__new__` 变成一个**新生成的**档案 id。所以"保存后清暂存"
+    // 这件事只在草稿这一支上**可观察**——残留的 `__new__` 那条会在下一次"新增档案"时把旧草稿
+    // 预填回去。（同档案保存后的清理**不可观察**：保存后 `renderProfiles` 会按新快照重建那一行，
+    // DOM 本来就不是旧草稿。别为不可观察的那半编一条断言。）
     await seedSettings({ engineId: 'google' });
     await loadOptions();
 
@@ -4357,13 +4484,15 @@ Expected（**投影 vs 实测并列**，交付时必须两列都在）：
 
 | 命令 | 投影 | 实测 |
 | --- | --- | --- |
-| `npm test` | 比开工基线多出 C0/C3/C4/C5 的新文件与新用例；**以命令输出为准** | 待填 |
-| `npm run typecheck` | exit 0（`EngineProfile` 改名后任何漏改的**带类型**位置都会在这里炸） | 待填 |
-| `npm run build` | exit 0，且 `verify:dist` 14 项全过（没有新增资源、没有动 manifest） | 待填 |
-| `npm run zip` | exit 0，产物文件数与字节数**与上一次收口一致**（本单元没有新增打包文件） | 待填 |
-| `node scripts/sync-plan-code.mjs …` | `已同步 0 个代码块` | 待填 |
+| `npm test` | 比开工基线多出 C0/C3/C4/C5 的新文件与新用例；**以命令输出为准** | **55 files / 1052 passed** |
+| `npm run typecheck` | exit 0（`EngineProfile` 改名后任何漏改的**带类型**位置都会在这里炸） | **exit 0** |
+| `npm run build` | exit 0，且 `verify:dist` 14 项全过（没有新增资源、没有动 manifest） | **exit 0**；链内 `verify:dist` **14 项全过**；独立复跑 `npm run verify:dist` 也 exit 0 / 14 项 |
+| `npm run zip` | exit 0，产物文件数与字节数**与上一次收口一致**（本单元没有新增打包文件） | **exit 0；16 个文件 / 64747 字节**（解包后 16 文件共 168500 字节）。自行解回临时目录与 `dist/` 逐字节比对 **16/16 一致、差异 0**；**连跑两次 SHA256 一致**（`6D66C0FA…BEE9`）⇒ 可复现 |
+| `node scripts/sync-plan-code.mjs …` | ⚠ **投影原写「已同步 0 个代码块」——实测不成立**，正确投影是"首跑同步 2 个块、复跑 0 个块" | **首跑「已同步 2 个代码块」**（`tests/options/engine-expansion.test.ts` 145 → 253 行、`tests/options/engine-models.test.ts` 557 → 576 行）；**复跑「已同步 0 个代码块」（幂等）** |
 
 > `sync-plan-code` 那条的读法：本计划的**整文件**块（`src/background/models.ts`、`src/background/models.test.ts`、`src/options/engine-expansion.test.ts`、`src/options/engine-models.test.ts`）首行是 `// <路径>`，会被对齐；**片段**块的首行带后缀，脚本不认。所以 `已同步 0 个代码块` = 已实现的那几个整文件块与仓库逐字一致。**若报出同步了某个文件**，那就说明实现阶段有意改过它——去读那次改动的提交信息，把"计划与实现哪里不同、为什么"写进交付说明（这是**允许**的，不许做的是"不同却不说"）。
+
+> **更正（C6 收口实测）**：上面那句"所以 `已同步 0 个代码块` = 已实现的那几个整文件块与仓库逐字一致"**读法用对了，但投影猜错了**——`src/options/engine-expansion.test.ts` 与 `src/options/engine-models.test.ts` 两个整文件块**并不一致**，实测**首跑同步 2 个块**。按上面那条规矩办：这两个文件是 **C0 / C4 落地时有意改的**（`engine-expansion` 加了"点击委托"那 3 条用例、`engine-models` 加了"模型目录"那一段），只是**当时没回写计划**；本轮 `sync` 已把它们逐字对齐，**复跑即 0 个块（幂等）**。手工块（HTML / CSS）不归脚本管，比对结果见本 Task 末尾的「收口附注」。
 
 - [ ] **Step 6: 交付说明里必须写明的三件事（本机测不了的东西）**
 
@@ -4376,6 +4505,22 @@ Expected（**投影 vs 实测并列**，交付时必须两列都在）：
 ```bash
 git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知限制" -- README.md
 ```
+
+### 收口附注：手工块比对与投影更正（C6 收口，非 Step）
+
+**一、手工块（HTML / CSS）：脚本不认，只能人工比。** `src/options/options.html` 与 `src/options/options.css` 的片段首行不是 `// <路径>`，`sync-plan-code.mjs` 不认、**永不被自动校验**。本轮逐行比对结论 = **两处都已对齐**：
+
+- **C4 Step 4（`options.html` 的 `<p class="hint">`）**：与 `src/options/options.html:72-79` **逐行一致**（9 行）。
+- **C4 Step 5b（`options.css` 追加块）**：与 `src/options/options.css:450-538` **逐行一致**（块内去掉块首那行说明性注释与紧随的一个空行后，**89 行 == 89 行、逐字节相同**），追加位置也确实在 `.lab small / .grow2 .lab span`（`:442-448`）之后、`.field` / `.badge` 之后。
+- **C4 Step 5a（删 `.profile-summary` / `.profile-summary:hover`）**：`src/options/options.css` 里现在**一条 `profile-summary` 都没有** ⇒ 删除已落地，与计划一致。
+- **块内字面 `**` 体检**：`options.html` 块 **0 处**（不会原样上屏）；`options.css` 块有 **1 处**，落在块内的 `/* … */` 注释里、**不上屏**，无需处理。
+- **已知漂移 = 无**（本轮没有"改不动"的手工块，因此没有需要点名的差异）。
+- **旧说法残留**：代码块里 `第二处接线` **0 处**、`保存档案` **3 处**（已扫全部 84 个块）——① `:1423`（`tests/background/models.test.ts` 夹具注释"用户保存档案时点过允许"：泛指"保存档案这个**动作**"，**不是控件名**）② `:4464` + ③ `:4466`（**README 片段本身**：`:4464` 是"要替换掉的 before 文本"，`:4466` 是紧挨着的仍待改正文，**正是 C6 Step 4 要改的那一处**）。所以"`保存档案` 作为**控件名**出现在**已定稿代码**里"= **0 处**（那 3 处都不是控件名引用）。块外散文另有 `:65` / `:94` / `:150` / `:168` / `:2100` / `:4679` 在讲"控件名从「保存档案」改成「保存」"这**一条历史**，`:3443` 是"**第二处接线**"这个三处编号口径的**定义句**。以上均属规格叙述、有意保留的更正痕迹与待改正文，**不是残留**。
+
+**二、投影更正（不是实测不达标）。** C6 Step 5 的 Expected 表里 `sync-plan-code.mjs` 那一行原写「`已同步 0 个代码块`」——**实测首跑同步 2 个块**（`engine-expansion.test.ts` 145 → 253 行、`engine-models.test.ts` 557 → 576 行），复跑才 0 个块。投影写错的原因是"已实现"被当成了"已对齐"：这两个文件在 C0 / C4 落地时被**有意**改过，当时没回写计划。按 C6 Step 5 自己定的规矩处理（"若报出同步了某个文件 → 把计划与实现哪里不同、为什么写进交付说明"），本轮已把两个块逐字对齐。
+
+**三、收口期间的并发提交（读数归属）。** 取五条读数时的 HEAD 是 `052ab4a`；收口期间另一个代理把两个 README 提交推上去，HEAD 变成 `2c81059`。`052ab4a..2c81059` 只改了 `README.md`（+67/−17），**没有碰任何 `src/**` / `tests/**` / `scripts/**` / `package.json`**，所以五条命令**在 `2c81059` 上复跑读数逐项相同**（含 zip 的 SHA256）。按硬规矩 12"取读数前先记 `git rev-parse HEAD`"，两个提交号都记在这里；**本计划的提交落在 `2c81059` 之上**。
+
 
 ---
 
@@ -4391,7 +4536,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | 6 | 打开设置页 / 切换档案 / 聚焦输入框都不触发拉取 | C4 Step 1（零自动拉取用例，正负两半同条） |
 | 7 | 弹窗下拉 1 项无、2 项有；切回档案记住上次用的模型 | C5 Step 1/5（三态 + 往返用例） |
 | 8 | 换模型后 `configHash` 变化 | **C3 Step 1d 的第二条**（同一个档案换 `activeModel` → 不命中旧缓存）+ **两张已存在的网**：`tests/background/scheduler.test.ts:290`（单元级）+ `tests/background/service-worker.test.ts`「两个档案同 baseUrl 同 model → 换 model 不串」（端到端，变异 G4 是它的读数）。⚠ 计划早先写"端到端那条今天不存在"是**说宽了**：缺的是"同一个档案换 `activeModel`"这条轴，不是"端到端"这个层级 |
-| 9 | 全量 `npm test` / `typecheck` / `build` / `zip` 全绿 | C6 Step 5 |
+| 9 | 全量 `npm test` / `typecheck` / `build` / `zip` 全绿 | C6 Step 5。**已回填（C6 收口实测，`052ab4a`）**：`npm test` **55 files / 1052 passed**、`typecheck` exit 0、`build` exit 0（含 `verify:dist` **14 项全过**）、`zip` exit 0（**16 文件 / 64747 字节**，两次 SHA256 一致）。⚠ `sync-plan-code.mjs` 的实际读数是**首跑同步 2 个块**、复跑 0 个块（幂等）——见 C6「收口附注：手工块比对与投影更正」 |
 | 10 | 折叠行：名字 + `自定义`徽章（仅非预设）+ 三态点 + 编辑/删除 + 「使用中」 | C4 Step 1/3f |
 | 11 | 折叠行次级 meta（`接口地址 · 当前模型`，未填写占位） | C4 Step 1/3b（**偏离一**） |
 | 12 | 面板：名字 / Key（显示切换 + 两种占位）/ `自定义设置` 默认折叠规则 / 模型目录 / `⟳` / `添加模型` / 测试连接·取消·保存 | C4 Step 1/3d |
@@ -4575,8 +4720,9 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **C5 落地提交 `08bfaad`（4 文件 +262/−4）与它的 12 轮变异** | 计划只点了少数几条 | **M2 存活**（`problem` / `missingKey` 的顺序不可观察，已进复盘 §4）；**M4 实测 6 红**（计划写 1——表达式 `> 0` 与它的期望对不上，正确表达是 `=== 1`）；**M10 实测 3 红**（计划写 2——漏了状态行那句 `toContain('重新翻译')`）；**M12 构造不出红**（`.field[hidden]` 那条 CSS，已进复盘 §4 并在 C6 的 README 里点名为真机肉眼项）。另：`storedActiveModel('p-b')` 的实测值是 **`''`** 而不是计划写的 `a2`（`pickProfile` 把非成员值归一化成空串） |
 | **C5 的 id 计数同步（"只增不减"的又一笔）** | 计划 5a/5b 与 Step 6 没提这条既有断言 | `tests/popup/popup.test.ts` 的 `expect(parsed.querySelectorAll('[id]').length)` 从 **11 → 13**（Step 3 加了 `#model-field` / `#model`）。⚠ **这是"同步事实"、不是放松**：它本来就是**精确相等**，加两个 id 就 +2；写成 `>= 11` 才是放松。**已写进 C5 节头的既有断言迁移表** |
 | **C5 全量读数（落地实测）与它的基线** | 以命令输出为准 | **55 files / 1052 passed**、`typecheck` exit 0、`build` exit 0；**基线是 `d35be33`**（不是 `f687e6a`——期间有并发提交，`HEAD~1` 当时不是你以为的那个）。**规矩**：取读数前先记 `git rev-parse HEAD`（硬规矩 12） |
-| 收口 `npm test` | 以命令输出为准 | |
-| 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
-| `sync-plan-code.mjs` | `已同步 0 个代码块` | |
+| 收口 `npm test` | 比开工基线多出 C0/C3/C4/C5 的新文件与新用例；**以命令输出为准** | **55 files / 1052 passed**（与 C5 落地读数同值：本轮收口没有新增或改动任何 `src/**` / `tests/**`） |
+| 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0，且 zip 产物文件数与字节数**与上一次收口一致** | **`typecheck` exit 0**；**`build` exit 0**（链内 `verify:dist` **14 项全过**，独立复跑同为 exit 0 / 14 项）；**`zip` exit 0：16 个文件 / 64747 字节**（解包后 16 文件共 168500 字节）。自行解回临时目录与 `dist/` **逐字节比对 16/16 一致、差异 0**；**连跑两次 SHA256 完全相同**（`6D66C0FA2FBE3EB9413FA65BB7BD034A3EA3C7ACB477FA36BAE4695CEBE5BEE9`，两次都是 64747 字节）⇒ **可复现** |
+| `sync-plan-code.mjs` | `已同步 0 个代码块` | **首跑「已同步 2 个代码块」、复跑「已同步 0 个代码块」（幂等）**——被对齐的两个**整文件**块是 `tests/options/engine-expansion.test.ts`（145 → 253 行）与 `tests/options/engine-models.test.ts`（557 → 576 行）。⚠ **投影那一列写错了**（把"已实现"当成"已对齐"）：C0/C4 落地时有意改过这两个文件，只是没回写计划。见 **C6「收口附注：手工块比对与投影更正」**；另两个整文件块（`src/background/models.ts`、`tests/background/models.test.ts`）首跑即已一致 |
+| **收口实测对应的提交** | —— | 取上面五条读数时 `git rev-parse HEAD` = **`052ab4a0c1b053ceb348ec7552431d28b4de08a0`**（`sync-plan-code.mjs` 的读数在**本计划同步之后**取的）。⚠ **收口期间 HEAD 被并发代理推进到 `2c81059`**（`052ab4a..2c81059` 只改了 `README.md` +67/−17，**没有碰任何 `src/**` / `tests/**` / 脚本**）——五条命令**在 `2c81059` 上复跑读数与上表逐项相同**（`55 files / 1052 passed`、typecheck/build exit 0、`verify:dist` 14 项、zip 16 文件 / 64747 字节、SHA256 仍为 `6D66C0FA…BEE9`）。**本计划的提交因此落在 `2c81059` 之上** |
 
 
