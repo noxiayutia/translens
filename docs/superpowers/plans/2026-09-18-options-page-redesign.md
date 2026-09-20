@@ -5040,7 +5040,7 @@ git commit -m "feat(options): 自定义提示词区块（失焦保存、留空�
 > 1. **`src/options/store.ts`：`patchSettings` 的快照从 `{ ...latest, ...patch }` 改成 `mergeSettings({ ...latest, ...patch }, CURRENT_VERSION)`。**
 >    **它不是越权重构，是必要前置**：`store.ts:60/92` 自己写着"快照只是写入成功之后的**结果记录**"，而 `saveSettings` 落盘的**永远**是 `mergeSettings(…, CURRENT_VERSION)`（`shared/settings.ts:537`）——旧写法下快照存的是**请求值**、不是**落盘值**。落地时的探针读数（**24 例**）：改前 **22 例快照 ≠ 存储**，改后 **24/24 一致**；**落盘侧一个字节都没变**（归一化本来就在 `saveSettings` 里，`version` 恒为 3）。本任务自带验收标准里的"输入框回填**生效值**"，生效值的唯一来源就是快照——所以这一行是那条用例的前提。落地后 `store.test.ts` 又补了一条**直接**读数：「快照必须是存储里真正生效的值：越界写入被夹后，快照与存储一致」（`82b2d33`）。
 > 2. **`tests/options/no-innerhtml.test.ts`：必需路径清单从 4 条补到全部 8 个 `sections/*.ts`。**
->    `shortcuts.ts` 从 Task 3 起就存在，却**从来不在清单上**（清单一直写着"四个区块一个都不能少"，而 Task 4~7 已经把它加到了 8 个）。断言本身（`arrayContaining` + `hits` 为空）**一字未动**——这是**加强**，不是放宽；同时把注释里"今天必须被扫到"这种会过期的说法改成**下限**口径。
+>    这四条（`shortcuts` / `glossary` / `site-rules` / `prompt`）分别是 **Task 4~7 新建**的区块（`git log --diff-filter=A` 取证：`5160200` / `b85513e` / `7cc8080` / `ca90981`），而清单自 Task 3 之后**一直没跟着补**——Task 3 的 `e5007a0` 当时列的正是当时存在的四个（engine / language / cache / privacy），**不是"漏了 `shortcuts.ts`"**（它那时还不存在）；`7f7a2dd` 一次补齐。断言本身（`arrayContaining` + `hits` 为空）**一字未动**——这是**加强**，不是放宽；同时把注释里"今天必须被扫到"这种会过期的说法改成**下限**口径。
 
 > 三个统计数字（已缓存 / 上限 / 并发）、缓存上限、清除按钮，`<details>` 里放并发与批量三项。
 > **数字控件的保存时机**也是 `change`：数字输入框的 `change` 原生就在提交时（失焦或回车）触发，
