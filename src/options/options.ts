@@ -81,7 +81,18 @@ async function start(): Promise<void> {
 
 /** 搜索框：只过滤区块与字段标签，不改 DOM 结构（规格 §4.2）。 */
 function bindSearch(): void {
-  const input = document.getElementById('search') as HTMLInputElement;
+  // 带类型参数取（`getElementById` 只给 `HTMLElement`，要用 `.value` 就得再来一次
+  // `as HTMLInputElement`——那正是这里要拿掉的东西），然后**如实判空**，而不是把"可能为
+  // null"抹掉：这个函数跑在 `runSafely` **之外**（见 `init()`：区块 `bind` → 这里 → 兜底），
+  // null 会在 `addEventListener` 上抛，`init()` 当场中断——后面所有区块的监听器都挂不上，
+  // 页面停在文件顶部那段注释点名要防的死状态。少了搜索框只该是"搜索不可用"，不该是整页不可用。
+  // （这一行与计划里 Task 9 Step 3 的逐字片段不同，属主动偏离，记账见提交信息。）
+  // 静态 HTML 里 `#search` 恒在，所以这条分支今天在真实页面上不可达；读数在
+  // `tests/options/search.test.ts` 的"页面里没有 #search"那条：把搜索框摘掉再加载设置页，
+  // 不抛、且悬停翻译开关照常存得下去（摘掉之前那条以
+  // `Cannot read properties of null (reading 'addEventListener')` 拒绝）。
+  const input = document.querySelector<HTMLInputElement>('#search');
+  if (input === null) return;
   const search = createSearch(SECTIONS);
   input.addEventListener('input', () => {
     search.apply(input.value);

@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { matchesTerms, parseQuery } from '../../src/options/search';
-import { bubble, loadOptions, pick, resetOptionsPage, seedSettings } from './harness';
+import { bubble, loadOptions, mountOptionsHtml, pick, resetOptionsPage, seedSettings, settle } from './harness';
 
 /**
  * 设置页样式表的路径（只给上面那条"CSS 引用的 `#sec-*` 都得存在"的守卫用）。
@@ -105,10 +105,20 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
       search(query);
       expect([query, visibleSections()]).toEqual([query, ['engine']]);
     }
-    // 索引只读这两类元素：隐私区块里既没有 `.lab`，`.sec-desc` 也只有那一句别名无关的话。
+    // 索引只读这两类元素：隐私区块里没有 `.lab`，`.sec-desc` 也只有一个。
     // **这两条是"防空洞"的护栏**：它们断言的是**文案的形状**（隐私里没有 `.lab`、只有 1 个
     // `.sec-desc`、正文里确实有那些词），不是搜索逻辑本身。将来谁改了隐私文案（加一个 `.lab`、
-    // 或者把那句承诺挪进 `.sec-desc`），红的是这里——那时该改的是**文案或索引边界**，不是搜索。
+    // 或者再挂一句 `.sec-desc`），红的是这里——那时该改的是**文案或索引边界**，不是搜索。
+    // 这两句注释都按实测改过口，别再退回笼统说法：
+    // ① `.lab` 计数这条**不是恒真式**，只是会被上面那圈循环**遮蔽**。往隐私区块插一个 `.lab`：
+    //    若那个词正好是某个区块的别名（实测用「密钥」），搜「密钥」先让隐私一起点亮，红在上面
+    //    的 `visibleSections()`（收到 `['engine','privacy']`），这条根本轮不到执行；只有当那个
+    //    词**不是任何别名**时（实测用「边界说明」），才由这条当场红（`to have a length of +0
+    //    but got 1`）。它守的是"隐私区块不长出 `.lab`"，代价是插进来的词不许是别名。
+    // ② 上面那句 `.sec-desc` **不是"别名无关的话"**（原文这么写，实测是假话）：它含隐私**自己**
+    //    的两个别名——`网络请求`、`可见文本`（`sections/privacy.ts` 的别名表）。但它不含**别的
+    //    区块**的别名：全量"别名 × 各区块干草堆"碰撞矩阵实测**跨区块碰撞总数 = 0**，所以别名
+    //    互斥与索引边界都不受影响（自己的别名落在自己的干草堆里本来也无害）。
     expect(privacy.querySelectorAll('.lab')).toHaveLength(0);
     expect(privacy.querySelectorAll('.sec-desc')).toHaveLength(1);
     // 而正文里确实有那些词（否则这条用例就是空转）。
@@ -135,10 +145,15 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
 
     search('源语言');
     expect(visibleSections()).toEqual(['language']);
-    // 反向也要守：组里**还有可见链接**时不能连整个组一起藏。把 `every` 写成 `some` 就会——
-    // 语言与显示明明命中了，却被「翻译」这一组的隐藏一起带走，而只查"命中的区块可见"的断言
-    // 看不见它（那条只看 `[data-section]`，不看导航项，更不看分组）。实测：`every` → `some`
-    // 跑完全绿，补上这一条才当场红（变异表之外自己加的一条探针，记账见提交信息）。
+    // 反向也要守：组里**还有可见链接**时不能把这个分组一起藏掉。把 `every` 写成 `some` 就会——
+    // `some` 只要"组里有**任何一个**链接被藏"就为真，于是**过度隐藏**：搜「源语言」时「翻译」
+    // 这一组 3 个链接里藏了 2 个（实测 `[["engine",true],["language",false],["shortcuts",true]]`），
+    // 组被一起藏掉，**还该可见的「语言与显示」跟着它所在的分组一起消失**。变的是**祖先**的
+    // `hidden`，链接自己的 `hidden` 仍是 false，所以只查"命中的区块可见"（那条只看
+    // `[data-section]`）或只看 `[data-nav]` 自己 `hidden` 的断言都看不见它——实测：`every` → `some`
+    // 之后把下面这一条注释掉，全量用例仍然全绿，放回来才当场红（`expected true to be false`）。
+    // 这个选择器只取**第 1 个** `[data-nav-group]`（页面共 3 个：翻译 / 内容控制 / 数据），也就是
+    // 「语言与显示」所在的那个分组；分组那段逻辑本身对**每个** `[data-nav-group]` 跑同一套代码。
     expect(document.querySelector<HTMLElement>('[data-nav-group]')?.hidden).toBe(false);
 
     search('并发');
@@ -167,6 +182,28 @@ describe('搜索：过滤的是区块，不是 DOM 结构', () => {
 
     expect(visibleSections()).toHaveLength(8);
     expect(pick<HTMLElement>('search-empty').hidden).toBe(true);
+  });
+
+  it('页面里没有 #search：接线不抛，其余区块的监听器照常挂上（少了搜索框 ≠ 整页死掉）', async () => {
+    // `bindSearch()` 跑在 `runSafely` **之外**（`init()` 里它在前、兜底在后），所以它一抛，
+    // `init()` 当场中断——后面所有区块的监听器都挂不上，页面停在文件顶部注释点名要防的
+    // "看着能点、点下去没反应"。这条把那个分界钉住：先摘掉搜索框再加载设置页。
+    // 摘掉之前是**承重**的：修复前 `await import(...)` 直接以
+    // "Cannot read properties of null (reading 'addEventListener')" 拒绝，这条当场红。
+    await seedSettings();
+    mountOptionsHtml();
+    pick<HTMLElement>('search').remove();
+    await import('../../src/options/options');
+    await settle();
+
+    // 别的区块照常工作：悬停翻译开关仍然存得下去（它证明 `bind` 那一圈真的跑到了）。
+    // 只断言"存成功"这件事，不复述 shortcuts 区块的整句文案（那是它的措辞，不是这条的分界）。
+    const toggle = pick<HTMLInputElement>('hover-translate');
+    toggle.checked = false;
+    toggle.dispatchEvent(bubble('change'));
+    await settle();
+    const status = pick<HTMLElement>('shortcuts-status');
+    expect([status.dataset.kind, status.textContent?.includes('已保存')]).toEqual(['ok', true]);
   });
 });
 
@@ -251,11 +288,15 @@ describe('区块清单与页面结构一一对应', () => {
     //    拼写对不上——屏幕阅读器读不出这个区块的标题，而**没有任何用例会红**。
     await seedSettings();
     await loadOptions();
+    const { SECTIONS } = await import('../../src/options/options');
 
-    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'));
-    expect(labelled.length).toBeGreaterThanOrEqual(8);
+    // 只数 `[data-section][aria-labelledby]`，并与区块清单逐项对齐。这里刻意**不**写
+    // "文档里带该属性的元素总数 >= 8"：那是个会漂的数——页面别处新增一个带 `aria-labelledby`
+    // 的元素，就能在某个区块丢掉标题关联时把这条顶住（总数还是 8），守卫静默失效。
+    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[data-section][aria-labelledby]'));
+    expect(labelled.map((node) => node.dataset.section)).toEqual(SECTIONS.map((section) => section.id));
     const missing = labelled
-      .map((node) => [node.dataset.section ?? node.id, node.getAttribute('aria-labelledby') as string] as const)
+      .map((node) => [node.dataset.section as string, node.getAttribute('aria-labelledby') as string] as const)
       .filter(([, id]) => document.getElementById(id) === null);
     expect(missing).toEqual([]);
     // 反向也查一遍：CSS 里引用的每个 `#sec-*` 都得在页面里存在（就是那四个死选择器的守卫）。
