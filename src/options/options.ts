@@ -19,9 +19,6 @@ import { cacheSection } from './sections/cache';
 import { privacySection } from './sections/privacy';
 import type { Section, SectionContext } from './section';
 import { createSearch } from './search';
-// **临时诊断探针**（`localStorage.jyPerf === '1'` 才生效）：用户报"点开服务商很慢、
-// 有时点了没反应"，本机没有浏览器量不到真机数字。诊断结束就删掉这个 import 与那个文件。
-import { installPerfProbe } from './perf-probe';
 import { currentSettings, loadSnapshot, patchSettings } from './store';
 import type { Settings } from '../shared/settings';
 
@@ -105,7 +102,6 @@ function bindSearch(): void {
 function init(): void {
   for (const section of SECTIONS) section.bind(context);
   bindSearch();
-  installPerfProbe(); // 临时诊断探针：默认关（见 perf-probe.ts 顶部注释）
   runSafely(engineStatus, '设置读取失败', start);
 }
 
