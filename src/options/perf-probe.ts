@@ -34,7 +34,10 @@ export function installPerfProbe(): void {
       const row = target.closest('[data-profile-id]');
       const probe = {
         target: describeTarget(target),
-        action: target.dataset.action ?? '(none)',
+        // ⚠ 这一格**不能**读 `target.dataset.action`：那正是被测代码当初那个错口径，
+        // 探针照抄它就会在修复之后继续打印 `(none)`，把"修好了"读成"没修好"。
+        // 验收要看的是 `expandedBefore`/`expandedAfter`（点行头文字后 0 → 1）。
+        action: target.closest<HTMLElement>('[data-action]')?.dataset.action ?? '(none)',
         row: row instanceof HTMLElement ? row.dataset.profileId : '(none)',
         rows: document.querySelectorAll('#profiles .profile-row').length,
         expandedBefore: document.querySelectorAll('#profiles .profile-editor').length,
