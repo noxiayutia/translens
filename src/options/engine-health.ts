@@ -25,18 +25,41 @@ export interface EngineHealth {
 export const ENGINE_HEALTH_KEY = 'jinyi:engine-health';
 
 /**
- * 内置免费引擎在健康记录里的**保留键**。
+ * 记录键的**两个键空间**：档案记录是 `p:<档案 id>`，引擎记录是 `e:<引擎名>`。
  *
- * 为什么不能直接用 `DEFAULT_ENGINE_ID`（= `google`）：这份记录是 `Record<id, EngineHealth>`，
- * 免费引擎与"某个档案"共用同一个键空间。档案 id 由 `createProfileId()` 生成（恒带 `p-` 前缀），
- * 但**存储层不做保留字检查**（`pickProfile` 只要求"非空字符串"），脏存储/外部写入可以造出一个
- * id 恰为 `google` 的档案。撞上时的症状是两行共用一个槽：点免费行亮的是**用户档案行**，
- * 重绘后两行同时绿，而重开设置页只有一条记录。
+ * 为什么不是"档案用裸 id、引擎用一个保留值"：那样两类键仍然共用一个字符串空间，撞车只是被
+ * 缩小、没有被消除——档案 id 由存储层从任意非空字符串读回（`pickProfile` 只要求"非空字符串"，
+ * 不做保留字检查），谁都能造出一个恰好等于引擎键的 id。撞上时的症状是两行共用一个槽：
+ * 点免费行亮的是**用户档案行**，重绘后两行同时绿，而重开设置页只剩一条记录。
  *
- * 取值与 `sections/engine.ts` 的 `NEW_DRAFT_ID`（`__new__`）同款约定：合法档案 id 都带 `p-`
- * 前缀，`__…__` 形态的哨兵不可能由生成器产出。
+ * **前缀不同 ⇒ 两类键按构造不可能相等**（档案键恒以 `p:` 开头、引擎键恒以 `e:` 开头）：
+ * 任何档案 id（`google`、`e:free`、`__new__`、脏存储里别的什么怪值）都撞不到引擎那一格。
+ * 这是**消除**撞车，不是把撞车的范围缩小一格。
+ *
+ * 读侧**不按前缀过滤**（`pickHealth` 仍然键无关）：一是"形状不对的记录丢掉"那条规矩与键空间
+ * 是两件事，混在一处会让前者的读数（`tests/options/engine-health.test.ts`「存储里是垃圾也不崩」
+ * 用 `good` / `badState` 这类任意键）说不清是被谁丢的；二是过滤解决不了任何问题——没有一行会去
+ * 读裸键。
+ *
+ * 迁移：本分支的中间版本用**裸 id**（`google` / `p-a`）写过记录。那是 session 区域、从未发布、
+ * 浏览器一关就没了，所以这里**刻意不写迁移代码**：裸键今天读不到任何一行，留着只是多几条
+ * 没人认领的条目。
  */
-export const FREE_ENGINE_HEALTH_ID = '__free__';
+const PROFILE_HEALTH_PREFIX = 'p:';
+const ENGINE_HEALTH_PREFIX = 'e:';
+
+/** 内置免费引擎那一格的键。它按构造不可能等于任何档案键（见上面两个键空间）。 */
+export const FREE_ENGINE_HEALTH_KEY = `${ENGINE_HEALTH_PREFIX}free`;
+
+/** 一个档案的记录键：`p:<档案 id>`。读写都必须走它，别在别处拼字面量。 */
+export function profileHealthKey(id: string): string {
+  return `${PROFILE_HEALTH_PREFIX}${id}`;
+}
+
+/** 档案记录键 → 档案 id；不是档案键（引擎键、老构建的裸键…）时返回 `null`。 */
+export function profileIdFromHealthKey(key: string): string | null {
+  return key.startsWith(PROFILE_HEALTH_PREFIX) ? key.slice(PROFILE_HEALTH_PREFIX.length) : null;
+}
 
 /**
  * 默认区域的包裹**只做一次**（按底层存储区对象记住它）。
@@ -97,6 +120,23 @@ export async function loadEngineHealth(area: StorageArea = sessionArea()): Promi
  *
  * 队列的键是**调用方交进来的那个存储区对象**：默认路径靠上面的 `sessionArea()` 复用同一个包裹
  * 才排得进同一条队列；显式传 `area` 的调用方若要并发写互相排队，也得传同一个对象。
+ *
+ * ⚠ **这条队列的作用域边界（做不到的事，如实写在这里）**：队列是**模块实例级**的，而模块实例与
+ * `chrome.storage.session` 都是**每个 JS 上下文各一份**（设置页与扩展的 service worker 是两个
+ * 上下文，两个设置页标签也是）。所以**同时打开两个设置页**时，两个上下文各排各的队，最后落盘的
+ * 那次仍会把前一条吃掉——症状与排队之前一模一样。这**不是本模块能修的**：`chrome.storage` 没有
+ * 比较并交换，跨上下文的串行化在这一层做不到。它与 `store.ts` 文件头承认的那条已知代价
+ * （规格 §4.1：两个设置页并排打开时，后写的一方覆盖前一方）**是同一性质**，只是这里丢的是
+ * "最近一次测试结果"而不是设置。
+ *
+ * ⚠ **一处未在真机上取过读数的假设**：记忆化（`wrappedAreas`）依赖"同一个上下文里
+ * `chrome.storage.session` 每次读都是同一个对象"。这是按 `@types/chrome` 的 API 形态推断的
+ * （`storage.session` 是 `StorageArea` 属性，不是 getter 工厂），**没有实测**。若它不成立，
+ * 每次调用都会拿到新包裹、队列静默退化成"看起来串行化了、其实没有"（正是 F3 修前的症状）。
+ * 为什么不改成模块级的单例队列（那样就零假设了）：代价是把互不相干的存储区排到同一条线上
+ * （单测里注入自己的 `area` 时会排到会话区后面），而它**并不改善**上面那条跨上下文的边界——
+ * 单例同样是每个上下文一份。所以这里保留按存储区共享（与 `core/cache.ts` 同一范式）。
+ * 若将来真机读数证明该假设不成立，换成模块级 `let queue` 是 5 行的事。
  */
 const queues = new WeakMap<StorageArea, Promise<unknown>>();
 
@@ -141,11 +181,21 @@ export async function forgetEngineHealth(id: string, area: StorageArea = session
  * 不能靠"服务商不会回显"来兜。
  *
  * 只做**精确子串替换**，不做正则或形状猜测：我们确切知道的只有 `config.apiKey` 这一把，
- * 猜别的形状既会把正常文案改花，又可能漏掉真正的那把。空 Key（免费引擎、没填 Key 的路径）
- * 不做替换——空串会被当成"每个位置都命中"。
+ * 猜别的形状既会把正常文案改花，又可能漏掉真正的那把。
+ *
+ * **长度门槛 8**：更短的"Key"（`hello`、`你好`、空串）一律原样放行。理由是精确子串替换在短串上
+ * 必然误伤——实测 `apiKey='hello'` + 译文 `你好，hello world` 会被抹成 `你好，*** world`，
+ * `apiKey='你好'` + 译文 `你好` 会被整句抹成 `***`；而短串本来也无法在文本里可靠地识别成凭据
+ * （真凭据都够长，各家至少 `sk-` + 一串）。空 Key（免费引擎、没填 Key 的路径）因此天然落在
+ * 门槛之外，不需要单独一支。
+ *
+ * **残留（如实说）**：≥8 字符的 Key 若**逐字**出现在正常译文里，一样会被抹掉——这是拿
+ * "偶尔改花一句译文"换"凭据不进状态行/`title`/会话记录"，方向是有意选的。
  */
+const MIN_REDACT_LENGTH = 8;
+
 export function redactSecret(text: string, secret: string | undefined): string {
   const key = (secret ?? '').trim();
-  if (key.length === 0) return text;
+  if (key.length < MIN_REDACT_LENGTH) return text;
   return text.split(key).join('***');
 }

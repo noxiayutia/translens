@@ -46,9 +46,11 @@ import {
 import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';
 // 状态点的记录（§4.3）：独立于 `store.ts` 的会话内记忆，见 `engine-health.ts` 顶部的说明。
 import {
-  FREE_ENGINE_HEALTH_ID,
+  FREE_ENGINE_HEALTH_KEY,
   forgetEngineHealth,
   loadEngineHealth,
+  profileHealthKey,
+  profileIdFromHealthKey,
   redactSecret,
   saveEngineHealth,
   type EngineHealth,
@@ -180,9 +182,9 @@ function applyDot(dot: HTMLElement, record: EngineHealth | undefined): void {
  * **没有删除、没有编辑**（§3.1：内置免费引擎不可删，也没有可编辑的配置）。
  * 它不带 `data-profile-id`：既有用例的 `profileRows()` 只数真实档案。
  *
- * 状态点读的是**保留键** `FREE_ENGINE_HEALTH_ID`，不是 `DEFAULT_ENGINE_ID`（见那里的说明：
- * 档案 id 可能是 `google`，共用键时免费行与档案行会互相点亮）。这一行没有任何取自 `ctx`
- * 的东西（配置是零配置、状态点来自会话记录），所以不接区块上下文。
+ * 状态点读的是引擎键 `FREE_ENGINE_HEALTH_KEY`。它与档案键（`p:<id>`）按构造不可能相等，
+ * 所以免费行与档案行**不会互相点亮**（见 `engine-health.ts` 里那两个键空间）。这一行也没有
+ * 任何取自 `ctx` 的东西（配置是零配置、状态点来自会话记录），所以不接区块上下文。
  */
 function buildFreeEngineRow(): HTMLElement {
   const engine = getEngine(DEFAULT_ENGINE_ID);
@@ -192,7 +194,7 @@ function buildFreeEngineRow(): HTMLElement {
   const line = element('span', 'line');
   line.append(element('span', 'name', engine.name), element('span', 'badge', '内置'));
   const dot = element('span', 'dot');
-  applyDot(dot, health[FREE_ENGINE_HEALTH_ID]);
+  applyDot(dot, health[FREE_ENGINE_HEALTH_KEY]);
   line.append(dot);
 
   const grow = element('span', 'grow');
@@ -322,7 +324,7 @@ function buildProfileRow(ctx: SectionContext, id: string): HTMLElement {
   if (!isNew) {
     // 草稿行没有 id，也就没有"最近一次测试"可言——不给它一个永远灰的点。
     const dot = element('span', 'dot');
-    applyDot(dot, health[id]);
+    applyDot(dot, health[profileHealthKey(id)]);
     line.append(dot);
   }
   const grow = element('span', 'grow');
@@ -437,12 +439,12 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
  * 抽出来的理由不是"少写几行"：状态点的记录、超时、错误码展开这三件事必须两处一致，
  * 各写一份必然漂移。
  *
- * `healthId` 为 `null` = **这次测试不落记录**（只有草稿行走这条：见 `recordHealth`）；
- * 其余调用方交的是档案 id 或免费引擎的保留键。
+ * `healthKey` 为 `null` = **这次测试不落记录**（只有草稿行走这条：见 `recordHealth`）；
+ * 其余调用方交的是 `profileHealthKey(id)` 或免费引擎的 `FREE_ENGINE_HEALTH_KEY`。
  */
 async function runConnectionTest(
   ctx: SectionContext,
-  healthId: string | null,
+  healthKey: string | null,
   engine: Translator,
   config: EngineConfig,
   label: string,
@@ -463,7 +465,7 @@ async function runConnectionTest(
     );
     // 成功路径也过一遍脱敏：状态行与记录一样，都不该出现那把 Key（返回的"译文"由服务商决定）。
     setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${redactSecret(translation ?? '', config.apiKey)}`);
-    await recordHealth(ctx, healthId, { state: 'ok', detail: '' }, 'ok');
+    await recordHealth(healthKey, { state: 'ok', detail: '' }, 'ok');
   } catch (raw) {
     // 错误码要显示出来（AUTH / RATE_LIMIT / NETWORK……）：它是用户判断"该改 Key 还是
     // 该稍后重试"的唯一依据，只给一句自然语言会把这两件事混在一起。
@@ -472,51 +474,62 @@ async function runConnectionTest(
     // 所以在这一处把消息抹干净，下面两句共用它（`redactSecret` 见 `engine-health.ts`）。
     const message = redactSecret(error.message, config.apiKey);
     setStatus(engineStatus, 'err', `连接失败（${error.code}）：${message}`);
-    await recordHealth(ctx, healthId, { state: 'bad', detail: `${error.code}：${message}` }, 'err');
+    await recordHealth(healthKey, { state: 'bad', detail: `${error.code}：${message}` }, 'err');
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * 找某一行的状态点。档案行走 `data-profile-id`；**内置免费引擎那一行刻意没有 id**
- * （见 `buildFreeEngineRow`），所以只能按它自己的标记找。少了这一支，免费引擎的
- * 测试连接能成功、点却永远停在灰：`rowById` 只认档案行。
+ * 记录键 → 该去哪一行找点。**两个键空间的划分只有这一处**：引擎键 → 免费引擎那一行；
+ * 档案键（`p:<id>`）→ 按 `data-profile-id` 找 `<id>` 那一行。
  *
- * 保留键这一支**必须排在 `rowById` 前面**：免费行的记录键与档案 id 是两个键空间，若先问
- * `rowById`，一条 id 恰好等于保留键的档案（脏存储/外部写入，`pickProfile` 不查保留字）就会把
- * 免费行的结果接到自己那一行上（症状与完整说明见 `FREE_ENGINE_HEALTH_ID` 的注释）。
+ * 为什么这里不需要"键序"：键自带前缀，前缀决定去哪一行，**按构造**不存在"一个字符串既可能
+ * 是档案 id、又可能是引擎键"的形状。旧写法（先 `rowById(id)`、找不到再回落免费行）正是被
+ * 档案 id 抢先的那条路：一条 id 恰好等于引擎键的档案会把免费行的结果接到自己那一行上。
+ * 不认识的键返回 `null` 是防御性的一支（本函数只接调用方刚拼出来的键）；老构建写下的裸 id
+ * 根本到不了这里——所有读取处一律按新键取，这正是"不写迁移"的口径。
  */
-function healthDot(id: string): HTMLElement | null {
-  const row =
-    id === FREE_ENGINE_HEALTH_ID
-      ? profilesList.querySelector<HTMLElement>('[data-engine-free]')
-      : rowById(id);
-  return row?.querySelector<HTMLElement>('.dot') ?? null;
+function rowForKey(key: string): HTMLElement | null {
+  if (key === FREE_ENGINE_HEALTH_KEY) {
+    return profilesList.querySelector<HTMLElement>('[data-engine-free]');
+  }
+  const id = profileIdFromHealthKey(key);
+  return id === null ? null : rowById(id);
+}
+
+/**
+ * 找某一行的状态点。档案行走 `data-profile-id`；**内置免费引擎那一行刻意没有 id**
+ * （见 `buildFreeEngineRow`），所以只能按它自己的标记找（`rowForKey` 分派）。
+ */
+function healthDot(key: string): HTMLElement | null {
+  return rowForKey(key)?.querySelector<HTMLElement>('.dot') ?? null;
 }
 
 /**
  * 记下这次测试的结果，并**就地**更新那一行的点（不整表重绘：重绘会把用户正在编辑的表单丢掉）。
  * 记录写不进去时，把原因**追加**在刚才那句话后面——本次测试的结果是真的，不该被它改掉颜色。
  *
- * `id === null` = **这次测试不落记录**，只有草稿行走这条（调用方见 `handleTestProfile`）：
+ * `key === null` = **这次测试不落记录**，只有草稿行走这条（调用方见 `handleTestProfile`）：
  * 草稿行刻意**没有状态点**（`buildProfileRow` 不给它画点），也**没有清理出口**——只有真档案
- * 被删除才会 `forgetEngineHealth`，而草稿永远删不掉。给它写一条 `__new__` 记录就是留下一条
- * 谁也认领不了、也没人清理的幽灵键（实测改前：草稿点一次「测试连接」，会话存储里就多一条
- * `{"__new__":…}`）。连接结果本身照常写在状态行上，那才是用户当场要看的东西。
+ * 被删除才会 `forgetEngineHealth`，而草稿永远删不掉。给它写一条记录就是留下一条谁也认领不了、
+ * 也没人清理的幽灵键（实测改前：草稿点一次「测试连接」，会话存储里就多一条 `{"__new__":…}`）。
+ * 连接结果本身照常写在状态行上，那才是用户当场要看的东西。
+ *
+ * 交进来的 `key` 是**已经分好键空间**的记录键（`profileHealthKey` / `FREE_ENGINE_HEALTH_KEY`），
+ * 不再兼作 DOM 上的档案 id：行由 `rowForKey` 从键推出来（键 → 行只有一处判断）。
  */
 async function recordHealth(
-  ctx: SectionContext,
-  id: string | null,
+  key: string | null,
   record: EngineHealth,
   kind: StatusKind,
 ): Promise<void> {
-  if (id === null) return;
-  health = { ...health, [id]: record };
-  const dot = healthDot(id);
+  if (key === null) return;
+  health = { ...health, [key]: record };
+  const dot = healthDot(key);
   if (dot !== null) applyDot(dot, record);
   try {
-    await saveEngineHealth(id, record);
+    await saveEngineHealth(key, record);
   } catch (raw) {
     setStatus(engineStatus, kind, `${engineStatus.textContent ?? ''}（测试结果没能记住：${describe(raw)}）`);
   }
@@ -555,9 +568,10 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
   });
 
   // 草稿行不落记录（`__new__` 既没有点可更新、也没有清理出口）：把 `null` 交给同一条路。
+  // 其余情况交的是**档案键**（不是裸 id）——键空间的分法只有 `engine-health.ts` 一处。
   await runConnectionTest(
     ctx,
-    id === NEW_DRAFT_ID ? null : id,
+    id === NEW_DRAFT_ID ? null : profileHealthKey(id),
     engine,
     config,
     `档案「${values.label}」`,
@@ -567,9 +581,9 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
 /** 内置免费引擎的测试连接：没有表单值可读，配置就是空的（免费接口零配置）。 */
 async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
   const { engine, config } = resolveEngine({ engineId: DEFAULT_ENGINE_ID, profiles: [] });
-  // 记录写在**保留键**上，不是 `DEFAULT_ENGINE_ID`（见 `FREE_ENGINE_HEALTH_ID`）：
-  // 档案 id 可以是 `google`，共用键时免费行的结果会点到用户档案那一行上。
-  await runConnectionTest(ctx, FREE_ENGINE_HEALTH_ID, engine, config, `免费引擎「${engine.name}」`);
+  // 记录写在**引擎键**上，不是档案那一格（见 `engine-health.ts` 的两个键空间）：
+  // 就算某个档案的 id 恰好等于这个键，它的记录键也是 `p:` 开头的另一个字符串。
+  await runConnectionTest(ctx, FREE_ENGINE_HEALTH_KEY, engine, config, `免费引擎「${engine.name}」`);
 }
 
 /**
@@ -619,9 +633,10 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
   );
   // 它的测试记录一并清掉。内存里的那份**立刻**扔掉（在 `try` 之前）：否则界面下一次重绘
   // 还可能画出它的点。存储里那份删不掉只影响下次打开设置页，如实说一句就够。
-  delete health[id];
+  // 删的必须是它的**档案键**（`p:<id>`）：留空或删裸 id 都会让它下次重绘时又亮起来。
+  delete health[profileHealthKey(id)];
   try {
-    await forgetEngineHealth(id);
+    await forgetEngineHealth(profileHealthKey(id));
   } catch (raw) {
     setStatus(
       engineStatus,
