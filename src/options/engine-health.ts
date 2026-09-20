@@ -25,7 +25,8 @@ export interface EngineHealth {
 export const ENGINE_HEALTH_KEY = 'jinyi:engine-health';
 
 /**
- * 记录键的**两个键空间**：档案记录是 `p:<档案 id>`，引擎记录是 `e:<引擎名>`。
+ * 记录键的**两个键空间**：档案记录是 `p:<档案 id>`，引擎记录是 `e:<引擎名>`
+ * （今天只有内置免费引擎这一格，`e:free`）。
  *
  * 为什么不是"档案用裸 id、引擎用一个保留值"：那样两类键仍然共用一个字符串空间，撞车只是被
  * 缩小、没有被消除——档案 id 由存储层从任意非空字符串读回（`pickProfile` 只要求"非空字符串"，
