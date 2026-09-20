@@ -89,7 +89,7 @@
 8. **两个折叠行元素是对参考图的偏离**：次级 meta 行（`接口地址 · 当前模型`）与可编辑的名字输入框。记账见「参考图 → DOM 映射」。
 9. **`resolveEngine` 加 `problem?: string`，不抛错。** 弹窗在同步渲染函数里调它，抛错会把整个提示区变成异常路径。零请求由**两处**保证：引擎自己的空 `model` 闸（`openai-compat.ts:67`，已存在、构造性成立）+ 后台的前置闸（C2 新增，负责给出规格指定的那句话）。为什么不把这句话塞进引擎：引擎是通用的 OpenAI 兼容适配器，它不知道"档案""模型清单"这些词。
 10. **`/models` 超时用独立常量 `MODELS_TIMEOUT_MS = 10_000`**，放 `src/background/models.ts`；**不复用** `src/content/index.ts:86` 的 `BACKGROUND_TIMEOUT_MS`（那是 60 秒的整页翻译预算，语义完全不同）。
-11. **"零自动拉取"的成对断言只能落在 C4**，因为那里才有「获取可用模型」这个**正极**。C3 阶段不写这条：那时没有任何调用方，负向断言会因为"分支根本没执行"而永远绿（本仓总结的六种杀不死的成因②）。C3 只做后台侧与消息形状。
+11. **"零自动拉取"的成对断言只能落在 C4**，因为那里才有「获取可用模型」这个**正极**。C3 阶段不写这条：那时没有任何调用方，负向断言会因为"分支根本没执行"而永远绿（本仓总结的七种假信号成因②）。C3 只做后台侧与消息形状。
 12. **换模型后的提示总是显示**（不管当前页面翻没翻译）。规格 §7 明确要求换完就给那句话；本文件其它下拉（目标语言、显示模式）用的是"页面已翻译时才说"，那是它们的口径（改动只在**下一次**翻译生效、页面没翻译时没什么可说的）。这里照 §7 走，并在注释里写明为什么与邻居不同。
 13. **`删除` 从编辑面板移到折叠行**，`保存档案` 文案改成 `保存`。5 处既有用例改点击位置、0 处允许放宽断言（C4 有完整的迁移表）。
 14. **不许新增图标依赖**：只用 `⟳`（搜索框已有 `⌕` 先例）。PUA 字形有已知限制。
@@ -120,7 +120,9 @@
 ## 硬规矩（每一步都要遵守）
 
 1. **TDD**：先写失败测试 → 跑到红（**贴期望的失败形态**）→ 最小实现 → 跑到绿 → 变异验证 → 提交。C0 有一条用例在旧实现下**本来就是绿的**（见 C0 Step 2 的说明），别当成"红得不对"。
-2. **每个守卫都要有变异读数**：说清"破坏它 → 恰好哪条用例红"。本仓的六种"变异杀不死"成因：① 断言查错侧；② 分支根本没执行；③ 成功路径被重绘/刷新掩盖；④ **断言跑在写入队列前面**（要 `await settle()` / `await waitFor(...)` 之后的稳态）；⑤ 被测层把断言要找的东西过滤掉了；⑥ 计划两半互相不满足（断言子串与代码产出对不上）。
+2. **每个守卫都要有变异读数**：说清"破坏它 → 恰好哪条用例红"。本仓的**七**种"杀不死 / 假信号"成因：① 断言查错侧；② 分支根本没执行；③ 成功路径被重绘/刷新掩盖；④ **断言跑在写入队列前面**（要 `await settle()` / `await waitFor(...)` 之后的稳态）；⑤ 被测层把断言要找的东西过滤掉了；⑥ 计划两半互相不满足（断言子串与代码产出对不上）；⑦ **测量工具复制了被测对象的错误口径**——探针/诊断读数里写下了与 bug 同源的假设，于是修好之后它仍然打出"没好"的假信号。
+   - **⑦ 的实例（本单元真发生过）**：临时诊断探针（`src/options/perf-probe.ts`）里那一格 `action: target.dataset.action ?? '(none)'` 与当时被查的委托 bug **是同一个错口径**（都读 `event.target` 自己的 `data-action`）。修复落地后，真机上点行头文字（`span.meta`）**依然打印 `action="(none)"`**，而功能其实已经好了——**差点让用户复测出一个假阴性**。同一份探针里本来就对的判据是 `expandedBefore` / `expandedAfter`（它用 `closest('[data-profile-id]')`，与被修的逻辑不同源）。
+   - **一句话教训：探针要独立于被测逻辑的假设——否则它会把"修好了"测成"没好"，比没有探针更坏。** 写诊断读数时先问一句："这一格读的东西，与被怀疑的那行代码读的是**同一个表达式**吗？"是，就换一个独立判据（状态、DOM 结构、副作用次数），别复用它。
    - **"换成恒真式后全绿"只证明没有别的用例依赖它，不证明它恒真。**
    - **变异形状要精确到对称/不对称**：同一个说法"去掉某判断"，对称还原与不对称还原的红条数不同。
 3. **既有断言只许加强、不许放松。** 本单元有一批既有断言因契约改名必须迁移（C1：存储形状与档案字段字面量；C4：删除按钮的点击位置与模型交互），迁移表逐条给出"改动前 → 改动后"，每一处都**只增不减**（例如 `stored.model` → `stored.activeModel` **并且**补上 `stored.models`；`actionButton(editor, 'delete-profile')` → `rowButton(id, 'delete-profile')`，其余断言一个字不动）。测试名要说明它**为什么存在**。
@@ -206,6 +208,8 @@
 > **验收到哪一步（必须写进交付说明）**：本机没有浏览器，所以只到 **jsdom 里的"代价不随档案数增长"读数**——单次展开的 DOM 变更量（`MutationObserver` 数增删节点）。**真机绝对耗时测不了**；用户复测若仍慢，下一步是加临时 `console` 计时探针定位。
 >
 > **落地实测（`35488b2`，本 Task 已实现并提交）**：三条用例与本节代码一致；实现者另加了一条**纯加强**的身份断言（`after.slice(0, 3).map((row, index) => row === before[index])` → `[true, true, true]`），并把本节原来那句"前三行还是原来那三个节点"的**期望红**纠正成真报文。**本节已按落地现实改过**（Step 1 的注释、Step 2 的期望红、Step 6 的两行变异机制），改的就是同一件事：**身份读数只能来自 `toBe` / `===`，`toEqual` 对 DOM 元素是结构比较**（已写进「硬规矩」）。下面「落地读数表」里 C0 那两行仍以命令输出为准。
+>
+> **后续落地（`7991539`，真机缺陷修复，也落在 `engine-expansion.test.ts`）**：用户真机复测报"点档案行头里的文字没反应"——行头是 `<button class="profile-summary">` 里包着 `span.name` / `span.meta` / `.dot`，点在文字上时 `event.target` 是那些 span，读 `target.dataset.action` 得到 `undefined`、`switch` 全部落空。修复把 click 委托的动作来源改成 `target.closest('[data-action]')`，并加了一道 `row.contains(actionEl)` 闸（防动作元素串到别的行）。该提交另加**两条用例**（点 `.meta` 就展开；连点 `.meta` 两次 = 展开再收起），变异读数：退回 `target.dataset.action` → **恰好这两条红**，其余展开用例仍绿。**所以这个测试文件现在不止三条用例**，而 **Task C4 的 click 委托片段必须沿用这个口径**（见 C4 Step 3m 的警告）——否则会把真机修好的 bug 改回去，而红的正是那两条新用例。
 >
 > **一处行为增量（C0 引入 → 契约已在 C4 定死）**：草稿行展开着时去点真档案的展开按钮——旧实现把草稿行**整行抹掉**，新实现**行留在列表里、只是收起**。
 > **直接读数已经取到（探针跑完已删）**：新实现 `ids=["p-a","__new__"]`、`draftRowExists=true`，但**切回草稿行四个字段全空**；旧实现 `ids=["p-a"]`、`draftRowExists=false`。而且**真档案行一样丢**（收起再展开回落到存储值）——编辑器由 `buildEditor` 从快照重建，DOM 里敲的字没有任何人接，这是**既有行为**，不是 C0 引入的。
@@ -540,23 +544,23 @@ describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
   /**
    * 种一份 v3 形状的设置再按当前代码读出来。
    * 注意 `MemoryStorage` 的构造参数是**配额选项**，不是初始数据——种数据一律走 `area.set`。
+   *
+   * ⚠ **`model` 没有默认参数，而且 `undefined` 时根本不写这个键**（落地时抓到的计划缺陷）：
+   * 写成 `loadV3(model: unknown = 'deepseek-chat')` 的话，默认参数会把 `loadV3(undefined)`
+   * 悄悄换回 `'deepseek-chat'`——于是"整个键缺失"那一半**永远种不进去**，测的还是"有 model"。
+   * 调用的三种形态必须分得开：`loadV3('deepseek-chat')` / `loadV3('')` / `loadV3(undefined)`。
    */
-  async function loadV3(model: unknown = 'deepseek-chat') {
+  async function loadV3(model: unknown) {
     const area = new MemoryStorage();
-    await area.set({
-      [SETTINGS_KEY]: {
-        version: 3,
-        engineId: 'p1',
-        profiles: [
-          { id: 'p1', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model, apiKey: 'sk-keep' },
-        ],
-      },
-    });
+    const stored: Record<string, unknown> = { id: 'p1', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', apiKey: 'sk-keep' };
+    // `undefined` = **这个键不存在**（不是"值是 undefined"）：种的是真实存储里可能出现的形状。
+    if (model !== undefined) stored.model = model;
+    await area.set({ [SETTINGS_KEY]: { version: 3, engineId: 'p1', profiles: [stored] } });
     return { area, loaded: await loadSettings(area) };
   }
 
   it('model 有值 → models:[model] + activeModel:model，且 Key / 地址 / 名字一字不差', async () => {
-    const { loaded } = await loadV3();
+    const { loaded } = await loadV3('deepseek-chat');
 
     expect(loaded.profiles[0]).toEqual({
       id: 'p1',
@@ -571,6 +575,11 @@ describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
   });
 
   it('model 是空串或整个缺失 → models:[] + activeModel:""（不是"没有这两个字段"）', async () => {
+    // ⚠ **两轮分开写、不要合成一条循环里的两个断言**（落地教训）：这条计划里原本是
+    // `for (const model of ['', undefined])` 一个循环，第一轮（`''`）先红就把第二轮的读数
+    // **整个遮住**——Step 2 只看到 `expected [ Array(3) ] to deeply equal [ '', [], '' ]`，
+    // 于是"缺失那一半到底种进去了没有"根本看不见（D 那个默认参数缺陷就是这么藏了一整轮）。
+    // 取读数要**一轮一条**：红了先只修到这一轮绿，再看下一轮。
     for (const model of ['', undefined]) {
       const { loaded } = await loadV3(model);
       expect([model, loaded.profiles[0].models, loaded.profiles[0].activeModel]).toEqual([model, [], '']);
@@ -683,6 +692,8 @@ describe('models / activeModel 的反序列化边界', () => {
 Run: `npx vitest run tests/shared/settings.test.ts`
 
 Expected: FAIL —— 新增用例报 `models` 为 `undefined` / `activeModel` 未定义（`expected undefined to deeply equal []` 一类）；顶部夹具改形状后，**所有**用 `profile()` 的既有用例一起红（`config.model` 读到 `undefined`）。这是"字段改名"的必然形态，不是断言写错。
+
+⚠ **这一步的读数有一个已知盲区（落地实测）**：「model 是空串或整个缺失」那条里的两轮，**第一轮先红就把第二轮遮住**（Step 2 只看到 `expected [ Array(3) ] to deeply equal [ '', [], '' ]`），所以"缺失那一半有没有真的种进去"在这一步**看不见**——D 那个夹具默认参数缺陷正是这么藏过一整轮的。**取读数要一轮一条**：红了先只让这一轮绿，再看下一轮；**不许**因为"这条已经红了"就跳过剩下几轮。
 
 - [ ] **Step 3: 实现（`src/shared/settings.ts`）**
 
@@ -981,8 +992,8 @@ export function currentModel(editor: Element): string {
 | 文件 | 改动前 | 改动后 |
 | --- | --- | --- |
 | `tests/options/options.test.ts:64` | `profileSeed({ id: 'p-b', label: 'Ollama 本机', baseUrl: 'http://localhost:11434/v1', model: 'llama3' })` | `profileWithModel('llama3', { id: 'p-b', label: 'Ollama 本机', baseUrl: 'http://localhost:11434/v1' })` |
-| `:143` | `profileSeed({ label: '我的 DeepSeek', baseUrl: 'https://my-proxy.example/v1', model: 'deepseek-chat-selfhost' })` | `profileWithModel('deepseek-chat-selfhost', { label: '我的 DeepSeek', baseUrl: 'https://my-proxy.example/v1' })` |
-| `:150` | `expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat-selfhost')` | `expect(currentModel(editor)).toBe('deepseek-chat-selfhost')` |
+| `:143`（「展开已存在的档案不重放服务商模板」的种子） | `profileSeed({ label: '我的 DeepSeek', baseUrl: 'https://my-proxy.example/v1', model: 'deepseek-chat-selfhost' })` | **不许用 `profileWithModel(...)`（单模型，对齐）**——那会让这条守卫**恒真**（见右格）。改成**清单两项、当前项不是第一项**：`profileSeed({ label: '我的 DeepSeek', baseUrl: 'https://my-proxy.example/v1', models: ['deepseek-chat', 'deepseek-chat-selfhost'], activeModel: 'deepseek-chat-selfhost' })`。**读数（落地实测）**：夹具只有一项（或两项恰好同序）时，`buildEditor` 的 `profile?.activeModel ?? ''` 换成 `profile?.models[0] ?? ''` → **31 条全绿**（看不见，恒真式）；换成这个两项且当前项在后的夹具 → **恰好这一条红**（`expected 'deepseek-chat' to be 'deepseek-chat-selfhost'`）。用例名也应跟着说清："表单回填的是存过的地址与**当前选中的那个**模型名" |
+| `:150` | `expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat-selfhost')` | `expect(currentModel(editor)).toBe('deepseek-chat-selfhost')`（**期望值不变**：它就是"当前项"那个读数） |
 | `:260` | `fieldOf(editor, '.profile-model-name').value = 'gpt-4o'` | `setModel(editor, 'gpt-4o')` |
 | `:270` | `model: 'gpt-4o',` | `models: ['gpt-4o'],` + `activeModel: 'gpt-4o',`（**从 1 个断言字段变成 2 个，只增不减**） |
 | `:299` | `expect(fieldOf(editor, '.profile-model-name').value).toBe('deepseek-chat')` | `expect(currentModel(editor)).toBe('deepseek-chat')` |
@@ -1046,11 +1057,11 @@ Expected: exit 0。`EngineProfile` 的字段改名会让所有还在写 `model:`
 | --- | --- |
 | `activeModel: models.includes(wanted) ? wanted : ''` 改成 `models[models.length - 1] ?? ''`（自动挑一个） | 「activeModel 不是成员…置空，**不替用户挑一个**」——`'c'` 那条会读出 `'b'` |
 | 删掉 `liftProfileModels` 那一步（不迁移） | 「model 有值 → models:[model] + activeModel:model」以及 v1 三步那条一起红 |
-| `liftProfileModels` 里不写 `delete lifted.model` | 「幂等：…`Object.keys` 精确相等」那条红（多一个 `model` 键） |
+| `liftProfileModels` 里不写 `delete lifted.model` | **经公共边界不可观测（防御性）——落地实测全绿（`63 passed`）**。机理：`pickProfile` 逐字段**重建**档案、`mergeSettings` 过滤未知键，所以旧 `model` 键根本漏不到公共边界；而计划原本点名的「幂等」那条种的是 `version: CURRENT_VERSION`，`migrate` 在版本闸门**直接短路**，`liftProfileModels` 那行 `delete` 永远走不到。**它的价值是"防止 `pickProfile` 将来改成透传/浅拷贝时旧键漏出去"**——**杀它要改 `pickProfile`，不是改迁移**（实现者读数：把 `pickProfile` 的返回改成含旧 `model` 键 → 「幂等」那条按 `Object.keys` 当场红，证明那条断言不是死的）。**别留一个"计划说会红、实际全绿"的行**——这一轮已经有人为它白跑一遍 |
 | `pickModels` 里删掉 `|| out.includes(name)`（不去重） | 「非字符串 / 空串 / 重复项一律丢掉」——`['a','a','b','b']` 那条红 |
 | `pickModels` 里删掉 `raw.trim()` | 同一条红（`'  a  '` 与 `'a'` 不再相等） |
 | `pickProfile` 里 `pickString(raw.activeModel, '').trim()` 改回 `pickString(raw.model, '')`（读旧字段） | 「activeModel 是成员时原样保留」红（读出来是空串） |
-| `if (storedVersion < 4)` 写成 `< 3`（v3 数据不抬） | v3 → v4 两条红；同时 `foldLegacyEngineConfig` 的 v2 用例（`:309` 一带）也红（因为它产出的 `model` 不再被抬起） |
+| `if (storedVersion < 4)` 写成 `< 3`（v3 数据不抬、v2 照抬） | **实测红 3 条**（落地读数）：① 「model 有值 → models:[model] + activeModel:model」② 「model 首尾空白被 trim 掉再进清单」③ F1 那条 v3 字面量的「幂等…不再迁移」用例（F1 修好之后它才成为第三个杀手）。**`foldLegacyEngineConfig` 的 v2 用例不会红**——`2 < 3` 照样抬起 v2 数据（计划原来这句预测是错的，按实测改掉）。**「model 是空串或整个缺失」也不会红**，这条值得记住：空/缺失时"抬起"与"不抬起"的结果**恰好一样**（都是 `models: []` + `activeModel: ''`），所以那条判据在空值上**本来就不可观测**（它守的是夹具形状，不是版本闸门）。**v1 三步那条同样不红**（`1 < 3`） |
 | `resolveEngine` 的 `config.model` 写成 `profile.models[0] ?? ''` | 「config.model 取的是 activeModel」红（`models:['a','b','c'], activeModel:'b'` 读出 `'a'`） |
 
 - [ ] **Step 8: 记录"过渡窗口"（写进交付说明）**
@@ -1334,7 +1345,7 @@ git commit -m "feat(engine): 没有当前模型时给出可读错误并零请求
 
 > **谁去发这个请求**：后台 service worker，不是设置页。设置页**只传 `profileId`**，后台自己从存储读那份档案的 `baseUrl` 与 `apiKey`（§5.1）。理由：设置页持有全量设置（含 Key），让它把 Key 塞进消息回传后台，等于把密钥又搬过一条通道，与现有「Key 不进内容脚本、不渲染进设置页 DOM」的隔离口径自相矛盾。
 >
-> **"零自动拉取"这一条不在本任务**（§5.4）：C3 阶段**没有任何调用方**，负向断言会因为"分支根本没执行"而永远绿（本仓六种杀不死的成因②）。它落在 C4——那里才有「获取可用模型」这个正极，正负两半写在同一条用例里。
+> **"零自动拉取"这一条不在本任务**（§5.4）：C3 阶段**没有任何调用方**，负向断言会因为"分支根本没执行"而永远绿（本仓七种假信号成因②）。它落在 C4——那里才有「获取可用模型」这个正极，正负两半写在同一条用例里。
 >
 > **超时 10 秒，独立常量**：`src/content/index.ts:86` 的 `BACKGROUND_TIMEOUT_MS` 是 60 秒的整页翻译预算，语义完全不同，**不复用**。
 
@@ -1994,7 +2005,7 @@ git commit -m "feat(background): /models 拉取（只传 profileId，容忍三�
  *
  * 另外钉住三条**承诺**：
  * - 「获取可用模型」只有点了才发请求（§5.4）——**正负两半写在同一条用例里**：正极不存在时，
- *   负向断言会因为"分支根本没执行"而永远绿（本仓六种杀不死的成因②）；
+ *   负向断言会因为"分支根本没执行"而永远绿（本仓七种假信号成因②）；
  * - 「取消」丢弃面板编辑、存储一个字节不动（§6.2 第 5 条）；
  * - **隐式收起保留未保存的输入**、而「取消」丢弃它（§9 第 19 条）——两条语义**各自一条用例**，
  *   它们将来一旦互相漂，红的就是彼此。
@@ -3282,27 +3293,44 @@ function handleCancelFetched(id: string): void {
 
 **3m. `bind`：click 委托 + input 委托**（整体替换这两段）：
 
+> ⚠ **口径必须与 `7991539` 落地的那一版一致**（这一节原来是照 C0 时的旧口径写的）：动作要从**最近的 `[data-action]` 祖先**取，不是读 `event.target.dataset.action`。旧口径在真机上表现为"点档案行头里的文字没反应、只有点在按钮自己的空白边距上才有反应"（行头是 `<button class="profile-summary">` 里包着 `<span class="name">` / `<span class="meta">` / `.dot`，点在文字上时 `target` 是那些 span）。**照旧口径整体替换 = 把真机上刚修好的 bug 改回去**，而 `engine-expansion.test.ts` 里那两条新用例（点 `.meta` 就展开、连点两次展开再收起）会红——那两条就是它的守卫。`row.contains(actionEl)` 那道闸今天**没有任何用例杀得死**（`[data-action]` 只出现在行内），如实记在「复盘记录 › 有行为、无读数」里，**不许**为它编一条恒真用例。
+
 ```ts
-// src/options/sections/engine.ts（片段：bind 的 click 委托，整体替换）
+// src/options/sections/engine.ts（片段：bind 的 click 委托，整体替换；口径与 7991539 一致）
     profilesList.addEventListener('click', (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
-      if (target.classList.contains('profile-toggle-key')) {
-        toggleKeyVisibility(target);
+      // ⚠ 动作要取**最近的 `[data-action]` 祖先**，不能读 `event.target.dataset.action`：
+      // 行头是 `<button class="profile-summary">` 里包着 `span.name` / `span.meta` / `.dot`，
+      // 点在文字上时 target 是那些 span —— 读 target 会得到 undefined，于是"点名字没反应、
+      // 只有点在按钮空白处才有反应"。真机读数（临时探针，5 次点击）：4 次 `action="(none)"`，
+      // target 分别是 `span.meta` / `span.grow`；页面只有 294 个节点、点一次 3~7ms，
+      // 所以那不是性能问题。
+      //
+      // Key 显示/隐藏必须**先判**（它自己不带 `data-action`，但它整条支路都在这一个按钮上）：
+      // 交给 `toggleKeyVisibility` 的必须是那个按钮本身，不是它未来的子元素——文案与
+      // `aria-pressed` 写在按钮上，写到子元素上等于把按钮文字抹掉。
+      const keyToggle = target.closest<HTMLElement>('.profile-toggle-key');
+      if (keyToggle !== null) {
+        toggleKeyVisibility(keyToggle);
         return;
       }
+      const actionEl = target.closest<HTMLElement>('[data-action]');
+      const action = actionEl?.dataset.action ?? null;
       // 免费引擎那一行不在 `[data-profile-id]` 里，必须在行判断之前处理。
-      if (target.dataset.action === 'test-free') {
+      if (action === 'test-free') {
         runSafely(engineStatus, '测试连接失败', () => handleTestFreeEngine(ctx));
         return;
       }
       const row = target.closest('[data-profile-id]');
       if (!(row instanceof HTMLElement)) return;
+      // 动作元素必须落在这一行里，别让嵌套/无关的 `[data-action]` 串到别的行上。
+      if (actionEl === null || !row.contains(actionEl)) return;
       const id = row.dataset.profileId as string;
       // 模型行内那两个动作要带上"哪一项"：模型名住在最近的那个 `.model-row` 的 dataset 上。
-      const modelRow = target.closest('.model-row');
+      const modelRow = actionEl.closest('.model-row');
       const model = modelRow instanceof HTMLElement ? (modelRow.dataset.model as string) : '';
-      switch (target.dataset.action) {
+      switch (action) {
         case 'toggle':
           if (ctx.settings() === null) return;
           // 一次只展开一个：把上一个的编辑器摘掉这件事由 applyExpansion 做（就地，不重建列表）。
@@ -3623,6 +3651,7 @@ Expected: 全绿。三条分别管着：CSS 令牌纪律（新规则只用 `--te
 | 变异 | 期望红在哪一条 |
 | --- | --- |
 | 折叠行保留 `.profile-summary`（整行仍是按钮） | 「折叠行：…整行不再是按钮」——`row.querySelector('.profile-summary')` 不为 null |
+| **click 委托退回旧口径 `target.dataset.action`**（即把 `7991539` 的真机修复改回去） | `tests/options/engine-expansion.test.ts` 里那**两条**新用例红（「点行头里的 `.meta` 就展开」「连点 `.meta` 两次 = 展开再收起」——`expected null not to be null`）。⚠ 这条**不在 C4 自己的测试文件里**：步 3m 是整体替换那段委托，所以替换时必须照抄 `closest('[data-action]')` 的口径；照旧口径写就是"本地全绿、真机复发" |
 | `isPresetProfile` 改成 `profile.models.length > 0`（判据换成清单） | 「「自定义」徽章…」——`p-b`（DeepSeek 地址 + 预设模型）**也**长出徽章 |
 | `isPresetProfile` 恒返回 false（人人都是自定义） | 同一条——`p-b` / `p-c` 上冒徽章 |
 | `metaTextOf` 的占位写成 `''` | 「次级 meta 的占位」红（读到 `' · '`） |
@@ -4206,6 +4235,53 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 `models` / `activeModel`（C1 定义；C3/C4/C5 使用）、`modelsFromSingleInput`（C1 定义、C4 删除）、`NO_MODEL_PROBLEM` / `problem`（C2 定义；C4 的 `handleTestProfile`、C5 的提示区使用）、`ResolvedEngine`（C2）、`MSG.FETCH_MODELS` / `FetchModelsMessage` / `FetchModelsResponse` / `isFetchModelsMessage`（C3 定义；C4 的用例按这几个名字用）、`MODELS_TIMEOUT_MS` / `ModelsFetchResult` / `parseModelsPayload` / `describeModelsStatus` / `fetchModels`（C3）、`applyExpansion` / `insertDraftRow` / `applyTriggerState` / `readModels` / `renderModels` / `modelsFieldOf` / `markCustomTemplate` / `openModelInput` / `isPresetProfile` / `metaTextOf` / `renderFetchedModels` / `handleAddModel` / `handleUseModel` / `handleRemoveModel` / `handleCancelProfile` / `handleFetchModels` / `handleMergeModels` / `handleCancelFetched`（C0/C4）、`setModel` / `currentModel` / `rowButton` / `profileSeed` / `profileWithModel`（C1/C4 的夹具，被 C0/C4 的用例使用）、`#model-field` / `#model` / `renderModelSelect` / `onModelChange`（C5）。
 **核对方式**：把上面这张名单与每个 Task 的代码块逐个对照过一遍；`handleFetchModels` 这个名字在 **C3（后台）与 C4（设置页）各有一个**——它们**故意同名**（一个是 `src/background/service-worker.ts` 里的处理器、一个是 `src/options/sections/engine.ts` 里的处理器），互不引用、各自私有，不导出。若担心混淆，读的时候先看文件路径。
 
+## 复盘记录（计划说错的读数、恒真断言、有行为无读数——逐条记账）
+
+> 这一节记的都是"**计划写下了读数、落地把读数推翻**"这一类。它比"代码写错"更值得留档：代码错会红，读数错会让人**白跑一遍**、甚至把修好的东西当成没修。
+> 落地提交：C0 = `35488b2`；C0 的真机委托修复 + C1 = `7991539`（两件事同一批，无法拆成两个都绿的提交——`EngineProfile` 改名让中间态全仓编不过）。
+
+### 1. 计划说错 / 说不全的变异读数
+
+| 变异 | 计划原本怎么说 | 实测与机理（**以实测为准**） |
+| --- | --- | --- |
+| M3：`liftProfileModels` 里不写 `delete lifted.model` | 「幂等：…`Object.keys` 精确相等」那条红（多一个 `model` 键） | **全绿（`63 passed`）——经公共边界不可观测（防御性）**。`pickProfile` 逐字段重建档案、`mergeSettings` 过滤未知键，旧键漏不到公共边界；而计划点名的那条用例种的是 `version: CURRENT_VERSION`，`migrate` 在版本闸门直接短路、`liftProfileModels` 根本不跑。**它的价值**是"防止 `pickProfile` 将来改成透传/浅拷贝时旧键漏出去"——**杀它要改 `pickProfile`，不是改迁移**（实现者读数：让 `pickProfile` 的返回值带上旧 `model` 键 → 「幂等」那条按 `Object.keys` 当场红，证明断言本身不是死的） |
+| M7：`if (storedVersion < 4)` 写成 `< 3` | 「v3 → v4 两条红；同时 `foldLegacyEngineConfig` 的 v2 用例也红」 | **红 3 条**：① 「model 有值 → …」② 「model 首尾空白被 trim 掉再进清单」③ F1 那条 v3 字面量的「幂等…不再迁移」（F1 修好之后它才成为第三个杀手）。**v2 折叠用例不红**（`2 < 3` 照样抬 v2 数据）、**v1 三步那条也不红**（`1 < 3`）——计划那句"v2 也会红"是错的。**「model 是空串或整个缺失」也不红**，这条最值得记：空/缺失时"抬起"与"不抬起"的结果**恰好一样**（都是 `[]` / `''`），所以那条判据在空值上**本来就不可观测**——它守的是夹具形状，不是版本闸门 |
+
+### 2. 恒真断言清单（本单元第四例在 C1）
+
+判据一句话：**夹具与被测逻辑同源时，断言会退化成恒真式**——两边读的是同一个表达式，改坏了也看不出来。加强的办法是让夹具里出现"两种口径读起来不一样"的数据。
+
+| # | 出处 | 恒真的原因 | 加强办法 |
+| --- | --- | --- | --- |
+| ① | 单元 B Task 8 的 `'abc'` 净化用例 | 断言只查了"被过滤掉的那一侧" | 补另一侧（该保留的要保留） |
+| ② | 单元 B Task 9 的 `.lab` 遮蔽 | 索引边界用例被别名循环**遮蔽**（撞别名时先红在别处） | 用一个**不是任何别名**的词，并断言"隐私里确实有那些词"防空转 |
+| ③ | 本单元 C3 的 `expect(JSON.stringify(message)).not.toContain('sk-secret')` | 断言的是**用例自己两行前造的字面量**（永远不可能含 Key） | 改断言**真的发出去的那条消息**（C4 的 `runtime.sentMessages` 精确相等）；C3 侧删掉（已改） |
+| ④ | 本单元 C1 的「展开已存在的档案不重放服务商模板」 | 夹具是"单模型对齐"的，`buildEditor` 的 `profile?.activeModel ?? ''` **恒等于夹具值**——"读 `activeModel`"与"读 `models[0]`"读数完全一样 | 夹具改成**清单两项、当前项不是第一项**。读数：对齐夹具下把回填换成 `models[0]` → **31 条全绿**（看不见）；改后 → **恰好那一条红**（`expected 'deepseek-chat' to be 'deepseek-chat-selfhost'`） |
+
+### 3. 测量侧的三个缺陷型（"怎么取读数"）
+
+1. **夹具默认参数吞掉 `undefined`**：计划写的 `loadV3(model: unknown = 'deepseek-chat')` 会把 `loadV3(undefined)` 悄悄换回 `'deepseek-chat'`——于是"**整个键缺失**"那一半**永远种不进去**，测的还是"有 model"。修法：去掉默认参数、`model !== undefined` 才写键、调用方显式传值（用例体 `['', undefined]` 一字不动）。
+2. **一条用例里前面的失败会遮住后面的读数**：同一条用例的 `['', undefined]` 两轮，第一轮（`''`）先红，Step 2 只看到 `expected [ Array(3) ] to deeply equal [ '', [], '' ]`，第二轮的真实读数（`expected [ Array(3) ] to deeply equal [ undefined, [], '' ]`）**根本看不见**——上面那个默认参数缺陷就是这么藏了一整轮。**规则：取读数要一轮一条**，红了先只让这一轮绿、再看下一轮；不许因为"这条已经红了"就跳过剩下几轮。
+3. **探针复制了被测对象的错误口径**（见硬规矩 2 的 ⑦）：`perf-probe.ts` 里 `action: target.dataset.action ?? '(none)'` 与被查的委托 bug 同源 ⇒ 修复落地后真机上仍打印 `action="(none)"`，**把"修好了"测成"没好"**。教训：**探针要独立于被测逻辑的假设，否则比没有探针更坏**。
+
+### 4. 有行为、无读数（**不许**为它们编一条恒真用例）
+
+本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这三处都没有任何用例杀得死：
+
+| 代码 | 为什么今天杀不死 | 谁能杀它 / 留着它的理由 |
+| --- | --- | --- |
+| `if (actionEl === null || !row.contains(actionEl)) return;`（C4 Step 3m，`7991539` 引入） | `[data-action]` 今天只出现在行内，构造不出"动作元素在别的行里"的 DOM | 只有"把 `[data-action]` 挪进行内的嵌套结构、或让两行互相包含"的形状才杀得死——那种形状在真机上不存在。留着是**防御**（嵌套/无关元素串行） |
+| `editorDrafts.delete(savedId)`（C4 Step 3p） | 保存成功后 `renderProfiles` 按新快照重建那一行并保持展开，`applyExpansion` 不会对已展开的行调 `restoreEditor` | 草稿那一格（`NEW_DRAFT_ID`）**有**读数（「草稿保存成功后清掉草稿暂存」那条）；这一格留着是**对称性**（"暂存不活得比编辑会话更久"） |
+| `liftProfileModels` 里的 `delete lifted.model` | 见上表 M3：`pickProfile` 重建 + 版本闸门短路 | 改 `pickProfile`（让它透传旧键）才杀得死。留着是**防御**（防止将来 `pickProfile` 不再重建时旧键漏进存储） |
+
+### 5. 契约迁移里落地偏离计划的三处（正文已改，此处只索引）
+
+| 偏离 | 计划原来 | 落地改成 | 正文位置 |
+| --- | --- | --- | --- |
+| F1 | 用升级后的 v4 夹具去种 `version: 3` 的数据（伪造了"v3 里不可能存在"的形状） | 用 **v3 字面量**种数据，期望仍用 v4 夹具 | C1 Step 5b 的 `:399-413` 行 |
+| D | `loadV3` 带默认参数 | 去掉默认参数 + `!== undefined` 才写键 | C1 Step 1 的夹具 + Step 2 的盲区提示 |
+| C | 模板用例用"单模型对齐"夹具（恒真） | 清单两项、当前项不是第一项 | C1 Step 5b 的 `:143` 行 |
+
 ## 落地读数表（执行者填，交付时与投影并列）
 
 | 读数 | 投影 | 实测 |
@@ -4215,6 +4291,9 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | C0 A→B 切换的变更量 | `{1,1}`（任意 N） | |
 | **C0 落地时的"未保存输入"探针**（`zz-draft-value-probe.test.ts`，跑完已删） | —— | **已取到**：新实现 真档案行收起再展开 → 回落到存储值；草稿被切走 → `ids=["p-a","__new__"]`、`draftRowExists=true`、切回四字段**全空**；草稿点自己收起 → 四字段全空。旧实现：草稿被切走 → `ids=["p-a"]`、`draftRowExists=false`；点自己收起 → 整行消失 |
 | **C4 落地后的同一条探针**（预期改变） | 切回草稿行 → `label="临时档案"`（暂存生效）；`取消` 后 → 空 | |
+| **C1 变异 M3**（`liftProfileModels` 不写 `delete lifted.model`） | 计划原测："幂等"那条红 | **实测全绿（`63 passed`）**——经公共边界不可观测，已改标"防御性"（见「复盘记录 › 1」） |
+| **C1 变异 M7**（`if (storedVersion < 4)` → `< 3`） | 计划原测：v3→v4 两条 + v2 折叠用例 | **实测红 3 条**（`有值` / `trim` / F1 那条）；**v2 与 v1 用例不红**，`空串或缺失` 那条也不红（空值上判据不可观测） |
+| **C1 模板用例的夹具加强**（第 4 例恒真断言） | —— | **已取到**：对齐夹具下把回填换成 `models[0]` → **31 条全绿**（看不见）；夹具改成"清单两项、当前项在后" → **恰好那一条红** |
 | 收口 `npm test` | 以命令输出为准 | |
 | 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
 | `sync-plan-code.mjs` | `已同步 0 个代码块` | |
