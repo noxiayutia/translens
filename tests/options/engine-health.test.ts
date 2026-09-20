@@ -7,17 +7,28 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
-import { ENGINE_HEALTH_KEY, loadEngineHealth } from '../../src/options/engine-health';
 import {
+  ENGINE_HEALTH_KEY,
+  FREE_ENGINE_HEALTH_ID,
+  loadEngineHealth,
+  saveEngineHealth,
+} from '../../src/options/engine-health';
+import {
+  CUSTOM_BASE_URL,
+  actionButton,
   chatResponse,
   chromeStub,
+  editorOf,
+  fieldOf,
   jsonResponse,
   loadOptions,
   pick,
   profileRows,
   profileSeed,
   resetOptionsPage,
+  rowOf,
   seedSettings,
+  settle,
   waitFor,
 } from './harness';
 
@@ -42,6 +53,21 @@ function dotOf(id: string): HTMLElement {
 
 function status(): HTMLElement {
   return pick<HTMLElement>('engine-status');
+}
+
+/** 内置免费引擎那一行的状态点。它没有 `data-profile-id`，只能按自己的标记找。 */
+function freeDot(): HTMLElement {
+  const dot = pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot');
+  if (dot === null) throw new Error('内置免费引擎那一行没有状态点');
+  return dot;
+}
+
+/**
+ * 带正文的失败响应：`describeHttpError` 读的是 `response.text()`，而 harness 的 `jsonResponse`
+ * 只有 `json()` 那一支——用它拼不出"服务商在正文里回显请求内容"这个场景。
+ */
+function textResponse(body: string, statusCode: number): Response {
+  return { status: statusCode, ok: false, text: async () => body } as unknown as Response;
 }
 
 beforeEach(() => {
@@ -74,7 +100,28 @@ describe('状态点的记录：读取与脏数据', () => {
     expect(Object.keys(health).sort()).toEqual(['good', 'missingDetail']);
     expect(health['missingDetail']).toEqual({ state: 'bad', detail: '' });
     // 页面照常渲染，不因为一条脏记录整页白。
+    //
+    // 这一条**不能只断言"零个档案行"**：本用例一个档案都没 seed，`profileRows()` 恒为 0，
+    // 于是它在"`mount` 里根本不渲染列表"的变异下照样是绿的（加这条断言之前实测：那个变异
+    // 只红 6 条，绿的正是本条与上面那条纯存储的）。下面钉住内置免费引擎那一行——它是
+    // **每次重绘都会画出来**的那一行，有它在，"页面照常渲染"才是真的在断言渲染。
     expect(profileRows()).toHaveLength(0);
+    expect(pick('profiles').querySelector('[data-engine-free]')).not.toBeNull();
+  });
+
+  it('两次并发写不互相吞：读-改-写按存储区串行（`Promise.all` 形态）', async () => {
+    // 记录是"一份对象、多条条目"，每次写都是整份读-改-写。不排队时后写的那次拿自己那份
+    // 旧基线整份回写，把先写的那次静默抹掉——实测改前这里只剩 `p-b`，而界面上两个点都是绿的
+    // （内存里两份都在），重开设置页 `p-a` 才回到灰。
+    await Promise.all([
+      saveEngineHealth('p-a', { state: 'ok', detail: '' }),
+      saveEngineHealth('p-b', { state: 'bad', detail: 'NETWORK：超时' }),
+    ]);
+
+    expect(await storedHealth()).toEqual({
+      'p-a': { state: 'ok', detail: '' },
+      'p-b': { state: 'bad', detail: 'NETWORK：超时' },
+    });
   });
 });
 
@@ -159,6 +206,58 @@ describe('状态点三态', () => {
     await waitFor(async () => (await storedHealth())['p-a'] === undefined);
     expect(Object.keys(await storedHealth())).toEqual(['keep']);
   });
+
+  it('草稿行点测试连接不落记录：`__new__` 没有点可更新，也没有清理出口', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
+    vi.stubGlobal('fetch', fetchMock);
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
+    await loadOptions();
+
+    // `__new__` 是草稿哨兵（与 `options.test.ts` 同一个字面量：它不导出，按契约写死）。
+    pick<HTMLButtonElement>('add-profile').click();
+    const editor = editorOf('__new__');
+    fieldOf(editor, '.profile-label').value = '临时档案';
+    fieldOf(editor, '.profile-base-url').value = CUSTOM_BASE_URL;
+    fieldOf(editor, '.profile-model-name').value = 'm';
+    fieldOf(editor, '.profile-api-key').value = 'sk-draft';
+    actionButton(editor, 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'ok');
+
+    // 请求真的发出去了、状态行照常报结果；草稿行刻意**没有**状态点，删档案也删不到它，
+    // 所以它不该在会话存储里留下一条谁也认领不了、也没人清理的幽灵记录。
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(await storedHealth()).toEqual({});
+  });
+
+  it('失败详情里的 Key 一律脱敏：状态行、`title` 与会话记录都不含它', async () => {
+    const secret = 'sk-PROBE-SECRET-123';
+    // 非 401 的失败走 `describeHttpError`，`detail` 就是**服务商响应正文**：正文里回显请求内容
+    // 是可达的（实测改前存储里与 `title` 里都出现了这把 Key）。401/AUTH 分支给的是罐头文案。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(textResponse(`{"error":{"message":"invalid key ${secret}"}}`, 400)),
+    );
+    chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed({ apiKey: secret })] });
+    await loadOptions();
+
+    rowOf('p-a').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    const editor = editorOf('p-a');
+    actionButton(editor, 'test-profile').click();
+    await waitFor(() => status().dataset.kind === 'err');
+    await waitFor(async () => ((await storedHealth())['p-a'] as { state?: string } | undefined)?.state === 'bad');
+
+    // ① 记录（持久化那条路径）② `title`（悬停能看见）③ 状态行（当场显示）。
+    const detail = ((await storedHealth())['p-a'] as { detail: string }).detail;
+    expect(detail).not.toContain(secret);
+    expect(detail).toContain('***');
+    expect(dotOf('p-a').title).not.toContain(secret);
+    expect(status().textContent ?? '').not.toContain(secret);
+    // 脱敏不是把整句删掉：服务商给的原因（除了 Key 那一段）照常显示。
+    expect(status().textContent).toContain('invalid key');
+  });
 });
 
 describe('内置免费引擎那一行', () => {
@@ -191,5 +290,37 @@ describe('内置免费引擎那一行', () => {
     await waitFor(() => status().dataset.kind === 'ok');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await waitFor(() => pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot')!.dataset.state === 'ok');
+  });
+
+  it('档案 id 撞上 `google` 也不串台：免费行的记录落在保留键上，档案行仍是从没测过', async () => {
+    // 脏存储可达：`pickProfile` 对档案 id 只要求"非空字符串"，不做保留字检查（出厂 UI 造不出来，
+    // `createProfileId()` 恒带 `p-` 前缀，但存档/外部写入能）。改前这里两行共用一个槽：
+    // 点免费行亮的是**档案行**，重绘后两行同时绿。
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en']));
+    vi.stubGlobal('fetch', fetchMock);
+    await seedSettings({
+      engineId: 'google',
+      targetLang: 'zh-Hans',
+      profiles: [profileSeed({ id: 'google', label: '恰好叫 google 的档案' })],
+    });
+    await loadOptions();
+
+    expect(dotOf('google').dataset.state).toBe('idle');
+    pick<HTMLElement>('profiles').querySelector<HTMLButtonElement>('[data-action="test-free"]')!.click();
+    await waitFor(() => status().dataset.kind === 'ok');
+    await waitFor(async () => Object.keys(await storedHealth()).length > 0);
+
+    // 免费行的点亮了，档案行的点**没被它点亮**。
+    expect(freeDot().dataset.state).toBe('ok');
+    expect(dotOf('google').dataset.state).toBe('idle');
+
+    // 记录落在保留键上，不落在档案 id `google` 上——这一条钉死"把保留键换回 DEFAULT_ENGINE_ID"。
+    expect((await storedHealth())['google']).toBeUndefined();
+    expect((await storedHealth())[FREE_ENGINE_HEALTH_ID]).toEqual({ state: 'ok', detail: '' });
+
+    // 重绘（展开档案行会重画整个列表）之后两行各念自己那一份记录：共用槽时这里两行同时绿。
+    rowOf('google').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    expect(dotOf('google').dataset.state).toBe('idle');
+    expect(freeDot().dataset.state).toBe('ok');
   });
 });

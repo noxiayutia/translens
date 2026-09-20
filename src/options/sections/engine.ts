@@ -45,7 +45,14 @@ import {
 } from '../../shared/settings';
 import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';
 // 状态点的记录（§4.3）：独立于 `store.ts` 的会话内记忆，见 `engine-health.ts` 顶部的说明。
-import { forgetEngineHealth, loadEngineHealth, saveEngineHealth, type EngineHealth } from '../engine-health';
+import {
+  FREE_ENGINE_HEALTH_ID,
+  forgetEngineHealth,
+  loadEngineHealth,
+  redactSecret,
+  saveEngineHealth,
+  type EngineHealth,
+} from '../engine-health';
 // 这句话只有一个来源：`store.ts` 导出的 `NOT_LOADED`。
 import { NOT_LOADED } from '../store';
 import type { Section, SectionContext } from '../section';
@@ -172,8 +179,12 @@ function applyDot(dot: HTMLElement, record: EngineHealth | undefined): void {
  * 内置免费引擎那一行：名字 + 内置徽章 + 状态点 + 测试连接。
  * **没有删除、没有编辑**（§3.1：内置免费引擎不可删，也没有可编辑的配置）。
  * 它不带 `data-profile-id`：既有用例的 `profileRows()` 只数真实档案。
+ *
+ * 状态点读的是**保留键** `FREE_ENGINE_HEALTH_ID`，不是 `DEFAULT_ENGINE_ID`（见那里的说明：
+ * 档案 id 可能是 `google`，共用键时免费行与档案行会互相点亮）。这一行没有任何取自 `ctx`
+ * 的东西（配置是零配置、状态点来自会话记录），所以不接区块上下文。
  */
-function buildFreeEngineRow(ctx: SectionContext): HTMLElement {
+function buildFreeEngineRow(): HTMLElement {
   const engine = getEngine(DEFAULT_ENGINE_ID);
   const row = element('div', 'item');
   row.dataset.engineFree = '';
@@ -181,7 +192,7 @@ function buildFreeEngineRow(ctx: SectionContext): HTMLElement {
   const line = element('span', 'line');
   line.append(element('span', 'name', engine.name), element('span', 'badge', '内置'));
   const dot = element('span', 'dot');
-  applyDot(dot, health[DEFAULT_ENGINE_ID]);
+  applyDot(dot, health[FREE_ENGINE_HEALTH_ID]);
   line.append(dot);
 
   const grow = element('span', 'grow');
@@ -341,7 +352,7 @@ function renderProfiles(ctx: SectionContext): void {
     profilesList.append(buildProfileRow(ctx, NEW_DRAFT_ID));
   }
   // 内置免费引擎永远排在最后（§3.1：它不可删），每次重绘都跟着列表一起画。
-  profilesList.append(buildFreeEngineRow(ctx));
+  profilesList.append(buildFreeEngineRow());
 }
 
 /** 档案区顶部的说明：当前在用哪一档（选择器的真相在弹窗，这里如实指路）。 */
@@ -425,10 +436,13 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
  * 真发一次极短请求并上报结果——档案与内置免费引擎**走同一条路**。
  * 抽出来的理由不是"少写几行"：状态点的记录、超时、错误码展开这三件事必须两处一致，
  * 各写一份必然漂移。
+ *
+ * `healthId` 为 `null` = **这次测试不落记录**（只有草稿行走这条：见 `recordHealth`）；
+ * 其余调用方交的是档案 id 或免费引擎的保留键。
  */
 async function runConnectionTest(
   ctx: SectionContext,
-  healthId: string,
+  healthId: string | null,
   engine: Translator,
   config: EngineConfig,
   label: string,
@@ -447,14 +461,18 @@ async function runConnectionTest(
       },
       config,
     );
-    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${translation ?? ''}`);
+    // 成功路径也过一遍脱敏：状态行与记录一样，都不该出现那把 Key（返回的"译文"由服务商决定）。
+    setStatus(engineStatus, 'ok', `连接成功：${TEST_TEXT} → ${redactSecret(translation ?? '', config.apiKey)}`);
     await recordHealth(ctx, healthId, { state: 'ok', detail: '' }, 'ok');
   } catch (raw) {
     // 错误码要显示出来（AUTH / RATE_LIMIT / NETWORK……）：它是用户判断"该改 Key 还是
     // 该稍后重试"的唯一依据，只给一句自然语言会把这两件事混在一起。
     const error = toEngineError(raw);
-    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${error.message}`);
-    await recordHealth(ctx, healthId, { state: 'bad', detail: `${error.code}：${error.message}` }, 'err');
+    // 详情来自服务商正文时可能回显请求内容（含 Key）：**显示与持久化是两条路径，两条都要脱敏**，
+    // 所以在这一处把消息抹干净，下面两句共用它（`redactSecret` 见 `engine-health.ts`）。
+    const message = redactSecret(error.message, config.apiKey);
+    setStatus(engineStatus, 'err', `连接失败（${error.code}）：${message}`);
+    await recordHealth(ctx, healthId, { state: 'bad', detail: `${error.code}：${message}` }, 'err');
   } finally {
     clearTimeout(timer);
   }
@@ -464,24 +482,36 @@ async function runConnectionTest(
  * 找某一行的状态点。档案行走 `data-profile-id`；**内置免费引擎那一行刻意没有 id**
  * （见 `buildFreeEngineRow`），所以只能按它自己的标记找。少了这一支，免费引擎的
  * 测试连接能成功、点却永远停在灰：`rowById` 只认档案行。
+ *
+ * 保留键这一支**必须排在 `rowById` 前面**：免费行的记录键与档案 id 是两个键空间，若先问
+ * `rowById`，一条 id 恰好等于保留键的档案（脏存储/外部写入，`pickProfile` 不查保留字）就会把
+ * 免费行的结果接到自己那一行上（症状与完整说明见 `FREE_ENGINE_HEALTH_ID` 的注释）。
  */
 function healthDot(id: string): HTMLElement | null {
   const row =
-    rowById(id) ??
-    (id === DEFAULT_ENGINE_ID ? profilesList.querySelector<HTMLElement>('[data-engine-free]') : null);
+    id === FREE_ENGINE_HEALTH_ID
+      ? profilesList.querySelector<HTMLElement>('[data-engine-free]')
+      : rowById(id);
   return row?.querySelector<HTMLElement>('.dot') ?? null;
 }
 
 /**
  * 记下这次测试的结果，并**就地**更新那一行的点（不整表重绘：重绘会把用户正在编辑的表单丢掉）。
  * 记录写不进去时，把原因**追加**在刚才那句话后面——本次测试的结果是真的，不该被它改掉颜色。
+ *
+ * `id === null` = **这次测试不落记录**，只有草稿行走这条（调用方见 `handleTestProfile`）：
+ * 草稿行刻意**没有状态点**（`buildProfileRow` 不给它画点），也**没有清理出口**——只有真档案
+ * 被删除才会 `forgetEngineHealth`，而草稿永远删不掉。给它写一条 `__new__` 记录就是留下一条
+ * 谁也认领不了、也没人清理的幽灵键（实测改前：草稿点一次「测试连接」，会话存储里就多一条
+ * `{"__new__":…}`）。连接结果本身照常写在状态行上，那才是用户当场要看的东西。
  */
 async function recordHealth(
   ctx: SectionContext,
-  id: string,
+  id: string | null,
   record: EngineHealth,
   kind: StatusKind,
 ): Promise<void> {
+  if (id === null) return;
   health = { ...health, [id]: record };
   const dot = healthDot(id);
   if (dot !== null) applyDot(dot, record);
@@ -524,13 +554,22 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
     profiles: [{ id, label: values.label, baseUrl: values.baseUrl, model: values.model, apiKey }],
   });
 
-  await runConnectionTest(ctx, id, engine, config, `档案「${values.label}」`);
+  // 草稿行不落记录（`__new__` 既没有点可更新、也没有清理出口）：把 `null` 交给同一条路。
+  await runConnectionTest(
+    ctx,
+    id === NEW_DRAFT_ID ? null : id,
+    engine,
+    config,
+    `档案「${values.label}」`,
+  );
 }
 
 /** 内置免费引擎的测试连接：没有表单值可读，配置就是空的（免费接口零配置）。 */
 async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
   const { engine, config } = resolveEngine({ engineId: DEFAULT_ENGINE_ID, profiles: [] });
-  await runConnectionTest(ctx, DEFAULT_ENGINE_ID, engine, config, `免费引擎「${engine.name}」`);
+  // 记录写在**保留键**上，不是 `DEFAULT_ENGINE_ID`（见 `FREE_ENGINE_HEALTH_ID`）：
+  // 档案 id 可以是 `google`，共用键时免费行的结果会点到用户档案那一行上。
+  await runConnectionTest(ctx, FREE_ENGINE_HEALTH_ID, engine, config, `免费引擎「${engine.name}」`);
 }
 
 /**

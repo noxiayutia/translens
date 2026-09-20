@@ -38,19 +38,29 @@ const FORBIDDEN = /\b(?:innerHTML|outerHTML|insertAdjacentHTML)\b/;
  * 而不是"恰好几个"或"至少几个"：
  *
  * - 写成 `toBe(REQUIRED_PATHS.length)` 会在每加一个模块时变红（那是正常增长，不是回归）；
- * - 写成 `toBeGreaterThanOrEqual(REQUIRED_PATHS.length)`（今天 4）今天什么也抓不住：
- *   实测递归口径扫到 15 个（顶层 7 + `sections/` 8），**只扫顶层也有 7 个**，两种口径都 ≥ 4；
- *   而下界只会说"总数够不够"，**说不出缺的是哪一个模块**。
+ * - 写成 `toBeGreaterThanOrEqual(REQUIRED_PATHS.length)`（今天 7，**恰好等于**实测的顶层
+ *   模块总数）今天什么也抓不住：实测递归口径扫到 15 个（顶层 7 + `sections/` 8），
+ *   只扫顶层也有 7 个，两种口径都 ≥ 7；而下界只会说"总数够不够"，
+ *   **说不出缺的是哪一个模块**。
  *
  * 列路径是"对增长稳健、又抓得住遍历器坏掉"的形态：下面每一条钉住一个具体模块，
  * 少扫到任何一个就红；将来新增文件不影响它——**所以这份清单是下限、不是穷举**，
  * 与下面 `REQUIRED_SECTION_PATHS` 同一条口径。
+ *
+ * 这份清单长期只有 4 条（`options` / `store` / `dom` / `section`），于是 `rule-pattern.ts`、
+ * `search.ts` 以及后来新建的 `engine-health.ts` 一直处在"会被扫到、却没被任何断言钉住"的
+ * 状态：遍历器不认清单、照常扫它们，漏列也就没有一条会红。这一轮按实测把顶层 7 个**全部**
+ * 列上——"扫到了"与"被清单钉住"是两件事：前者是遍历器当下的行为，后者才是"遍历器哪天坏在
+ * 这一层"的见证。新增顶层模块时仍要顺手加一行（见下一条清单里那条纪律）。
  */
 const REQUIRED_PATHS = [
   'src/options/options.ts',
   'src/options/store.ts',
   'src/options/dom.ts',
   'src/options/section.ts',
+  'src/options/engine-health.ts',
+  'src/options/rule-pattern.ts',
+  'src/options/search.ts',
 ];
 
 /**
@@ -59,7 +69,9 @@ const REQUIRED_PATHS = [
  *
  * **这份清单是下限，不是穷举**：断言只说"必须包含这些"，将来新增文件不影响它；反过来说，
  * `npm run build` 不会因为这里漏列一个新文件而变红——所以它靠的是**新增文件时顺手加一行**
- * 这条纪律（写在这里，就是为了让纪律有个落点）。
+ * 这条纪律（写在这里，就是为了让纪律有个落点）。**纪律不是修辞**：实测顶层那份清单就这么
+ * 漏过 3 个模块（`rule-pattern.ts` / `search.ts` / `engine-health.ts`），直到补上之前，
+ * 那三个文件在守卫眼里只是"顺便被扫到"，不是"被钉住"（见 `REQUIRED_PATHS`）。
  *
  * 为什么仍然逐个列路径，而不是只写一句"`sections/` 至少扫到一个"：
  * - 写成 `toBe(REQUIRED_SECTION_PATHS.length)` 会在每加一个区块时变红（那是正常增长，不是回归）；
