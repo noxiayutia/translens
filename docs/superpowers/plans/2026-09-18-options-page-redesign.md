@@ -2682,62 +2682,15 @@ export const languageSection: Section = {
 };
 ```
 
-创建 `src/options/sections/cache.ts`：
+创建 `src/options/sections/cache.ts`（**中间态代码块已按 Task 8 Step 4 的要求从本计划删除**，指针见下）：
 
 > **这一块的首行标记故意带了括号后缀，所以 `scripts/sync-plan-code.mjs` 永远不会同步它。**
 > 机制要说准（**上一版计划在这里说反了**）：`PATH_LABEL`（`scripts/sync-plan-code.mjs:23`）要求首行**恰好**是 `// <路径>`；`body[0].trim()` 匹配不上时（`:45-51`）脚本**把整块原样跳过、什么都不做**——它**不会**"多出一行标记"，也没有任何副作用。
 > **真正的风险在别处**：这一块永远不会被同步，于是 Task 8 那份**带标记**的完整版一旦同步，**不会替换它、而是与它并存** → 计划里出现**两份 `cache.ts`**，其中一份是过时的中间态（"计划在教假话"的另一种形态）。
-> **处置（二选一，这里选后者）**：
-> - ~~现在就把中间态块删掉~~ —— 不行：Task 3 的这一 Step 需要"先写哪些、暂不写哪些"的完整代码，删了这一步就没有可照抄的东西；
-> - ✅ **保留它，由 Task 8 在落地时把它从计划里删掉**（Task 8 Step 4 已写明），并在 Task 11 的收口清单里加一条核对：**同步之后，每个源文件在计划里只剩一个代码块**。
+> **处置（已执行完，留档）**：Task 3 当时**保留**了那一块（这一步需要"先写哪些、暂不写哪些"的完整代码，删了就没有可照抄的东西），并写明**由 Task 8 在落地时把它从本计划里删掉**（Task 8 Step 4 已写明）——**这一步已经做完**：中间态那一块已从本计划删除，`sections/cache.ts` 在计划里只剩 Task 8 那一块（带标记）✓；Task 11 的收口清单会核对"每个源文件只剩一个代码块"。
+> **可追溯性（删除处的指针）**：被删掉的那一份在这里 —— `git show 293bfdd:src/options/sections/cache.ts`（**实测 45 行 / 2440 字节**；当时计划里贴的是它的 **43 行**版本，只把注释头换成了"本任务先落地…"那三行，**代码逐字相同**）。
 >
 > 这一块与 `options.html` / `options.css` 一样**手工维护**（没有可识别的标记 = 同步不管它）。
-
-```ts
-// src/options/sections/cache.ts（中间态：Task 8 换成完整版——**本块同步脚本不管，Task 8 落地时从计划里删掉**）
-//
-// §3.7 缓存与请求。本任务先落地「清除」这一半（行为与搬家前逐字相同：两层一起清、计数报两层合计），
-// 三个统计数字、缓存上限与「高级：批量与并发」折叠区在 Task 8 补齐。
-import { TranslationCache } from '../../core/cache';
-import { chromeArea } from '../../shared/chrome-area';
-import { runSafely, setStatus } from '../dom';
-import type { Section, SectionContext } from '../section';
-
-const clearCacheButton = document.getElementById('clear-cache') as HTMLButtonElement;
-const cacheStatus = document.getElementById('cache-status') as HTMLElement;
-
-/**
- * 清除翻译缓存：删掉**两层**（持久层 + 会话层）全部 `jt:` 前缀的键。
- *
- * 用 `TranslationCache` 而不是自己拼 `jt:` 前缀：缓存的键名、元数据键、形状坏掉的残留
- * 都归它管（`clear()` 就是为这件事写的）。**会话层必须一起清**：翻译读取走 `TieredCache`
- * （先查会话层），只清持久层的话，用户点完"清除"立刻重译页面照样零请求命中——按钮看起来
- * 失灵，报出的条数也系统性少报。
- */
-async function handleClearCache(ctx: SectionContext): Promise<void> {
-  const maxEntries = ctx.settings()?.cacheMaxEntries;
-  const persistent = new TranslationCache(chromeArea(chrome.storage.local), maxEntries);
-  const session = new TranslationCache(chromeArea(chrome.storage.session), maxEntries);
-  const [persistentBefore, sessionBefore] = await Promise.all([persistent.count(), session.count()]);
-  await Promise.all([persistent.clear(), session.clear()]);
-  const cleared = persistentBefore + sessionBefore;
-  setStatus(cacheStatus, 'ok', cleared === 0 ? '缓存本来就是空的' : `已清除 ${cleared} 条翻译缓存`);
-}
-
-export const cacheSection: Section = {
-  id: 'cache',
-  title: '缓存与请求',
-  aliases: ['缓存', '清除缓存', '上限', '并发', '批量'],
-
-  bind(ctx: SectionContext): void {
-    clearCacheButton.addEventListener('click', () => runSafely(cacheStatus, '清除缓存失败', () => handleClearCache(ctx)));
-  },
-
-  mount(): void {
-    // Task 8 在这里渲染三个统计数字与高级项。
-  },
-};
-```
 
 创建 `src/options/sections/privacy.ts`：
 
@@ -4274,7 +4227,7 @@ export type StoredRule = SiteRule;
 - [ ] **Step 4: 跑到绿（纯函数）**
 
 Run: `npx vitest run tests/options/rule-pattern.test.ts`
-Expected: PASS —— **11 条用例**
+Expected: PASS —— **11 条用例**（Task 8 落地后实测复核：`npx vitest run tests/options/rule-pattern.test.ts` 仍报 **11** 条 ✓）
 
 - [ ] **Step 5: 写页面测试（第二个失败测试）**
 
@@ -4825,6 +4778,8 @@ export const SECTIONS: readonly Section[] = [
 Run: `npx vitest run tests/options/site-rules.test.ts tests/options/rule-pattern.test.ts`
 Expected: PASS —— **11 条 + 11 条**（site-rules 从 9 条加到 11 条：补了「既有规则就地更新」与「草稿行空域名连状态行都不碰」两条分支守卫，见 Step 5 的注记）
 
+> **落地实测（Task 8 收口时复核）：12 条 + 11 条。** `rule-pattern.test.ts` 的 **11** 与投影一致 ✓；`site-rules.test.ts` 实为 **12 条**——比投影多 1 条，属实现阶段补的必需用例，**不是**断言放宽。取数命令：`npx vitest run tests/options/site-rules.test.ts tests/options/rule-pattern.test.ts`（文件级条数以命令输出为准）。
+
 - [ ] **Step 10: 变异验证**
 
 | 变异 | 期望红在哪一条 |
@@ -5077,6 +5032,15 @@ git commit -m "feat(options): 自定义提示词区块（失焦保存、留空�
 - Modify: `src/options/options.html`（缓存区块整段替换）
 - Modify: `src/options/options.css`（加 `.stat`）
 - Create: `tests/options/cache-section.test.ts`
+- Modify: `src/options/store.ts`（**越界但必要**：`patchSettings` 快照那 **1 行 + 注释**，理由见下）
+- Modify: `tests/options/no-innerhtml.test.ts`（**测试侧加强**：必需路径清单 **4 → 8** 个 `sections/*.ts`，并把「穷举」的说法改成「这是下限，不是穷举」）
+
+> **两个"账目外"的文件，落地时确实动了**（`2b041ce` 动 `store.ts`，`7f7a2dd` 动 `no-innerhtml.test.ts`）——补记在这儿，免得账目与提交对不上：
+>
+> 1. **`src/options/store.ts`：`patchSettings` 的快照从 `{ ...latest, ...patch }` 改成 `mergeSettings({ ...latest, ...patch }, CURRENT_VERSION)`。**
+>    **它不是越权重构，是必要前置**：`store.ts:60/92` 自己写着"快照只是写入成功之后的**结果记录**"，而 `saveSettings` 落盘的**永远**是 `mergeSettings(…, CURRENT_VERSION)`（`shared/settings.ts:537`）——旧写法下快照存的是**请求值**、不是**落盘值**。落地时的探针读数（**24 例**）：改前 **22 例快照 ≠ 存储**，改后 **24/24 一致**；**落盘侧一个字节都没变**（归一化本来就在 `saveSettings` 里，`version` 恒为 3）。本任务自带验收标准里的"输入框回填**生效值**"，生效值的唯一来源就是快照——所以这一行是那条用例的前提。落地后 `store.test.ts` 又补了一条**直接**读数：「快照必须是存储里真正生效的值：越界写入被夹后，快照与存储一致」（`82b2d33`）。
+> 2. **`tests/options/no-innerhtml.test.ts`：必需路径清单从 4 条补到全部 8 个 `sections/*.ts`。**
+>    `shortcuts.ts` 从 Task 3 起就存在，却**从来不在清单上**（清单一直写着"四个区块一个都不能少"，而 Task 4~7 已经把它加到了 8 个）。断言本身（`arrayContaining` + `hits` 为空）**一字未动**——这是**加强**，不是放宽；同时把注释里"今天必须被扫到"这种会过期的说法改成**下限**口径。
 
 > 三个统计数字（已缓存 / 上限 / 并发）、缓存上限、清除按钮，`<details>` 里放并发与批量三项。
 > **数字控件的保存时机**也是 `change`：数字输入框的 `change` 原生就在提交时（失焦或回车）触发，
@@ -5477,7 +5441,11 @@ export const cacheSection: Section = {
 - [ ] **Step 5: 跑到绿**
 
 Run: `npx vitest run tests/options/cache-section.test.ts tests/options/options.test.ts`
-Expected: PASS —— **8 条 + 29 条**（既有的三条清除缓存用例一条都不许红）
+Expected: PASS —— **8 条 + 29 条**（**计划写作时的投影**）／**落地实测 10 条 + 31 条**。既有的三条清除缓存用例一条都不许红。
+
+> 两个数都变了，两处都不是"实现偷懒"：
+> - `cache-section.test.ts` **8 → 10**：落地时补了两条必需用例——「打字过程中存储一个字节都不变；只有提交（change）才落盘」（计划原本把"`change` 天然满足"当成人肉约定，**没有读数**）与「数不出缓存条数时显示占位符并报错，绝不显示成 0」（此前 `—` 这个占位分支无人守）。
+> - `options.test.ts` **29 → 31**：**29 是旧数、非本任务改动**——它在 `293bfdd` 上就已经是 **31 条**（实测：`git show 293bfdd:tests/options/options.test.ts` 数出 31 个 `it(`；Task 8 没有碰这个文件）。
 
 - [ ] **Step 6: 变异验证**
 
@@ -5489,6 +5457,8 @@ Expected: PASS —— **8 条 + 29 条**（既有的三条清除缓存用例一�
 | `handleClearCache` 里 `await refreshStats(ctx)` 删掉 | 「清除之后统计归零」 |
 | `countCached` 只数持久层（删掉 session 那一半） | 「三个统计数字」（3 会变成 2） |
 | `mount` 不再调 `refreshStats` | 「高级项默认收在 details 里…」里的三个回填断言 |
+| **`change` 改成 `input`**（把数字框的监听从提交改成每次敲键） | 「打字过程中存储一个字节都不变；只有提交（change）才落盘」——**这条用例是落地时补的**：计划原本把"数字框的 `change` 原生就在提交时触发"当成**不需要读数的约定**，所以在那之前这条变异**无人守** |
+| **`store.ts:114` 的快照归一化删掉**（还原成 `const next: Settings = { ...latest, ...patch }`） | ① 「越界的数字被夹到允许范围」——**间接读数**：输入框回填的是快照里的值，少了归一化就回填 999 而不是 8；② `tests/options/store.test.ts` 的「快照必须是存储里真正生效的值：越界写入被夹后，快照与存储一致」——**直接读数**（`82b2d33` 补上；此前这条不变式只有 ① 那条间接读数） |
 
 - [ ] **Step 7: 提交**
 
@@ -6629,7 +6599,9 @@ async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
 - [ ] **Step 5: 跑到绿**
 
 Run: `npx vitest run tests/options/engine-health.test.ts tests/options/options.test.ts`
-Expected: PASS —— **8 条 + 29 条**
+Expected: PASS —— **8 条（投影：`engine-health.test.ts` 到 Task 10 才创建）+ 31 条（实测）**。
+
+> 原写的 **29 是旧数，不是本任务改出来的**：`options.test.ts` 在 `293bfdd` 上就已经是 **31 条**（实测：`git show 293bfdd:tests/options/options.test.ts` 数出 31 个 `it(`），Task 8 没有碰这个文件。前面那个 **8** 同样只是投影——`engine-health.test.ts` 尚未创建，落地时以命令输出为准。
 
 - [ ] **Step 6: 变异验证**
 
@@ -6737,7 +6709,9 @@ npm test
 
 Expected: 全绿；测试总数 = **867 + 本轮新增**。**已落地的实测数**（截至 Task 6，可直接核对）：`store.test.ts` **7**、`dom.test.ts` **4**、`options-css.test.ts` **7**（Task 9 还会补 1 条）、`no-innerhtml.test.ts` **2**、`shortcuts.test.ts` **9**、`glossary.test.ts` **15**、`rule-pattern.test.ts` **11**、`site-rules.test.ts` **11**（与计划一致，**+2 个文件**）→ 全量 **933 tests / 48 files**。
 **还没落地的计划内用例**：`prompt.test.ts` 5、`cache-section.test.ts` 8、`search.test.ts` 14、`engine-health.test.ts` 8（合计 35；Task 9 补进 `options-css.test.ts` 的那 1 条已在上面注明）。
-→ **预期 `933 + 35 = 968` tests / `48 + 4 = 52` files**。`options.test.ts` 仍是 **29 条**。
+→ **这是计划写作时的投影：`933 + 35 = 968` tests / `48 + 4 = 52` files**（**不是实测**，别把它当读数用）。`options.test.ts` 计划时按 **29 条**计——**那是旧数**：它在 `293bfdd` 上就已经是 **31 条**（实测 `it(` 计数 = 31），Task 8 没有碰这个文件。
+→ **Task 8 落地后的实测（跑的那一刻）**：`npm test` = **951 tests / 50 files**（控制器在更早一刻跑出 **950 / 50**；差的 1 条是 `82b2d33` 给 `store.test.ts` 补的「快照必须是存储里真正生效的值」——另一个代理当时正在补用例，所以**这个数以你自己跑的时刻为准**）。
+> ⚠ **两个数不是一个口径，别拿去对账**：**968 / 52 是「Task 1~11 全部落地后」的投影**（含尚未创建的 `search.test.ts` 计划 14 条、`engine-health.test.ts` 计划 8 条）；**951 / 50 是「Task 8 落地后、Task 9/10 还没开始」的实测**（那两个测试文件此刻在仓库里根本不存在）。与投影同口径的读数要等 Task 11 再跑。
 **这只是投影**：`store`（7 vs 计划 6）、`shortcuts`（9 vs 5）、`glossary`（15 vs 11）、`site-rules`（11 vs 11，附一条实现阶段补的写失败输入框断言）落地时都比计划多了必需用例，后面四个同样可能补——**以命令输出为准**。对不上先看"多出来的是不是实现阶段补的必需用例"。
 实际数字以命令输出为准；**与预期不符先查原因，别改断言凑数**。
 > **实现阶段补的用例会让总数比这里的预期多几条**（单元 A 就有先例：审查或变异验证逼出来的必需用例）。多出来的是好事，不是错误——只要每一条都能说清它守的是什么、并且是**加强**而不是放宽既有断言。真正要警惕的是"数字对得上但守卫是假的"，不是"数字比预期大"。
@@ -6798,7 +6772,7 @@ git commit -m "docs: 设置页改版的已知限制（即时保存的代价、�
 | 7 | 站点规则：`never` 命中时三个入口都不翻译；`*.x.com` 通配与精确匹配各有用例；首条命中生效 | **单元 A 已交付**（`tests/core/site-rules.test.ts` 12 条、`tests/content/index.test.ts` 的拦截用例、`tests/popup/popup.test.ts` 的解除用例）；本单元 Task 6 补**写入侧**（界面里能增删的规则就是那三条语义的输入） | 本单元不重复实现、不重复测匹配语义；Task 6 的规则行只写 `action: 'never'` |
 | 8 | §6 的文案已改对，且断言更新在提交信息里写明理由 | Task 2 全部（含提交信息模板） | 改后的断言从 1 条变成 **7 条**（链接仍可点击 / 仍可能失去下划线与可点击 / **降级为纯文本** / 旧说法不许回来 / 当下为真的「保存语言与显示」/ **仅译文模式下** / **六成**），条数与语气都只强不弱；**后两条是限定词与真判据自己的回归网**（三处修正里只有白名单那处原本有读数）；Task 3 Step 10 的 HTML 块与 Task 2 的块**逐字相同** |
 | 9 | 亮/暗两套下无硬编码颜色（用 `tests/helpers/css.ts` 的解析器断言声明块） | Task 3 Step 4（`options-css.test.ts` 7 条）+ Task 9 Step 5（`[hidden]` 那条，第 8 条） | 令牌逐字一致、正文无 `#`/`rgb()`/`hsl()` 字面量、无 `opacity`；`--on-accent` 同时加进 `popup.css` 以保持共用组一致 |
-| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**预期 968 / 52 files**（= 已落地实测 **933 / 48**（Task 6 后）+ 后续四个测试文件的计划内 35 条；**以命令输出为准**——实现阶段补的用例只多不少） |
+| 10 | 全量 `npm test` / `typecheck` / `build`（`verify:dist` 14 项）/ `zip` 全绿 | Task 11 Step 4 | 逐个命令 + 期望输出；测试总数**计划写作时的投影是 968 / 52 files**（= 已落地实测 **933 / 48**（Task 6 后）+ 后续四个测试文件的计划内 35 条）；**Task 8 落地后实测 951 / 50 files**（Task 9/10 尚未开始，**与投影不是同一个口径**，别对账——详见 Task 11 Step 4）；**以命令输出为准**——实现阶段补的用例只多不少 |
 
 ## 覆盖对照表（规格其余条目）
 
@@ -7009,4 +6983,18 @@ Task 2 的规格审查用真实渲染器跑了 9 例探针，抓出三条不准�
 
 Task 6 落地后 `sections/site-rules.ts` 的区块 id 与 CSS 里 `body:has(#sec-site-rules:target)` 对上了——**四个死选择器里已有三个复活**（`#sec-shortcuts` Task 4、`#sec-glossary` Task 5、`#sec-site-rules` Task 6）。**只剩 `#sec-prompt`**，那是 Task 7 的活。
 （时间线要说准，别指望它在 Task 7 之前替你把关：Task 9 那条"CSS 里引用的每个 `#sec-*` 都必须在页面里存在"的断言住在 `tests/options/search.test.ts`，而**那个文件要到 Task 9 才创建**——Task 7 落地时四个 id 已经全在了，所以它一出生就是绿的。它的价值是**防以后**：谁再改区块 id 或 CSS 选择器时当场红。）
+
+### Task 8 落地时的四条（一条**假前提**、两个真问题、一条通用约定）
+
+1. **执行者把 `countCached` 从 `Promise<number>` 改成 `Promise<number | null>`（内部吞错），理由是"计划里 `refreshStats` 的 catch 分支根本不可达"——这个前提是假的，已回退。**
+   实测：`TranslationCache.count()`（`core/cache.ts:214-219`）逐个 `await this.entryKeys()` / `await this.area.get(keys)`，**不吞错**——存储读失败会 reject 到计划那个 catch。把计划版原样放回去、用那条新用例跑，是 **10/10 PASS**（Task 8 收口后实测：`npx vitest run tests/options/cache-section.test.ts` → `Tests 10 passed (10)`）。
+   **缺的是读数，不是可达性**：计划那条 catch 分支在此前**没有任何用例覆盖**——"看起来不可达"和"没人守"是两件事。
+2. **该重构带出两个真问题**（所以它不是"纯风格改动"，这也正是它必须被回退的理由）：
+   - **挂载路径的状态行丢掉了 `describe(raw)` 的原因**：这是**用户可见文案的静默降级**——只报"读取缓存条数失败"，把存储给出的那条线索（`Error.message`）丢了，用户和排查的人都拿不到"为什么没数出来"。
+   - **`handleClearCache` 里的 `(persistentBefore ?? 0)` 成了死代码**：这里读的是 `TranslationCache.count()`（`core/cache.ts:214`，返回 `Promise<number>`、**永不 null**；读失败直接 reject），只有 `refreshStats` 那条路才走吞错的 `countCached`——所以 `?? 0` 永远用不上，而读失败时 `count()` 直接 reject、`clear()` 根本不会执行。**可那两处注释却在断言"读失败不拦下清除、按 0 计入"**——注释描述的行为在代码里不存在。
+3. **处置（已全部落地于 `82b2d33`）**：
+   - **保留那条用例**——「数不出缓存条数时显示占位符并报错，绝不显示成 0」：它杀得死"把 `—` 改成 0"这个**此前无人守**的变异；
+   - **回退 `number | null`**（`countCached` 回到 `Promise<number>`）；
+   - **恢复 `${describe(raw)}` 的原因**，并把断言从 `toContain('读取缓存条数失败')` **加强**成 `toContain('读取缓存条数失败：存储读取失败')`——让恢复回来的原因自己也有一条读数（`tests/options/cache-section.test.ts:218`）。
+4. **通用约定（写给下一次做变异验证的人）**：**"新写的文件杀不死某个变异"不等于这个变异没被守——既有测试可能就是它的读数。** 给变异表补行之前，**先跑一遍看它是不是已经红了**；"我觉得没人守"不是读数。
 
