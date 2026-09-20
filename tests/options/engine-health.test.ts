@@ -289,6 +289,9 @@ describe('内置免费引擎那一行', () => {
 
     await waitFor(() => status().dataset.kind === 'ok');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    // 免费引擎没有 Key，脱敏必须**原样放行**：空串当"要抹掉的 Key"会把每个字之间都塞上 `***`
+    // （这条断言就是那个守卫的读数——它今天还多守着一个字面 `""` 的边界）。
+    expect(status().textContent).toContain('你好');
     await waitFor(() => pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot')!.dataset.state === 'ok');
   });
 
