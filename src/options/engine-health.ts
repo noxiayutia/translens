@@ -43,8 +43,12 @@ export const ENGINE_HEALTH_KEY = 'jinyi:engine-health';
  * 读裸键。
  *
  * 迁移：本分支的中间版本用**裸 id**（`google` / `p-a`）写过记录。那是 session 区域、从未发布、
- * 浏览器一关就没了，所以这里**刻意不写迁移代码**：裸键今天读不到任何一行，留着只是多几条
- * 没人认领的条目。
+ * 浏览器一关就没了，所以这里**刻意不写迁移代码**。**不能把它们一概说成"读不到"**：
+ * **不以前缀 `p:` 开头**的裸键（`google`、`p-a`…）今天读不到任何一行——没有一行会去读它们；
+ * 而 `p:` 形状的老键（只可能来自手改存储，正常 id 不会长这样）会被 **id 恰好等于后半段**
+ * 的档案行认领（`profileIdFromHealthKey('p:x')` → `'x'`）。也就是说这个形状例外是
+ * "读取按 `p:<id>` 取值"这条规矩本身的镜像，不是漏掉的一支；留着它比在读侧加一层
+ * "只认本轮写的键"的过滤便宜——那种过滤既没解决任何问题，又会把键空间的知识复制到第二处。
  */
 const PROFILE_HEALTH_PREFIX = 'p:';
 const ENGINE_HEALTH_PREFIX = 'e:';
@@ -84,14 +88,15 @@ function sessionArea(): StorageArea {
   return area;
 }
 
+/** 逐条校形。键在这里是**记录键**（`p:<id>` / `e:<引擎名>`），本函数不解释它的前缀。 */
 function pickHealth(raw: unknown): Record<string, EngineHealth> {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Record<string, EngineHealth> = {};
-  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
     const record = value as Partial<EngineHealth>;
     if (record.state !== 'ok' && record.state !== 'bad') continue;
-    out[id] = { state: record.state, detail: typeof record.detail === 'string' ? record.detail : '' };
+    out[key] = { state: record.state, detail: typeof record.detail === 'string' ? record.detail : '' };
   }
   return out;
 }
@@ -149,25 +154,35 @@ function queueWrite<T>(area: StorageArea, task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** 记录一个引擎/档案的结果（在这个存储区的队列里做整份读-改-写，只动它自己的那一条）。 */
+/**
+ * 记录一个引擎/档案的结果（在这个存储区的队列里做整份读-改-写，只动它自己的那一条）。
+ *
+ * **第一个参数是记录键**（`profileHealthKey(id)` 或 `FREE_ENGINE_HEALTH_KEY`），**不是档案 id**：
+ * 照参数名传裸 id 会写出一条谁也读不到的孤儿记录——正是这套键空间要杜绝的形状。
+ */
 export async function saveEngineHealth(
-  id: string,
+  key: string,
   health: EngineHealth,
   area: StorageArea = sessionArea(),
 ): Promise<void> {
   await queueWrite(area, async () => {
     const current = await loadEngineHealth(area);
-    await area.set({ [ENGINE_HEALTH_KEY]: { ...current, [id]: health } });
+    await area.set({ [ENGINE_HEALTH_KEY]: { ...current, [key]: health } });
   });
 }
 
-/** 档案被删掉时把它的记录一并清掉（同样排队：与并发的那次写之间保持调用顺序）。 */
-export async function forgetEngineHealth(id: string, area: StorageArea = sessionArea()): Promise<void> {
+/**
+ * 档案被删掉时把它的记录一并清掉（同样排队：与并发的那次写之间保持调用顺序）。
+ *
+ * **第一个参数同样是记录键**（`profileHealthKey(id)`），与 {@link saveEngineHealth} 同一个口径：
+ * 传裸 id 删不掉任何东西，那一行下次重绘时会带着旧状态又亮起来。
+ */
+export async function forgetEngineHealth(key: string, area: StorageArea = sessionArea()): Promise<void> {
   await queueWrite(area, async () => {
     const current = await loadEngineHealth(area);
-    if (!(id in current)) return;
+    if (!(key in current)) return;
     const next = { ...current };
-    delete next[id];
+    delete next[key];
     await area.set({ [ENGINE_HEALTH_KEY]: next });
   });
 }

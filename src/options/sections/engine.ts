@@ -488,7 +488,9 @@ async function runConnectionTest(
  * 是档案 id、又可能是引擎键"的形状。旧写法（先 `rowById(id)`、找不到再回落免费行）正是被
  * 档案 id 抢先的那条路：一条 id 恰好等于引擎键的档案会把免费行的结果接到自己那一行上。
  * 不认识的键返回 `null` 是防御性的一支（本函数只接调用方刚拼出来的键）；老构建写下的裸 id
- * 根本到不了这里——所有读取处一律按新键取，这正是"不写迁移"的口径。
+ * 也根本到不了这里——所有读取处一律按新键取，这正是"不写迁移"的口径。唯一会被老键命中的形状
+ * 是 `p:<id>` 那种（只能来自手改存储）：读取处按 `p:<id>` 取值，id 对上的档案行就会认领它；
+ * 例外与取舍的完整说明在 `engine-health.ts` 的迁移那一段。
  */
 function rowForKey(key: string): HTMLElement | null {
   if (key === FREE_ENGINE_HEALTH_KEY) {
