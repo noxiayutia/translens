@@ -139,7 +139,14 @@ describe('设置页：缓存与请求', () => {
     expect(pick<HTMLElement>('stat-concurrency').textContent).toBe('8');
   });
 
-  it('清空或乱填：拨回存储里真正生效的值并报错，不写存储', async () => {
+  it('清空：拨回存储里真正生效的值并报错，不写存储', async () => {
+    // 这里原来还有半条「乱填 `'abc'`」，是**空转**：`<input type="number">` 的取值净化先把
+    // `'abc'` 变成 `''`（jsdom 30.0.1 实测），于是第二次提交走的是与「清空」**逐字相同**
+    // 的那一支，那两行断言在调用之前就已经成立——实测把 `sections/cache.ts` 里
+    // `!Number.isFinite(parsed)` 那一半去掉，这份文件里**没有一条**会红。删的是这条恒真的
+    // 断言，不是放松：「清空」这一支仍有牙，把非法输入的回拨那一支删掉，这条当场红
+    // （输入框变成夹取后的 200、状态行说"已保存"）。
+    // 「非空但不是数字」这条路今天进不来，原因与读数见 `sections/cache.ts` 里 `commitNumber`。
     await seedSettings({ maxBatchChars: 1000 });
     await loadOptions();
 
@@ -149,11 +156,6 @@ describe('设置页：缓存与请求', () => {
     await settle();
     expect(inputOf('max-batch-chars').value).toBe('1000');
     expect((await storedSettings()).maxBatchChars).toBe(1000);
-
-    commitNumber(inputOf('max-batch-chars'), 'abc');
-    await waitFor(() => (status().textContent ?? '').includes('要填一个数字'));
-    await settle();
-    expect(inputOf('max-batch-chars').value).toBe('1000');
   });
 
   it('四个数字的 min/max 与存储层的夹取范围同源（两处各写了一份，这是防漂移的那条断言）', async () => {
@@ -218,6 +220,28 @@ describe('设置页：缓存与请求', () => {
     expect(status().textContent).toContain('读取缓存条数失败：存储读取失败');
     // 数不出来没有副作用：条目还在（不能被顺手删掉）。
     expect((await chromeStub.storage.local.keys()).filter((key) => key.startsWith('jt:'))).toEqual(['jt:a']);
+  });
+
+  it('设置还没读出来就提交数字控件：如实说一句，不写存储', async () => {
+    // `bind` 在第一个 `await` 之前就把监听器挂好了（`section.ts` 那条纪律），所以设置读失败时
+    // 这些控件照样能提交——`commitNumber` 里 `current === null` 这一支此前没有任何读数：
+    // 把它换成哨兵，存量用例里**没有一条**会因此变红（实测）。形态与上一条同款：装 DOM、
+    // import 区块模块，**不调** `loadSnapshot()`，快照因此一直是 null。
+    await seedSettings();
+    const before = await storedSettings();
+    mountOptionsHtml();
+    const { cacheSection } = await import('../../src/options/sections/cache');
+    const { NOT_LOADED } = await import('../../src/options/store');
+    cacheSection.bind({ settings: () => null } as never);
+
+    // 5 是个真会落盘的值（会被夹到 min 200）：这一支要是漏了守卫，存储当场就变。
+    commitNumber(inputOf('max-batch-chars'), '5');
+    await settle();
+
+    // 文案取自 `store.ts` 导出的常量本身，不在这里抄第二份字面量。
+    expect(status().textContent).toBe(NOT_LOADED);
+    // 「还没读出来」的唯一正确副作用是**什么都不写**：一个字节都不许动。
+    expect(await storedSettings()).toEqual(before);
   });
 
   it('写入被拒时把输入框拨回真正生效的值并报错', async () => {

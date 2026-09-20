@@ -35,7 +35,16 @@ const NUMBER_FIELDS: ReadonlyArray<{ input: HTMLInputElement; field: NumberField
   { input: maxSegmentsInput, field: 'maxSegmentsPerBatch', label: '单批段数上限' },
 ];
 
-/** 显式逐个构造增量：计算属性 `{ [field]: value }` 会被 TS 放宽成 `{[x: string]: number}`。 */
+/**
+ * 显式逐个构造增量，而不是 `{ [field]: value }`：计算属性会退化成字符串索引签名
+ * `{[x: string]: number}`，而 `Settings` 里还有字符串与数组字段——**那个类型在说谎**
+ * （实测 `const patch = { [field]: value }` 之后 `patch.targetLang` 就是 `number`；
+ * 把它当字符串用，`tsc` 当场报 TS2322）。
+ *
+ * ⚠ 退化类型**不是"编译不过"**（那句话曾经写在这里，是错的）：把它交给 `Partial<Settings>`，
+ * 返回位置与 `ctx.save(…)` 的参数位置实测 `npx tsc --noEmit` 都不报错，`sections/shortcuts.ts:79`
+ * 还有一个 `as Partial<Settings>` 的先例。逐个写出来，类型就是它字面的样子，也不必靠断言压住。
+ */
 function patchFor(field: NumberField, value: number): Partial<Settings> {
   if (field === 'cacheMaxEntries') return { cacheMaxEntries: value };
   if (field === 'concurrency') return { concurrency: value };
@@ -102,6 +111,14 @@ function commitNumber(ctx: SectionContext, input: HTMLInputElement, field: Numbe
       return;
     }
     const parsed = Number(input.value);
+    // ⚠ 下面 `!Number.isFinite(parsed)` 这一半今天**不可达、也没有读数**，别再把它当成一条活路径：
+    // `<input type="number">` 的取值净化只留下"语法上是有效浮点数、**且换算结果有限**"的字符串，
+    // 其余一律清成 `''`。实测（jsdom 30.0.1，本仓库的测试环境）：`'abc'` / `'1e999'` / `'Infinity'`
+    // / `'0x10'` / `' 5 '` / `'5x'` / `'NaN'` / 400 位整数，`value` setter、`setAttribute('value', …)`、
+    // `defaultValue` 三条路读回来都是 `''`；`valueAsNumber = Infinity` 直接抛 TypeError。
+    // 于是能走到这里的非空值必定是有限数——`Number.isFinite` 这一半今天永远不会为假。
+    // 留着的唯一理由：控件哪天换成文本控件（`type="text"`）——那时 `Number('1e999')` = Infinity
+    // 会被 clampInt 悄悄夹成上限，只有这一半拦得住。浏览器一侧本仓库没有读数，别写成既成事实。
     if (input.value.trim().length === 0 || !Number.isFinite(parsed)) {
       input.value = String(current[field]);
       setStatus(cacheStatus, 'err', `${label}要填一个数字`);
