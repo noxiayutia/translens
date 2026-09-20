@@ -340,6 +340,47 @@ function buildProfileRow(ctx: SectionContext, id: string): HTMLElement {
   return row;
 }
 
+/**
+ * 展开 / 收起只动受影响的那一两行。
+ *
+ * 为什么不是 `renderProfiles(ctx)`：那个函数开头清空整张列表再重建（档案行 + 免费引擎行），
+ * 于是**每次点开一个档案都要重建 N+1 行**——代价随档案数线性增长，用户点一下要等。
+ * 展开只改两件东西：这一行触发按钮的 `aria-expanded`，以及这一行里**有没有** `.profile-editor`。
+ * 列表结构、行顺序、免费引擎行、其它行通通不动。
+ *
+ * `renderProfiles` 只留给"数据真的变了"的路径：挂载、保存后、删除后、重载。
+ */
+function applyExpansion(ctx: SectionContext): void {
+  const snapshot = ctx.settings();
+  if (snapshot === null) return;
+  for (const row of Array.from(profilesList.querySelectorAll<HTMLElement>('.profile-row[data-profile-id]'))) {
+    const id = row.dataset.profileId as string;
+    const expanded = id === expandedId;
+    const trigger = row.querySelector('[data-action="toggle"]');
+    if (trigger !== null) trigger.setAttribute('aria-expanded', String(expanded));
+    const existing = row.querySelector('.profile-editor');
+    if (expanded && existing === null) {
+      const profile = id === NEW_DRAFT_ID ? undefined : snapshot.profiles.find((item) => item.id === id);
+      row.append(buildEditor(id, profile));
+    } else if (!expanded && existing !== null) {
+      // "一次只展开一个"的执行点就是这一句：上一个展开的行在这里被摘掉。
+      existing.remove();
+    }
+  }
+}
+
+/**
+ * 只追加「新档案（未保存）」那一行，不动其余行。
+ * 草稿行永远排在免费引擎行**之前**（与 `renderProfiles` 的追加顺序一致）。
+ */
+function insertDraftRow(ctx: SectionContext): void {
+  if (rowById(NEW_DRAFT_ID) !== null) return;
+  const row = buildProfileRow(ctx, NEW_DRAFT_ID);
+  const free = profilesList.querySelector('[data-engine-free]');
+  if (free === null) profilesList.append(row);
+  else free.before(row);
+}
+
 function renderProfiles(ctx: SectionContext): void {
   if (ctx.settings() === null) return;
   // 展开目标已不存在（比如刚删掉它）：收起，别让下一次渲染挂在一个幽灵 id 上。
@@ -725,8 +766,9 @@ export const engineSection: Section = {
       switch (target.dataset.action) {
         case 'toggle':
           if (ctx.settings() === null) return;
+          // 一次只展开一个：把上一个的编辑器摘掉这件事由 applyExpansion 做（就地，不重建列表）。
           expandedId = expandedId === id ? null : id;
-          renderProfiles(ctx);
+          applyExpansion(ctx);
           break;
         case 'save-profile':
           runSafely(engineStatus, '保存失败', () => handleSaveProfile(ctx, id));
@@ -762,10 +804,11 @@ export const engineSection: Section = {
         setStatus(engineStatus, 'err', NOT_LOADED);
         return;
       }
-      if (expandedId !== NEW_DRAFT_ID) {
-        expandedId = NEW_DRAFT_ID;
-        renderProfiles(ctx);
-      }
+      if (expandedId === NEW_DRAFT_ID) return;
+      // 先把状态落定再插行：`buildProfileRow` 读 `expandedId` 决定要不要带编辑器。
+      expandedId = NEW_DRAFT_ID;
+      insertDraftRow(ctx);
+      applyExpansion(ctx);
     });
   },
 
