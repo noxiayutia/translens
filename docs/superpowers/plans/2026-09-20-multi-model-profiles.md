@@ -135,6 +135,9 @@
 10. **任务之间不许有前向引用**（不写"见 Task N"）：每个任务自带它需要的全部代码与命令。
 11. **pwsh 5.1 的 `Set-Content` / `Get-Content` 会破坏 UTF-8**：文件读写一律用编辑 / 写入工具；命令只用来跑 `npx vitest run` / `git` / `node scripts/*.mjs`。
 12. **提交只用路径限定**：`git commit -m "…" -- <两个显式路径>`。**禁止整树 VCS 操作**：`git stash` / `git restore` / `git checkout -- .` / `git reset --hard` 一律不许用。**路径限定的 `git checkout <commit> -- <你自己已经提交的那几个文件>` 可以接受**，但必须同时满足两个前提：**只碰你自己的文件**、**你的改动已经提交**（否则你会把自己还没提交的工作覆盖掉）。取"改前读数"要优先用 `%TEMP%` 里的自建副本（单元 B 的做法），别在共享工作区里来回 checkout。
+    - ⚠ **路径限定只保证"不带别的路径"，不保证"只带你写的那些改动"**：`git commit -- <显式路径>` 会把**工作树里同路径上别人的未提交改动一起收走**（多人并发改同一个文件时极容易发生）。所以**提交前先 `git status --porcelain` 核一遍这些路径上的改动都是自己的**——看到不属于自己的 `M`，先停下来问，别提交。
+    - ⚠ **对未跟踪的新文件**：`git commit -- <新文件>` 会报 `error: pathspec … did not match any file(s) known to git`，必须先 `git add -- <显式路径>`（硬规矩 14）。
+    - ⚠ **取任何读数之前先记 `git rev-parse HEAD`**：并发提交会让 `HEAD` / `HEAD~1` 不是你以为的那个（本单元真发生过：落地者的全量绿与 build 副本落在 `d35be33` 之上，而 `HEAD~1` 当时**不是** `f687e6a`）。把 HEAD 抄进读数记录里，"这个读数是在哪个提交上取的"才可核。
 13. **在 jsdom / vitest 里证明"还是同一个节点"只能用 `toBe` / `===`**（`Set.has` / `Array.includes` 这类 SameValueZero 比较也算）。**`toEqual` / `toStrictEqual` 都不能当身份断言**——vitest 5.0.0 对 DOM 节点走的是**结构比较**：`node_modules/vitest/dist/chunks/index.OVGXnVRj.js:1289` 那一行是
     `if (isDomNode(a) && isDomNode(b)) return a.isEqualNode(b);`（判据函数 `isDomNode` 在同文件 `:1356`，只看 `nodeType` / `nodeName` / `isEqualNode` 在不在）。
     ⚠ 那个 chunk 文件名里的哈希是**装出来的**（版本一变就换名），所以引用时用**符号**（`isDomNode` / `isEqualNode`）定位，别只记路径。DOM 节点是**宿主对象**、没有可枚举的自有属性（`Object.keys(node)` 是 `[]`），所以结构比较**完全**由上面那个 DOM 分支实现；`toStrictEqual` 走同一条分支，一样失效（全仓 `tests/` 今天一处都没用它）。反过来也一样——要断言"结构/内容一样"就用 `toEqual`，别用 `toBe`。
@@ -1114,6 +1117,8 @@ git commit -m "feat(settings): 档案支持多个模型（CURRENT_VERSION 3→4�
 > | 后台前置闸：整条 `{ ok: false, code: 'AUTH', message: problem }` | **C3** Step 5d | C3 Step 5d 的片段 | C3 Step 1d 的「档案没有当前模型：可读错误 + 一个请求都不发（成对）」 |
 > | 弹窗提示区：`renderEngineHint`（`src/popup/popup.ts:230`）里追问一句 | **C5** Step 5f | C5 Step 5f 的片段 | C5 Step 1b 的「当前档案还没选模型：提示区说出那句可读的话」 |
 > | 设置页「测试连接」的本地闸：`handleTestProfile` 里 `if (problem !== undefined) { setStatus(err, problem); return; }` | **C4** Step 3l | C4 Step 3l 的片段（**已含**） | C4 Step 1 的「测试连接：没有当前模型时零请求」 |
+>
+> **三处的序号按落地顺序固定，全计划统一用这一套**：**第一处** = C3 Step 5d 的后台前置闸、**第二处** = C4 Step 3l 的设置页「测试连接」、**第三处** = C5 Step 5f 的弹窗提示区（C3 Step 5d / C4 Step 3l / C5 Step 5f 三处的注释都按这个口径写）。
 >
 > **§4 的前提**：`src/background/scheduler.ts:188-190` 的 `configHash` 里**已经含 `model`**（只读核过，本单元不改这个文件）——所以换模型天然不会命中上一个模型的译文。**今天已有两张网，但只覆盖一条轴**：
 > - **单元级**：`tests/background/scheduler.test.ts:290`「换模型后同一段文本不会命中旧模型的缓存」（用 `engineConfig.model`）。
@@ -3308,7 +3313,7 @@ function handleCancelFetched(id: string): void {
 
 **3l. `handleTestProfile` 用表单里的清单 + 没有当前模型时不发请求**（替换 C1 的合成档案那一段）：
 
-> 这是 `problem` 的**第三处接线**（另两处：C3 Step 5d 的后台前置闸、C5 Step 5f 的弹窗提示区）。它是**本地的**：设置页自己拼一个临时档案喂给 `resolveEngine`，拿到 `problem` 就地写状态行、直接 `return`——**不经过后台**，所以它的读数是 C4 Step 1 的「测试连接：没有当前模型时零请求」，与 C3 那条互不依赖。
+> 这是 `problem` 的**第二处接线**（**三处统一口径**：第一处 = C3 Step 5d 的后台前置闸、第二处 = 本处、第三处 = C5 Step 5f 的弹窗提示区）。它是**本地的**：设置页自己拼一个临时档案喂给 `resolveEngine`，拿到 `problem` 就地写状态行、直接 `return`——**不经过后台**，所以它的读数是 C4 Step 1 的「测试连接：没有当前模型时零请求」，与 C3 那条互不依赖。
 
 ```ts
 // src/options/sections/engine.ts（片段：handleTestProfile 的合成档案 + 零请求闸）
@@ -3840,6 +3845,12 @@ git commit -m "feat(options): 档案行与编辑面板改成图二布局（模�
 > 三件事合起来就是规格 §7：**档案下拉之后追加模型下拉（仅当该档案的模型数 > 1）**、**切回档案时记住它上次用的模型**、**换完给一句"要重新翻译才生效"**。
 >
 > 「记住上次用的模型」不需要任何新机制：`activeModel` 本来就持久化在档案里，下拉只是把它读出来——**切档案本身不改任何 `activeModel`**（那是用户的选择，不是切换的副作用），这条要有一条专门的断言。
+>
+> ### ⚠ 本 Task 的**既有断言迁移表**（只有一条，但它会红）
+>
+> | 断言 | 现在在哪 | 怎么改 |
+> | --- | --- | --- |
+> | `expect(parsed.querySelectorAll('[id]').length).toBe(11)` | `tests/popup/popup.test.ts` 的「引用了 popup.css 与模块脚本」那条（`popup.html` 结构守卫） | **同步成 `toBe(13)`**（Step 3 往 HTML 里加 `#model-field` 与 `#model` 两个 id）。⚠ **这是"同步事实"，不是放宽**：它本来就是**精确相等**，加两个 id 就得 +2；写成 `toBeGreaterThanOrEqual(11)` 才是放宽（**不许**）。⚠ **计划上一版漏了这条**——Step 3 加 id、Step 6 却写"既有用例一条都不红"，**两半互相不满足**（复盘 §5 的 H 行）。落地读数：`08bfaad` 已把它改成 `13`，并在原处留了注释说明"+ 模型那一行两个 id"。 |
 
 - [ ] **Step 1: 写失败测试**
 
@@ -3885,7 +3896,7 @@ function ui(): PopupUi {
 }
 ```
 
-**1b. 追加一个 helper 与六条用例**（第六条**从 Task C2 挪过来**：弹窗提示区认 `problem`）：
+**1b. 追加一个 helper 与**八**条用例**（那个新 describe 里有 **8 条 `it`**；另**一条**从 Task C2 挪过来放在「引擎提示区」那组里——**合计 9 条新用例**，与 Step 6 的"九个"对齐）：
 
 ```ts
 // tests/popup/popup.test.ts（片段：helper，放在 storedSettings 之后）
@@ -4120,7 +4131,7 @@ const modelSelect = document.getElementById('model') as HTMLSelectElement;
   renderEngineHint();
 ```
 
-**5c. 三个新函数**（加在**弹窗的** `renderEngineHint`（`src/popup/popup.ts:230`）之前）：
+**5c. 两个新函数**（加在**弹窗的** `renderEngineHint`（`src/popup/popup.ts:230`）之前）：
 
 ```ts
 // src/popup/popup.ts（片段：renderModelSelect / onModelChange）
@@ -4202,7 +4213,7 @@ function onEngineChange(): void {
 
 **5f. 提示区认 `problem`**（**从 Task C2 挪到这里**——`src/popup/**` 归本 Task；改动处，插在 `missingKey` 那一段之后）：
 
-> 这是 `problem` 的**第二处接线**（另两处：C3 Step 5d 的后台前置闸、C4 Step 3l 的设置页测试连接）。⚠ **弹窗有两个同名 `renderEngineHint`**：这一个是 `src/popup/popup.ts:230`；设置页那个在 `src/options/sections/engine.ts:422`，两者互不相关（硬规矩 15）。
+> 这是 `problem` 的**第三处接线**（**三处统一口径**：第一处 = C3 Step 5d 的后台前置闸、第二处 = C4 Step 3l 的设置页「测试连接」、第三处 = 本处 C5 的弹窗提示区）。⚠ **弹窗有两个同名 `renderEngineHint`**：这一个是 `src/popup/popup.ts:230`；设置页那个在 `src/options/sections/engine.ts:422`，两者互不相关（硬规矩 15）。
 
 ```ts
 // src/popup/popup.ts（片段：弹窗的 renderEngineHint 开头）
@@ -4229,24 +4240,27 @@ function renderEngineHint(): void {
 
 Run: `npx vitest run tests/popup`
 
-Expected: 全绿——九个新用例（八条下拉 + 一条提示区）+ 既有 50 余条一条都不红。特别确认这三条仍在：`引擎提示区` 那一组（**弹窗的** `renderEngineHint`，`src/popup/popup.ts:230`，只多了一个分支）、`切换引擎后提示区跟着重算`（`onEngineChange` 里多了一句 `renderModelSelect`，不改文案）、`保存被拒绝时说明原因并回滚下拉`（那个辅助没动）。
+Expected: 全绿——**九个**新用例（新 describe **8 条** + 从 C2 挪来的提示区 **1 条**）+ 既有条目一条都不红。特别确认这几条仍在：`popup.html 结构` 那条的 **`[id]` 计数（现在是 `13`**，本 Task 加了 `#model-field` / `#model` 两个 id——见节头的迁移表）、`引擎提示区` 那一组（**弹窗的** `renderEngineHint`，`src/popup/popup.ts:230`，只多了一个分支）、`切换引擎后提示区跟着重算`（`onEngineChange` 里多了一句 `renderModelSelect`，不改文案）、`保存被拒绝时说明原因并回滚下拉`（那个辅助没动）。
 
 - [ ] **Step 7: 变异验证**
 
-| 变异 | 期望红在哪一条 |
+> 本表按落地实测（`08bfaad` 的 12 轮）改过；**M2 存活、M12 构造不出红**——两条都如实标在这里，并在「复盘记录 › 4. 有行为、无读数」里有账。
+
+| 变异 | 期望红在哪一条（**按实测**） |
 | --- | --- |
-| **删掉 5f 那个 `if (problem !== undefined) { … }` 分支** | 「当前档案还没选模型：提示区说出那句可读的话」（Step 1b 第六条）红——提示区会退回「已配置你自己的 API Key.」那句 |
-| 把 5f 的分支插到 `missingKey` **之前** | 本条**不设变异**：规格没规定"既缺 Key 又缺模型"时该说哪一句，两种顺序都说得通（同上，本条在 C2 的旧变异表里也标过"不设"） |
+| **删掉 5f 那个 `if (problem !== undefined) { … }` 分支** | 「当前档案还没选模型：提示区说出那句可读的话」红 ✓（红在哪条与计划一致，**但机理要改准**）：退回的**不是**「已配置你自己的 API Key.」那句，而是**授权那句**——`该档案的接口地址（https://api.example.com/*）尚未授权，请到设置页保存一次该档案以授权。`。机理：该用例的夹具 origin **没有授权**，于是 `renderEngineHint` **同步**写下的那句会被**异步**的 `hasHostPermission(...).then(...)` 在 `settle()` 之后**覆盖**掉；只因 `problem` 分支**提前 `return`** 才没被盖。⚠ 这条顺带暴露了一段真实覆盖路径（**同步写、异步再写同一个节点**），已记进复盘 §3 |
+| 把 5f 的分支插到 `missingKey` **之前** | **不设此变异（已核实不可观察）**：落地者按 M2 实测"两种顺序都全绿"——**顺序本身没有任何用例钉住**（规格没规定"既缺 Key 又缺模型"时该说哪一句，属**有意留白**）。已进复盘 §4 的表 |
 | `modelField.hidden = models.length <= 1` 改成 `< 1`（1 项也显示） | 「1 个模型：也不显示」红 |
-| 改成 `models.length > 0`（0 项也显示） | 「0 个模型：整行不显示」红 |
+| 改成 `models.length === 1`（**这才是"0 项也显示"的精确表达**；模型数 ≥ 2 时仍显示） | 「0 个模型：整行不显示」红（**实测 1 红**） |
+| 改成 `models.length > 0`（**计划原写的表达式**） | **实测 6 红**——它把"0 项也显示"**和**"≥2 项也不显示"一起做了，于是三条下拉可见性用例 + 依赖它们的用例连锁红。⚠ **计划的表达式与它自己的期望对不上**（写成 `> 0` 却说"其余不变"）；要表达"0 项也显示"必须写 `=== 1`（上一行） |
 | 恒 `false`（永远显示） | 前两条都红 |
 | `fillSelect(..., profile?.activeModel ?? '')` 改成 `models[0]` | 「2 个模型：…选中 activeModel」——读到 `a1` |
 | `onEngineChange` 里删掉 `renderModelSelect()` | 「切档案：模型下拉换成那个档案的清单…」红（切到 p-b 后下拉还是 a1/a2） |
-| `onModelChange` 里 `profile.id === previous.engineId ? … : profile` 的条件删掉（改所有档案） | 「换模型：只写那一个档案的 activeModel…」——`storedActiveModel('p-b')` 变成 `a2` |
+| `onModelChange` 里 `profile.id === previous.engineId ? … : profile` 的条件删掉（改所有档案） | **实测 3 红**：① 「切档案：…**存储里的 activeModel 一个都不动**」② 「换模型：只写那一个档案的 activeModel…」——`storedActiveModel('p-b')` 变成 **`''`**（**不是 `a2`**；见下）③ 第三条以命令输出为准。⚠ **期望值要改准**：改所有档案时 `p-b` 的 `activeModel` 被写成 `a2`，而 `a2` **不是** `p-b` 的 `models` 成员，`saveSettings → mergeSettings/pickProfile` 因此把它**归一化成空串**——所以读到的是 `''`。计划原来写"变成 `a2`"是错的 |
 | 回滚那句 `modelSelect.value = active` 删掉 | 「换模型保存被拒…」——`model.value` 停在 `a2` |
-| 状态行那句删掉 | 「换模型后不自动重翻…」与「页面已翻译时换模型…」两条都红 |
+| 状态行那句删掉 | **实测 3 红**（计划写 2，**漏了第三条**）：① 「换模型后不自动重翻…」② 「页面已翻译时换模型…」③ 「换模型：只写那一个档案的 activeModel，其它档案与字段原样…」末尾那句 `expect(status.textContent).toContain('重新翻译')` |
 | 顺手在成功路径里发一次 `TOGGLE_PAGE` | 两条都红（`sentTypes()` 含 TOGGLE_PAGE） |
-| `.field[hidden]` 那条 CSS 删掉 | **jsdom 里看不出来**（没有布局）→ 这条**不设变异**：它由 `options-css.test.ts` 的同款先例（`.hint[hidden]`）与本条注释守着，真机靠肉眼验收（规格 §10）。写在这里是为了让后来者知道"查过、且它测不了" |
+| `.field[hidden]` 那条 CSS 删掉 | **实测 61/61 全绿（构造不出红）**：`tests/popup` + `options-css.test.ts` 都不覆盖它——jsdom 没有布局，而 `popup.test.ts` **根本不加载 `popup.css`**（`options-css.test.ts` 只比 `:root` 令牌）。**"模型行在 0/1 个模型时真的不占位"这件事测试侧零覆盖**，是真机肉眼项 → 已进复盘 §4 的表，并在 **C6 的 README 已知限制里点名** |
 
 - [ ] **Step 8: 提交**
 
@@ -4309,6 +4323,10 @@ git commit -m "feat(popup): 档案有多个模型时多一个模型下拉，换�
   自己的 400（错误码 `BAD_REQUEST`，正文原因会展开显示）。
 - **「自定义」徽章的判据是"接口地址与某个内置模板逐字相同"**：地址是自己搭的代理、或者多打了一个
   斜杠，徽章就会出现（这是有意的：判据越"聪明"，你越难预测它什么时候亮）。
+- **模型那一行在 0 / 1 个模型时"不占位"这件事，测试侧零覆盖**：它靠 `popup.css` 的
+  `.field[hidden] { display: none }`（`.field` 是 flex，会盖掉浏览器默认的 `[hidden]`）——
+  jsdom 没有布局、`popup.test.ts` 也不加载 `popup.css`，把那条规则整条删掉**测试仍然全绿**。
+  所以**请你在真机上确认**：切到一个只有 0 或 1 个模型的档案时，那行不该留一条空白。
 - **折叠行比参考图多一行小字**（`接口地址 · 当前模型`）：这是有意的——5 个档案时"哪个档案打哪个
   地址、用哪个模型"是一眼就该看见的信息。窄窗口下这一行可能被挤窄，**未经真机渲染验证**。
 ```
@@ -4470,6 +4488,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
    - **①把"零请求"的读数排在错误断言后面**：原写法是 `await expect(…).resolves.toEqual({ ok:false, code:'AUTH', … })` **然后**才 `expect(calls).toEqual([])`。错误码/文案一变，读者先看到的是那条断言，而"到底发没发请求"这个**更基本的读数**排在后面。改成：**先收响应 → 紧接着读 `calls` 与两层缓存 → 最后才断言错误码与文案**（C3 Step 1d 第一条就是这么写的）。
    - **②把"成对两半"与主断言挤在同一条用例**：`problem` 那条原本把"有模型 / 免费引擎**不背**这句话"与主断言放在一起，于是 M1（`problem` 恒真）时后半被前半遮住。**拆成两条用例**：一条测"该背的背"，一条测"不该背的不背"。
    - **一般规则**：一条用例里出现两个以上读数时，**按"越基本越先读"排序**（副作用次数 → 状态 → 文案），并把互相遮蔽的两个读数拆成两条用例。
+6. **"同步写一句、异步再写同一个节点"**（C5 的 M1 实测暴露的真实覆盖路径，成因③的现场）：弹窗的 `renderEngineHint`（`src/popup/popup.ts:284-324`）在**同步**段末尾写下「已配置你自己的 API Key.」，随后 `void hasHostPermission(pattern).then(...)` 又在**异步**段把同一个 `engineHint.textContent` **覆盖**成授权那句。于是"删掉 `problem` 分支"这个变异观测到的**不是**同步那句，而是**异步覆盖后**的那句（`该档案的接口地址（https://api.example.com/*）尚未授权…`）——因为用例的 `settle()` 正好让那条微任务跑完了。**读法**：凡是一个节点被"同步写一次、异步再写一次"，**测试里看到的是最后一次写**；引用某句文案做断言时，必须问清"它是不是会被后面的异步覆盖"。这条与第 4 条（语句顺序）同族，但机理不同：那条是**断言顺序**，这条是**写入顺序**。
 5. **成因④的镜像：计划把落点写在"会被遮住的那一句"上**（C3 落地实测两例，都是**计划预测错落点**、不是用例写错）：
    - 「删掉 404 那一支」原预测"`new Set(...).size` 变成 4"，**实测红在它前面那句** `missing).toContain('/models')`——`Set.size` 根本没跑到。
    - 「删掉权限闸」原预测"`calls` 不为空"，**实测红在 `messageOf` 抛「这次拉取是成功的」**——`calls` 根本没跑到。
@@ -4477,7 +4496,7 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 
 ### 4. 有行为、无读数（**不许**为它们编一条恒真用例）
 
-本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这**五**处都没有任何用例杀得死：
+本仓口径：这类代码如实记账、**保留**（它们有防御价值或对称性价值），但**不许**为了让变异表好看而给它编一条同源的恒真用例。今天这**七**处都没有任何用例杀得死：
 
 | 代码 | 为什么今天杀不死 | 谁能杀它 / 留着它的理由 |
 | --- | --- | --- |
@@ -4486,6 +4505,8 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | `editorDrafts.delete(NEW_DRAFT_ID)`（C4 Step 3p） | **实测全绿（55 files / 1043 passed，变异存活）**：`bind` 先把 `expandedId` 落成 `NEW_DRAFT_ID`，`buildProfileRow` 因此**直接造好编辑器**，`applyExpansion` 见 `existing !== null` 就**不走** `restoreEditor`——残留的那一格永远读不到 | 要杀它得让"新增档案"那条路径**先插空行再展开**（两次 `applyExpansion`）；那种形状今天不存在。留着是**对称性 + 防御**（万一将来 `insertDraftRow` 改成"先插收起行、再统一展开"）。⚠ 「草稿保存成功后：再点「新增档案」是一张白纸」那条用例**不是**它的杀手（它守的是用户可见的结果），别把它写成"这条变异的读数" |
 | `liftProfileModels` 里的 `delete lifted.model` | 见上表 M3：`pickProfile` 重建 + 版本闸门短路 | 改 `pickProfile`（让它透传旧键）才杀得死。留着是**防御**（防止将来 `pickProfile` 不再重建时旧键漏进存储） |
 | `fetchModels` 里 `if (pattern === undefined) return { ok: false, message: '接口地址不是合法的 URL…' }`（C3 Step 4） | **在消息路径上不可达**：`loadSettings → mergeSettings/pickProfile` 已经把非法 `baseUrl` 归一化成**空串**，所以 `handleFetchModels` 永远先命中"这个档案还没填接口地址"那一支，走不到"不是合法的 URL"。只有**直接调 `fetchModels` 的单测**可达（`tests/background/models.test.ts` 的「地址不是合法 URL：也不发请求…」就是直连） | 它是**防御性分支**：将来若有人把 `pickProfile` 的地址归一化去掉、或给 `fetchModels` 加别的调用方，它就活了。⚠ **不许**为它编一条"绕过边界"的用例来凑读数 |
+| `problem` 与 `missingKey` 两个分支的**先后顺序**（`src/popup/popup.ts:289-300`） | **实测两种顺序都全绿（构造不出红）**：规格**没有规定**"既缺 Key 又缺模型"时该说哪一句——它是**有意留白**，两种说法都成立（"先得有凭据才能翻译" vs "先得有模型才能翻译"） | 要杀掉它必须**先规定**一个顺序（改规格），再写一条"既缺 Key 又缺模型"的夹具。⚠ **不许**为了凑读数把某个顺序写成"唯一正确"——那会把一条留白变成一条假约束 |
+| `popup.css` 的 `.field[hidden] { display: none }` | **实测 61/61 全绿**：jsdom 没有布局（`hidden` 属性永远"看起来生效"），而 `tests/popup/popup.test.ts` **根本不加载 `popup.css`**（`tests/options/options-css.test.ts` 只比 `:root` 令牌，不查 popup 的规则） | 真机肉眼项（"模型行在 0/1 个模型时不占位"）——已在 **C6 的 README 已知限制里点名**，并由 `options-css.test.ts` 里 `.hint[hidden]` 的同款先例守"这个坑存在"。⚠ 别写一条"断言 CSS 文本里有这条规则"的用例冒充行为读数——那种断言在测试里**只是一条字符串匹配**（本仓 `css.ts` 的真解析能做，但它证明的是"规则在"，不是"行不占位"） |
 
 ### 4.1 结构缺口：**有意的零消费者公共表面**（C2 的 `problem`）
 
@@ -4512,6 +4533,8 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **边界措辞冲突（第五轮）** | C3 的 Files 要改 `tests/shared/messages.test.ts`，而派单写了"不许碰 `tests/shared/**`"——**两者字面冲突**（执行者按计划做了并如实报告，处理是对的） | C3 的 Files 与 Step 8 现在写清"**只改 `tests/shared/messages.test.ts` 这一个文件**；同目录其它文件 `settings.test.ts` 属 C2"，并说明整目录禁令的本意是"别动 C2 的文件" | C3 的 Files + Step 8 |
 | **G1（控件改名的连带文案，第六轮）** | 计划把「保存档案」改成「保存」，**没提别处引用它的文案** | 落地修了两处**用户真会看到**的假话：`src/options/options.html` 隐私区那句、`src/options/sections/engine.ts` 的 `deniedHint`（现在写"再点一次「保存」"）。**另有两处注释仍提旧名**（`src/options/sections/engine.ts:25` 与 `:151`）——不上屏，不阻塞，下次顺手改 | 硬规矩 16 + 本表 |
 | **G2（照抄必红的三处计划片段，第六轮）** | ① `applyTriggerState` 写 `textContent = …` ② `handleCancelProfile` 把清暂存放开头 ③ Step 3m 说"旧口径会让 `7991539` 那两条红" | ① 改**就地改文本节点**（否则 C0 的代价读数变 `[5,6,5]`）② 清暂存挪到 `applyExpansion` **之后** ③ 那两条守卫按新版式**改写**成三条（Step 3s），并如实标注"真机缺陷在新版式下结构上不可达" | C4 Step 3e / 3i / 3m / **3s** |
+| **H（两半互相不满足，第七轮）** | C5 Step 3 往 `popup.html` 加 `#model-field` / `#model` 两个 id，而 `tests/popup/popup.test.ts` 的**既有** `expect(parsed.querySelectorAll('[id]').length).toBe(11)` 必然红；**Step 6 还写着"既有用例一条都不红"** | 落地把计数**同步成 `13`**（精确相等，**不是**放宽成 `>= 11`），并在原处留注释说明"+ 模型那一行两个 id"。计划已把这条写进 C5 节头的**既有断言迁移表**与 Step 6 的 Expected | C5 节头迁移表 + Step 6 |
+| **I（表达式与期望对不上，第七轮）** | C5 变异表写 `models.length > 0` 并说"0 项也显示、其余不变"；又写"`storedActiveModel('p-b')` 变成 `a2`"；又写"状态行那句删掉 → 2 红" | ① 要表达"0 项也显示"必须写 **`=== 1`**（`> 0` 实测 **6 红**，连"≥2 项也不显示"一起做了）② 实测是 **`''`**（`a2` 不是 `p-b` 的 `models` 成员，被 `pickProfile` 归一化成空串）③ 实测 **3 红**（漏了「换模型：只写那一个档案的…」末尾那句 `toContain('重新翻译')`） | C5 Step 7 的三行 |
 
 ### 6. 过程规矩：接手"崩溃后的在制品"（第六轮实撞到的）
 
@@ -4549,6 +4572,9 @@ git commit -m "docs(readme): 多模型档案、拉取模型清单与四条已知
 | **C4 落地提交 `f687e6a`（8 文件 +1387/−172）与它的 30 轮变异** | 计划只点了少数几条变异 | **M2（计划指定那条）→ 恰好 2 红**；**M26/M27 证明计划两处片段"照抄必红"**（`applyTriggerState` 的 `textContent` 写法让 C0 代价读数变 `[5,6,5]`；`handleCancelProfile` 的清暂存放前面会被 `stashEditor` 填回来）；**M20 存活**（`delete(NEW_DRAFT_ID)`，已改标"不可观察"）；**M20b 存活**（`row.contains` 那道闸，计划已注明"不设此变异"）。**30 轮里只有这两处存活**，且都在"有行为、无读数"表里有账 |
 | **"没有放松断言"的机器核对（第六轮）** | 计划反复写"只增不减" | 可核读数：`git diff f85e019 HEAD -- tests/` 的 **39 个 `-` 行里只有 2 行含 `expect(`**——① `expect(triggerOf('p-a').contains(head)).toBe(true)` **反向**成 `.toBe(false)`（新版式下的**替代**守卫，不是删除）② `expect(stored.models).toEqual(['qwen2.5'])` 改成 `['m','qwen2.5']`（**更强**：同时钉住"加模型是追加"与"那次被拒的保存留下的模型还在"）。另外 `waitFor(` **删 5 增 15**：删除的 5 条全换成更具体的条件（例如 `dataset.kind === 'ok'` 会被 `setModel` 自己写的那句状态抢先兑现 = 成因④的现场） |
 | **C4 收口规模（过程读数）** | —— | 接手时在制品 **799 行**（未提交、无报告）；收口后该提交 **8 文件 +1387/−172**；分诊两刀 = `tsc --noEmit` exit 0 + `npx vitest run tests/options/` **15 files / 173 全绿** ⇒ 判定"只差验证与提交"，省下 1387 行重做（见复盘 §6） |
+| **C5 落地提交 `08bfaad`（4 文件 +262/−4）与它的 12 轮变异** | 计划只点了少数几条 | **M2 存活**（`problem` / `missingKey` 的顺序不可观察，已进复盘 §4）；**M4 实测 6 红**（计划写 1——表达式 `> 0` 与它的期望对不上，正确表达是 `=== 1`）；**M10 实测 3 红**（计划写 2——漏了状态行那句 `toContain('重新翻译')`）；**M12 构造不出红**（`.field[hidden]` 那条 CSS，已进复盘 §4 并在 C6 的 README 里点名为真机肉眼项）。另：`storedActiveModel('p-b')` 的实测值是 **`''`** 而不是计划写的 `a2`（`pickProfile` 把非成员值归一化成空串） |
+| **C5 的 id 计数同步（"只增不减"的又一笔）** | 计划 5a/5b 与 Step 6 没提这条既有断言 | `tests/popup/popup.test.ts` 的 `expect(parsed.querySelectorAll('[id]').length)` 从 **11 → 13**（Step 3 加了 `#model-field` / `#model`）。⚠ **这是"同步事实"、不是放松**：它本来就是**精确相等**，加两个 id 就 +2；写成 `>= 11` 才是放松。**已写进 C5 节头的既有断言迁移表** |
+| **C5 全量读数（落地实测）与它的基线** | 以命令输出为准 | **55 files / 1052 passed**、`typecheck` exit 0、`build` exit 0；**基线是 `d35be33`**（不是 `f687e6a`——期间有并发提交，`HEAD~1` 当时不是你以为的那个）。**规矩**：取读数前先记 `git rev-parse HEAD`（硬规矩 12） |
 | 收口 `npm test` | 以命令输出为准 | |
 | 收口 `npm run typecheck` / `build` / `zip` | exit 0 / exit 0 + `verify:dist` 14 项 / exit 0 | |
 | `sync-plan-code.mjs` | `已同步 0 个代码块` | |
