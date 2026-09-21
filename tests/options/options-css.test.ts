@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { declarationBlock, declarations, stripCssComments } from '../helpers/css';
+import { declarationBlock, declarations, hasRule, stripCssComments } from '../helpers/css';
 
 const ROOT = join(import.meta.dirname, '..', '..', 'src');
 const optionsCss = readFileSync(join(ROOT, 'options', 'options.css'), 'utf-8');
@@ -235,5 +235,45 @@ describe('设置页样式：D4 前置修正（「显示原文」态的两路反�
     //    要分别证明两半各有牙，必须按 0d 做两次独立运行（本计划第②条硬规矩）。
     expect(declarations(popupCss, '.primary[data-active="true"]:hover:not(:disabled)')['filter']).toBe('brightness(0.92)');
     expect(declarations(popupCss, '.primary[data-active="true"]:active:not(:disabled)')['filter']).toBe('brightness(0.92)');
+  });
+});
+
+/*
+ * 这一组来自**真机反馈**（用户报「悬停翻译 / 划词翻译 有效果但开关不置亮」）：
+ * 标记是 `<input>` → `<span class="field-toggle-text">` → `<span class="toggle-track">`，
+ * 而规则写的是 `input:checked + .toggle-track`（相邻兄弟）——中间隔着一个元素，`+` 永远匹配不上。
+ * 开关的状态真的会变（功能生效），但轨道与旋钮的视觉一直停在关态。
+ *
+ * 为什么以前没人发现：**jsdom 不计算 CSS**，`tests/popup/popup.test.ts` 里那些
+ * 「勾选后存储里 hoverTranslate 变成 true」的断言全是真的、也全在绿——它们看的是状态，
+ * 不是观感。这类"选择器与标记结构对不上"的缺陷只能靠眼睛或靠这条结构性断言。
+ * 该缺陷自 `b4299f5`（单元 B 弹窗重做）起就在，D 单元的样式改动只是把它带到了暗色下更显眼。
+ */
+describe('弹窗样式：开关的兄弟组合器必须与标记结构对得上（真机缺陷的守卫）', () => {
+  const popupHtml = readFileSync(join(ROOT, 'popup', 'popup.html'), 'utf-8');
+
+  it('为什么存在：input 与 .toggle-track 之间隔着 .field-toggle-text，所以必须用 `~` 而不是 `+`', () => {
+    // 先把「中间隔着谁」钉成事实——否则下面那三条「必须用 `~`」看起来像多余的讲究。
+    const firstToggle = popupHtml.slice(popupHtml.indexOf('class="field-toggle"'));
+    const between = firstToggle.slice(firstToggle.indexOf('<input'), firstToggle.indexOf('toggle-track'));
+    expect(between).toContain('field-toggle-text');
+
+    // 三条规则都要用通用兄弟 `~`：`~` 在"相邻"时同样成立，
+    // 所以将来标记若真把轨道挪到紧挨 input 的位置，这三条仍然对（不会假红）。
+    expect(declarations(popupCss, '.field-toggle > input[type="checkbox"]:checked ~ .toggle-track')['background']).toBe(
+      'var(--ok)',
+    );
+    expect(
+      declarations(popupCss, '.field-toggle > input[type="checkbox"]:checked ~ .toggle-track::after')['transform'],
+    ).toBe('translateX(18px)');
+    expect(
+      declarations(popupCss, '.field-toggle > input[type="checkbox"]:focus-visible ~ .toggle-track')['outline'],
+    ).toContain('var(--accent)');
+
+    // 坏掉的那版（相邻兄弟）不许回来：`hasRule` 为 false 才是对的。
+    // 这一条盯的是"别再写回 `+`"，因为 `~` 那条断言在两种写法下都可能绿（当且仅当标记相邻时）。
+    expect(hasRule(popupCss, '.field-toggle > input[type="checkbox"]:checked + .toggle-track')).toBe(false);
+    expect(hasRule(popupCss, '.field-toggle > input[type="checkbox"]:checked + .toggle-track::after')).toBe(false);
+    expect(hasRule(popupCss, '.field-toggle > input[type="checkbox"]:focus-visible + .toggle-track')).toBe(false);
   });
 });

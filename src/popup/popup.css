@@ -325,10 +325,17 @@ body {
 
 /*
  * .field-toggle：checkbox 视觉隐藏（appearance:none 而不是 display:none——它必须保持
- * 可聚焦、可点击、可被读屏识别），紧跟一个 34×20 的装饰轨道 span 做 switch 观感。
+ * 可聚焦、可点击、可被读屏识别），后面跟一个 44×26 的装饰轨道 span 做 switch 观感。
  * 文案分两行：主文案 13px --text，括注 12px --text-3。
  *
  * 用 `>` 直接子选择器定位轨道：原来那条 `.field-toggle span` 会把文案里的 span 一起算进去。
+ *
+ * ⚠ 轨道**不是** input 的紧邻兄弟（中间隔着 `.field-toggle-text`），所以下面凡是从 input
+ * 选到 `.toggle-track` 的规则**必须用通用兄弟 `~`**。写成相邻兄弟 `+` 会永远匹配不上：
+ * 开关状态真的会变（功能有效果），但轨道与旋钮的视觉一直停在关态。这个缺陷从 `b4299f5`
+ * （单元 B 的弹窗重做）起一直存在——**jsdom 不计算 CSS**，所以弹窗那些「勾选后存储变了」
+ * 的断言全绿也照样漏到真机。守卫见 `tests/options/options-css.test.ts` 里那条
+ * 「开关的兄弟组合器必须与标记结构对得上」。
  */
 .field-toggle {
   display: flex;
@@ -352,7 +359,7 @@ body {
   pointer-events: none;
 }
 
-.field-toggle > input[type="checkbox"]:focus-visible + .toggle-track {
+.field-toggle > input[type="checkbox"]:focus-visible ~ .toggle-track {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -400,11 +407,11 @@ body {
   transition: transform var(--dur) var(--ease);
 }
 
-.field-toggle > input[type="checkbox"]:checked + .toggle-track {
+.field-toggle > input[type="checkbox"]:checked ~ .toggle-track {
   background: var(--ok);
 }
 
-.field-toggle > input[type="checkbox"]:checked + .toggle-track::after {
+.field-toggle > input[type="checkbox"]:checked ~ .toggle-track::after {
   transform: translateX(18px);
 }
 
