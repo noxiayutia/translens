@@ -2115,6 +2115,10 @@ git show --stat HEAD
 提交前**逐路径**确认 `git diff -- <路径>` 里的改动都属于本 Task（尤其 `src/popup/popup.ts`：
 `popup.html` 的改名改动**不在**这份 diff 里，因为它不在暂存路径上——**再核一次**）。
 
+> ⚠ **落地实况**：真正落地的提交是 **`4e58561`**，它的提交说明在全量读数之外还附了
+> **S8 的真实红分布、M1–M10 逐条变异读数、常量四条词的单字符杀法读数、六条"偏离与计划缺陷"**
+> ——**本文件后面凡引用 T1 读数，以那份提交说明为准**（`git show 4e58561` 即可看到全文）。
+
 ---
 
 ## Task T2：权限与文案（manifest / 内容脚本两条假话 / 注释定性）
@@ -2820,7 +2824,7 @@ git show --stat HEAD
 | 产物清单 | `npm run build` 尾部清单 | 16 个文件，167.66 KB | 16 个文件，164.66 KB ⚠ **这个字节数的来源必须注明**（T1 独立验证发现）：它取自**工作树里混着改名会话在途改动**时的一次构建——工作树遗留的 `dist/` 合计正好 164.66，且它的 `dist/manifest.json` 写着 `"name": "TransLens"`、两个 HTML 与 CSS 的字节数都与干净构建不同；**干净检出 `git archive 4e58561` 上是 164.46 KB**。功能读数（exit 0 / 14 项）两边都成立，但**字节数不许说成"提交的读数"** | 待填 | 待填 |
 | zip 字节 / SHA256 | `Get-ChildItem *.zip` + `Get-FileHash -Algorithm SHA256` | 65643 / `048567C7AA429E78E394727A5BC278EBD22E9F921764F3371D7299253AA015B2` | 未取（T1 不打 zip；T3 收口时打一次） | 待填 | 待填 |
 | 产物 `host_permissions` | `node -e "console.log(JSON.stringify(require('./dist/manifest.json').host_permissions))"` | `["https://translate.googleapis.com/*"]` | 未取；**预期仍是旧值**（`src/manifest.json` 属 T2，T1 不许动） | 待填（= `[]`） | 待填 |
-| 七类符号残留（`src` + `tests`） | `git grep -n -e googleapis -e googleEngine -e DEFAULT_ENGINE_ID -e FREE_ENGINE_HEALTH_KEY -e ENGINE_HEALTH_PREFIX -e test-free -e data-engine-free -- src tests` | 命中（多处） | **作为行为 / 实现残留 = 0**。逐符号（T1 落地 + 独立验证复核）：`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；`FREE_ENGINE_HEALTH_KEY` = 1（注释）；`test-free` = 1（显式 `toBeNull` 断言）；`data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` 的 `host_permissions` = T2 的活 + 1 测试注释）。两条空态断言**非恒真**已实测（各追加一个探针 → 各 1 红）。⚠ **别拿命中数当读数**，见规格 §8.7 的口径段 | 待填 | 待填 |
+| 七类符号残留（`src` + `tests`） | `git grep -n -e googleapis -e googleEngine -e DEFAULT_ENGINE_ID -e FREE_ENGINE_HEALTH_KEY -e ENGINE_HEALTH_PREFIX -e test-free -e data-engine-free -- src tests` | 命中（多处） | **作为行为 / 实现残留 = 0**。逐符号（T1 落地 + 独立验证复核）：`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；`FREE_ENGINE_HEALTH_KEY` = 1（注释）；`test-free` = 1（显式 `toBeNull` 断言）；`data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` 的 `host_permissions` = T2 的活 + 1 测试注释）。两条空态断言**非恒真**已实测（各追加一个探针 → 各 1 红；两条都在 `tests/options/options.test.ts`）。⚠ **别拿命中数当读数**，见规格 §8.7 的口径段 | 待填 | 待填 |
 | 作为**当前引擎选择**的 `engineId: 'google'` | `git grep -n "engineId: 'google'" -- tests` 然后**逐条判读** | 22 处（起草时全部算作"当前引擎选择"） | **0 处**当当前引擎用。⚠ 字面量**仍有 12 处**：**7 处活的**是 v2/v4 迁移的**输入数据**（必须留，它们就是"老数据"本身）+ **5 处**注释/说明。**这一格不能拿 `git grep` 的命中数当读数** | 待填 | 待填 |
 | 变异汇总 | 见各 Task 的变异表 | — | **M1–M11 全部跑完**（读数见提交说明）：含 M2 / M4b / M6b 三处"计划预测不成立"、M9"以为有牙、实测全绿"、M6c 补做的可达反例 | 待填 | 待填 |
 
@@ -2959,7 +2963,10 @@ git show --stat HEAD
 33. **F4（信息，已消解一处互斥）**：规格 §8.7 的"七类符号不再出现"与 §7.3 第 17 条的"必须**显式写**
     `[data-engine-free]` 空态断言"**互斥**（一条要求字面量消失，一条要求它出现）。规格 §8.7 已改成
     **分母口径**（作为**行为 / 实现**残留 = 0；显式空态守卫与注释里的历史说明不算残留），并写入
-    验证者的逐符号读数与"两条空态断言**非恒真**"的独立实测（追加探针 → 各 1 红）。
+    验证者的逐符号读数与"两条空态断言**非恒真**"的独立实测（追加探针 → 各 1 红；两条都在
+    `tests/options/options.test.ts`）。**那七个逐符号计数我复跑过一遍，与验证者完全一致**
+    （`googleapis` 2 / `googleEngine` 0 / `DEFAULT_ENGINE_ID` 0 / `FREE_ENGINE_HEALTH_KEY` 1 /
+    `ENGINE_HEALTH_PREFIX` 0 / `test-free` 1 / `data-engine-free` 2）。
     计划的验收表第 7 条与读数表那一格同步改成同一口径。
 
 ### D. 落地踩坑（T1 实测）

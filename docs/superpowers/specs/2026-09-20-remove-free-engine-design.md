@@ -683,7 +683,8 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
    `data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` + 1 测试注释）。
    且那两条空态断言**不是恒真式**（独立验证实测）：往列表里追加一个 `<div data-engine-free>` →
    1 红（`expected <div data-engine-free></div> to be null`）；追加一个 `<div data-action="test-free">`
-   同理，各 1 红。
+   同理，各 1 红。两条都在 **`tests/options/options.test.ts`** 里（分别是
+   `querySelector('[data-engine-free]')` 与 `querySelector('[data-action="test-free"]')` 的 `toBeNull()`）。
 
 **行为面（升级路径）**
 
