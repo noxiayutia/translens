@@ -1766,23 +1766,23 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 
 | # | Task | 变异 | 期望红（要点） | 结果（执行者填：红/绿/已 revert） |
 | --- | --- | --- | --- | --- |
-| M1 | D1 | 只改 options 不改 popup | 「逐字一致」红在首个漂移令牌 | |
-| M2 | D1 | options 暗色块删 `--ok-text` | 覆盖断言红并**点名** `['--ok-text']` | |
-| M2b | D1 | options 暗色块删 `--link` | 覆盖断言红并**点名** `['--link']`。**⚠ 前置条件（⑥）：必须等 D2/D3 已落地**——覆盖检查只看**正文** `var()` 引用，`--link`/`--ease`/`--knob`/`--radius-card` 在 D1 结束时的正文里还没有任何引用，此刻删暗色值（或例外清单项）**天然不红**；提前跑得到的「没红」是时序问题、不是断言失效，不许据此下结论 | |
-| M3 | D1 | 钉死值改 `toBeDefined()` + 暗色回漂 | **全绿** ⇒ 证明那是放宽，规格 §7.2 禁止 | |
-| M4 | D1 | 状态行文字色改回 `var(--ok)` | 「对比度纪律」用例红——**顺序两层（①）**：vitest 同一个 `it` 遇首个失败即抛出，先看到的是正则层 `expected [ ' color: var(--ok)' ] to deeply equal []`；**声明层的 `expected 'var(--ok)' to be 'var(--ok-text)'` 不会同批出现**，只有把正则删掉/放宽之后才轮到它响——D1 执行者已用 **M4b** 实证第二层确实有牙。不许把本行预期写成「一次跑出两条红」 | |
-| M5 | D2 | 删 `.switch` 的 `appearance: none` | 开关用例红 | |
-| M6 | D2 | `.ghost` 用回 `var(--accent)` | 按钮用例红；附两蓝分职说明 | |
-| M7 | D2 | 任意处加 `opacity:` | 既有守卫 5 直接红 | |
-| M11 | D2·补牙② | popup `.status` 尾部临时加 `color: var(--ok);` | popup 镜像用例红（对比度正则命中 popup 正文）——D2 Step 9 内已要求做过一次，此处汇总复认 | |
-| M12 | D2·补牙② | popup 正文临时加 `background: #ffffff;`（`:root` 外） | popup 镜像用例红（hex 扫描命中）——同上，Step 9 变异的可复核版 | |
-| M13 | D2·补牙③ | popup 暗块 `--text` 漂回 `#e8eaed` | 暗块跨文件用例红并**点名** `--text` | |
-| M14 | D2·补牙③ | 把 popup 暗块**整个清空**（声明全删） | 暗块跨文件用例红在防空转下限（`expected 0 to be greater than or equal to 20`）——证明那条 `>= 20` 不是装饰；清空后立刻原样恢复 | |
-| M8 | D3 | 删 `.stat b` 的 tabular 行 | D3 用例红 | |
-| M9 | D3 | 删 `[hidden]` 块 | 守卫 7 红（行为测试不红——它才是牙） | |
-| M10 | 焦点环 | 把 `*:focus-visible` 的 `outline: 2px solid var(--accent);` 行删掉 | 守卫 6 红：`expected undefined toContain 'var(--accent)'` | |
-| M15 | D3·前置修正 | options 的 `button:active:not(:disabled)` 漂回裸 `button:active {` | 按压契约用例红在**解析器抛错**：`样式表里没有选择器「button:active:not(:disabled)」`（popup 侧同型，两次**独立运行**，见 D3 Step 0d） |
-| **M16** | **D4 Step 0** | popup 的合并规则漂回去：`.primary[data-active="true"]:hover:not(:disabled)` / `…:active:not(:disabled)` 两条合回 `.primary[data-active="true"]:hover, .primary[data-active="true"]:active { … }` | 新的守卫用例红在**解析器抛错**：`样式表里没有选择器「.primary[data-active="true"]:hover:not(:disabled)」`（同 `it` 里第一条先响）。**复认要按 Step 0d 做两次独立运行**：只把 `:active` 那条漂回不带限定符 → 抛错点名 `:active:not(:disabled)`（证明第二条独立有牙） | |
+| M1 | D1 | 只改 options 不改 popup | 「逐字一致」红在首个漂移令牌 | 红，已 revert——D1 轮为 TDD 天然红（Step 6/8：先只改 options 时唯一红项即「逐字一致」，`1 failed / 8 passed (9)`，红在首个漂移令牌）；本轮未复跑 |
+| M2 | D1 | options 暗色块删 `--ok-text` | 覆盖断言红并**点名** `['--ok-text']` | 红，已 revert——D1 轮执行（自审记录 #5：核查确认「AssertionError 逐字命中」）；本轮未复跑 |
+| M2b | D1 | options 暗色块删 `--link` | 覆盖断言红并**点名** `['--link']`。**⚠ 前置条件（⑥）：必须等 D2/D3 已落地**——覆盖检查只看**正文** `var()` 引用，`--link`/`--ease`/`--knob`/`--radius-card` 在 D1 结束时的正文里还没有任何引用，此刻删暗色值（或例外清单项）**天然不红**；提前跑得到的「没红」是时序问题、不是断言失效，不许据此下结论 | **本轮实测**：红，已 revert——删 options 暗块 `--link: #419cff;` 整行 → 覆盖断言 `expected [ '--link' ] to deeply equal []`（同运行里暗块跨文件用例一并炸，共 2 条红、14 passed）；⑥的前置已由 `9da4c0e`+`fab5e7d` 满足；独立一次运行，恢复后 `Get-FileHash` 回基线 |
+| M3 | D1 | 钉死值改 `toBeDefined()` + 暗色回漂 | **全绿** ⇒ 证明那是放宽，规格 §7.2 禁止 | 全绿（这行性质如此：全绿恰是「`toBeDefined()` 不把关」的演示，防假绿）——D1 轮按计划核对（转引，左列即其形态）；本轮未复跑 |
+| M4 | D1 | 状态行文字色改回 `var(--ok)` | 「对比度纪律」用例红——**顺序两层（①）**：vitest 同一个 `it` 遇首个失败即抛出，先看到的是正则层 `expected [ ' color: var(--ok)' ] to deeply equal []`；**声明层的 `expected 'var(--ok)' to be 'var(--ok-text)'` 不会同批出现**，只有把正则删掉/放宽之后才轮到它响——D1 执行者已用 **M4b** 实证第二层确实有牙。不许把本行预期写成「一次跑出两条红」 | 红，已 revert——D1 轮：正则层先响 `expected [ ' color: var(--ok)' ] to deeply equal []`；声明层由 **M4b 独立一次运行**实证（`expected 'var(--ok)' to be 'var(--ok-text)'`，自审记录 #5①「已证第二层有牙」） |
+| M5 | D2 | 删 `.switch` 的 `appearance: none` | 开关用例红 | 红（转引 D2 Step 12·M1 该轮，按左列期望形态）；本轮未独立复跑 |
+| M6 | D2 | `.ghost` 用回 `var(--accent)` | 按钮用例红；附两蓝分职说明 | 红（转引 D2 Step 12·M2 该轮，按左列期望形态）；本轮未独立复跑 |
+| M7 | D2 | 任意处加 `opacity:` | 既有守卫 5 直接红 | 红（转引 D2 Step 12·M4 该轮：给 `.ghost` 加 `opacity: .8` → 既有守卫 5）；本轮未独立复跑 |
+| M11 | D2·补牙② | popup `.status` 尾部临时加 `color: var(--ok);` | popup 镜像用例红（对比度正则命中 popup 正文）——D2 Step 9 内已要求做过一次，此处汇总复认 | 红（转引 D2 Step 9·②a 该轮，与 ②b **独立两次运行**，正则层形态见左）；本轮复认，未再跑 |
+| M12 | D2·补牙② | popup 正文临时加 `background: #ffffff;`（`:root` 外） | popup 镜像用例红（hex 扫描命中）——同上，Step 9 变异的可复核版 | 红，已 revert——D2 Step 9·②b 执行者**实测**：`expected [ '#ffffff' ] to deeply equal []`（与 ②a 独立运行）；本轮复认此实测，未再跑 |
+| M13 | D2·补牙③ | popup 暗块 `--text` 漂回 `#e8eaed` | 暗块跨文件用例红并**点名** `--text` | 红（转引 D2 Step 10·③a 该轮，与 ③b **独立两次运行**：漂值点名 `--text`）；本轮复认，未再跑 |
+| M14 | D2·补牙③ | 把 popup 暗块**整个清空**（声明全删） | 暗块跨文件用例红在防空转下限（`expected 0 to be greater than or equal to 20`）——证明那条 `>= 20` 不是装饰；清空后立刻原样恢复 | 红，已 revert——D2 Step 10·③b 执行者**实测**：`expected 0 to be greater than or equal to 20`（与 ③a 独立运行）；本轮复认此实测，未再跑 |
+| M8 | D3 | 删 `.stat b` 的 tabular 行 | D3 用例红 | 红（转引 D3 Step 12·M1 该轮：删 tabular → 「统计数字」用例按左列期望红）；本轮未独立复跑 |
+| M9 | D3 | 删 `[hidden]` 块 | 守卫 7 红（行为测试不红——它才是牙） | 红（转引 D3 Step 12·M3 该轮：守卫 7 红、`search.test.ts` 不红 = 唯一牙）；本轮未独立复跑 |
+| M10 | 焦点环 | 把 `*:focus-visible` 的 `outline: 2px solid var(--accent);` 行删掉 | 守卫 6 红：`expected undefined toContain 'var(--accent)'` | **本轮实测**：红，已 revert——删 `outline: 2px solid var(--accent);` 行 → 守卫 6「保留统一焦点环」用例当场响。**实测消息与预期不同**：预期写 `expected undefined toContain 'var(--accent)'`，vitest 真抛的是 `the given combination of arguments (undefined and string) is invalid for this assertion`（对 undefined 用 toContain 是无效断言）——仍是红、仍是这条守卫（牙齿有效），只是失败消息措辞与计划预写不符，已登记为计划小偏差 |
+| M15 | D3·前置修正 | options 的 `button:active:not(:disabled)` 漂回裸 `button:active {` | 按压契约用例红在**解析器抛错**：`样式表里没有选择器「button:active:not(:disabled)」`（popup 侧同型，两次**独立运行**，见 D3 Step 0d） | 红（转引 D3 Step 0·0d 该轮：options 漂回裸 `button:active` 一次、popup 漂回裸 `.primary:active` 一次，各点名抛错，**独立两次运行**）；本轮未复跑 |
+| **M16** | **D4 Step 0** | popup 的合并规则漂回去：`.primary[data-active="true"]:hover:not(:disabled)` / `…:active:not(:disabled)` 两条合回 `.primary[data-active="true"]:hover, .primary[data-active="true"]:active { … }` | 新的守卫用例红在**解析器抛错**：`样式表里没有选择器「.primary[data-active="true"]:hover:not(:disabled)」`（同 `it` 里第一条先响）。**复认要按 Step 0d 做两次独立运行**：只把 `:active` 那条漂回不带限定符 → 抛错点名 `:active:not(:disabled)`（证明第二条独立有牙） | **本轮实测**：红，两次独立运行、各自 revert。① Step 0a 天然红即「退回合并规则」形态：`Error: 样式表里没有选择器「.primary[data-active="true"]:hover:not(:disabled)」的规则`（同 `it` 第一条先响）→ 拆两条后 0c 转 `16 passed`。② 0d(i) 复跑合并规则 → 点名 `:hover:not(:disabled)`；revert 后 0d(ii) 单独把 `:active` 漂回不带限定符 → 点名 `:active:not(:disabled)`（证明第二条独立有牙）→ revert → `16 passed`。两次变异后 `Get-FileHash` popup.css 均回到基线 `A744A597…F7AC` |
 
 - [ ] **Step 4：README 一句话（D4 唯一允许的文档改动）**
 
@@ -1843,17 +1843,17 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 
 | 读数 | 来源命令 | 记录值 |
 | --- | --- | --- |
-| **计数链（按提交号读）** | 各轮 `npx vitest run` 的 `Tests` 行 | 基线 **1052**（55 files）→ D1 `1167511` = **1053** → D2 `5cc0969` = **1057** → **D3 前置修正 `9da4c0e` = 1058** → **D3 主体 `fab5e7d` = 1059** → **D4 Step 0 = 1060**（+1 条守卫用例）。⚠ 中间态只按**提交号**找，不存在"D3 Step 0c"那种独立提交 |
-| **`options-css.test.ts` 文件用例数** | `npx vitest run tests/options/options-css.test.ts` | D2 后 13 → D3 后 **15** → **D4 Step 0 后 16** |
-| 全量 vitest（终态） | `npx vitest run` 的 `Test Files` 与 `Tests` 两行原文 | 期望 `55 files / 1060 passed`（以输出为准） |
-| typecheck | `npm run typecheck` 的 exit code | |
-| build + verify | `npm run build` 尾行 `✓ 产物校验全部通过（N 项）` 的 N | 期望 14 |
-| zip 文件数与字节（新值） | `npm run zip` 输出的「… 个文件，… 字节」原文 | （改 CSS 后**必然变化**；旧值 16 文件 / 64747 字节只作对照，不许试图调回去） |
-| zip SHA256 第 1 次 | `npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash` | |
-| zip SHA256 第 2 次（同上重跑） | 同左，重跑 | （两次必须逐字相同；不同则排查 zip-dist 固定时间戳前提） |
-| **D4 Step 0b 的查证结论** | 那四条 `git grep` 的输出原文 | 填「**删了** / **留了（为谁而留）**」+ 依据；起草者预查倾向"无消费者、可删"，以执行者当场查证为准 |
-| D4 Step 3 变异汇总 | 每行「结果」列（含 **M16**） | |
-| 肉眼验收（明 / 暗 / 状态行绿红字 / 开关与下拉与搜索 / **窄窗口导航不吸顶** / **展开编辑器的负 margin 出血有没有被 `overflow: hidden` 裁** / 行级小按钮高度） | Chrome 加载 `dist/`，D4 Step 5 清单 | （每条填「可读/不对味+哪一处」；不对味回 Task，不改行为测试） |
+| **计数链（按提交号读）** | 各轮 `npx vitest run` 的 `Tests` 行 | 基线 **1052**（55 files）→ D1 `1167511` = **1053** → D2 `5cc0969` = **1057** → **D3 前置修正 `9da4c0e` = 1058** → **D3 主体 `fab5e7d` = 1059** → **D4 Step 0 `a03682c` = 1060**（+1 条守卫用例，0c 实测）→ **D4 Step 0b `5811a83` = 1060**（死声明删除、条数不变，复跑实测）。⚠ 中间态只按**提交号**找，不存在"D3 Step 0c"那种独立提交 |
+| **`options-css.test.ts` 文件用例数** | `npx vitest run tests/options/options-css.test.ts` | D2 后 13 → D3 后 **15** → **D4 Step 0 后 16**（实测 `Tests 16 passed (16)`；0a 红形态 `1 failed / 15 passed (16)`） |
+| 全量 vitest（终态） | `npx vitest run` 的 `Test Files` 与 `Tests` 两行原文 | 实测 `Test Files 55 passed (55)` / `Tests 1060 passed (1060)`（Step 0c 后与 Step 6 提交前复跑同值） |
+| typecheck | `npm run typecheck` 的 exit code | exit 0（零错误输出） |
+| build + verify | `npm run build` 尾行 `✓ 产物校验全部通过（N 项）` 的 N | N = **14**（`✓ 产物校验全部通过（14 项）`，exit 0） |
+| zip 文件数与字节（新值） | `npm run zip` 输出的「… 个文件，… 字节」原文 | `✓ …\jinyi-0.1.0.zip：16 个文件，65642 字节——已解回临时目录逐字节比对通过`（对旧值 64747 = **+895**，符合"CSS 改了三轮必然变化"；`--check` 独立复确认「16 个文件，65642 字节」与 `dist` 逐字节一致，exit 0） |
+| zip SHA256 第 1 次 | `npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash` | `F27CE114F1E0C1805B87BF135389E7772D659D8515B8DB6E08783D51EA963A42` |
+| zip SHA256 第 2 次（同上重跑） | 同左，重跑 | **与第 1 次逐字相同** ✓（可复现；固定时间戳前提成立） |
+| **D4 Step 0b 的查证结论** | 那四条 `git grep` 的输出原文 | **删了**。当场复跑四条：`position: absolute` 仅 3 处 = `.sr-only`（L108）/ `.switch::after`（L688）/ `.search .mag`（L961），均**非** `.nav-link` 后代；`z-index` **0 命中**；`.nav-link` 共 4 条规则（基础/hover/`.i`/窄窗口）无 `::before`/`::after`；`options.html` 里 `.nav-link` 内部只有 `<span class="i">`（非定位）。⇒ 无消费者，按计划②只删 `position: relative;` 一行，未加断言（死代码清理非契约） |
+| D4 Step 3 变异汇总 | 每行「结果」列（含 **M16**） | 已逐行填毕：**本轮实测** = M2b（`--link` 版覆盖断言，红+点名+回基线）、M10（守卫 6 红，实测消息与预写不同——见该行登记）、M16（0d 两次独立、各点名一路）；**转引该轮**（本轮未复跑）= M1–M4、M5–M9、M11–M15 |
+| 肉眼验收（明 / 暗 / 状态行绿红字 / 开关与下拉与搜索 / **窄窗口导航不吸顶** / **展开编辑器的负 margin 出血有没有被 `overflow: hidden` 裁** / 行级小按钮高度） | Chrome 加载 `dist/`，D4 Step 5 清单 | **交用户，本轮不代答**（本机无浏览器、零真实渲染读数）。清单四项重点：①状态行绿/红字明暗可读；②展开档案行编辑器出血到卡缘、不被 `overflow: hidden` 裁（D3 唯一无断言兜的改动）；③<900px 导航不吸顶、可横滚到「隐私」、`.wrap` 不成两列；④`.tiny` 行级小按钮比改前矮约 2–3px 是否顺眼。不对味回 Task 改 CSS，不碰行为测试 |
 
 ## 自审记录（起草者完稿后按 writing-plans 三查）
 
