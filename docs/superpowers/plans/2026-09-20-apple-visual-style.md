@@ -51,8 +51,8 @@
 | 展开的档案行是**一个** div `.profile-row.item`：`display:flex` 的行里挂着 `.grow`、`.row-actions` 和 `.profile-editor` 三个子节点——编辑器现在是**同一行的第三列**，被 `overflow:hidden` 剪裁（这页从未真实渲染过，没人看见过；单元 B 的天花板） | `src/options/sections/engine.ts:475/513-514` | **D3 修**：`flex-wrap: wrap` + 编辑器 `flex: 1 0 100%` + 负 margin 出血到卡缘。纯 CSS，DOM 一字不动 |
 | `.switch` 就是 `<input type="checkbox" class="switch">` 本体（36×21、`::after` 画钮、`margin-left` 位移）；样机是「span 包 input + `<i>` 轨道」另一套 DOM | `options.html:119/125`、`options.css:588-618` | 样机开关 CSS **改写到 checkbox 本体**上（appearance:none + `::after` + `translateX`）；`opacity:0` 那套不迁移 |
 | popup 的开关是**隐藏 checkbox + 兄弟 `.toggle-track` span**（34×20、checked 底色 `--accent`、钮 `--surface`）——与 options 结构不同 | `popup.html:52-67`、`popup.css:311-379` | D2 把 `.toggle-track` 升到 44×26 iOS 规格、checked 改 `--ok`、钮 `--knob`；`input` 上现有的 `opacity: 0` **保留原样**（popup.css 的 opacity 不在守卫扫描范围，且这是 popup 的无障碍隐藏通道） |
-| **options.css 今天没有任何 `transition:`、也没有 `prefers-reduced-motion` 块**——规格 §6 说「必须保留」对 options.css 实为「**新增**」 | 起草者 grep 全文件 0 命中 | D2 在加过渡的同一 Task 里新增 reduced-motion 块（popup.css 已有 scoped 版，其选择器不用改） |
-| 规格 §4 说下拉 chevron「继续用**现有** `linear-gradient` 画法」——**options.css 里现在没有任何 chevron 画法**（select 是原生箭头）；linear-gradient 在样机里，popup 用的是 mask+data-URI 另一套 | `options.css:542-555` | D2 按样机的 `linear-gradient` 画法**引入** options.css（配 `appearance:none`）；popup 的 mask chevron 已走 `var(--text-3)`，不动 |
+| **options.css 今天没有任何 `transition:`、也没有 `prefers-reduced-motion` 块**——规格 §6 这一条对 options.css 是「**新增**」不是「保留」（规格侧的旧措辞已更正） | 起草者 grep 全文件 0 命中 | D2 在加过渡的同一 Task 里**新增** reduced-motion 块；popup.css 现状是 scoped 版（只关 `.toggle-track` 两处），Step 8a 给它加了 `.primary` 过渡之后，**Step 8g 必须**把它升级为与 options 同写法的整表关断——8g 不是可选项 |
+| 下拉 chevron 的 `linear-gradient` 画法是 **D2 新引入的代码**——options.css 现状**没有任何 chevron 画法**（select 是原生箭头、全文件 0 处 linear-gradient），样机里才有；popup 用的是 mask+data-URI 另一套（规格 §4 旧措辞「继续用**现有**画法」已更正为「引入」） | `options.css:542-555`（起草者 grep 0 命中） | D2 按样机的 `linear-gradient` 画法**引入** options.css（配 `appearance:none`）；popup 的 mask chevron 已走 `var(--text-3)`，不动 |
 | `input[type="password"]`（`.profile-api-key`）**不在** options.css 的 input 选择器列表里——今天 Key 输入框是裸原生外观 | `engine.ts:352-353` vs `options.css:542-546` | D2 把 `input[type="password"]` 加进列表（CSS-only，不碰 DOM） |
 | 样机 A 档对 `.group/.item/.profile-row/.stat` 有 `[data-layout="a"]` 覆盖（radius-md + 无阴影），与规格 §4 正文（radius-card + 发丝 + `--shadow-card`）**冲突**——那组覆盖是「复刻旧页面」用的 | `options-apple.html:279/313/495` | **规格 §4 优先**：D3 按 `--radius-card` + `var(--border)` + `var(--shadow-card)` 落地（记账在此，若肉眼验收觉得过了，改一行令牌名回 `--radius-md` 即可，但那要写明理由） |
 | 样机的 `--page`/`--separator`/`--surface-2: #ffffff` 等命名与语义**不落到真实代码**：真实页面底 = `--surface-2`（新值 `#f5f5f7`）、发丝线 = `--border`、`--surface-3` 真实语义是「白卡上的可输入底」→ 新值比页面底**深一档**（`#ececee`），样机的 `#f5f5f7` 被规格 §3.1 改写 | 规格 §3 | D1 令牌表照规格 §3 落地，不照抄样机命名 |
@@ -310,7 +310,13 @@ Expected: `Tests 1 failed | 8 passed (9)`，唯一红项是「与 popup.css 共�
 
 - [ ] **Step 7：把 popup.css 的 `:root` 与暗色块换成逐字相同的两块**
 
-7a. `:root`：**把 Step 3 写入 options.css 的那个完整 `:root { … }` 块逐字复制**，替换 popup.css 现有的 `:root` 块（两文件该块的注释头本来就相同，直接整体替换）。
+7a. `:root`：把 Step 3 的完整 `:root { … }` 块复制进 popup.css 替换现有块，**但注释首行的文件名要改**：两文件的这条注释头**互指对方**、并非逐字相同（options.css 现写「与 src/popup/popup.css 的 `:root` 必须逐字一致」，popup.css 现写「与 src/options/options.css 的 `:root` 必须逐字一致」）。复制过去后 popup 版的首行必须是：
+```css
+  /* 下面这一组与 src/options/options.css 的 `:root` 必须逐字一致（两份 CSS 各写一份，
+```
+（其余行与 Step 3 的块逐字相同。）守卫的逐字一致检查只比声明不比注释——把注释抄成自指**不会红**，所以这一步收尾自检：
+Run: `git grep -n "必须逐字一致" -- src/options/options.css src/popup/popup.css`
+Expected: 恰好两条命中且**互指对方**——options 那条含 `src/popup/popup.css`、popup 那条含 `src/options/options.css`；出现任何一条"自己指自己"即改错。
 7b. 暗色块：**把 Step 4 的整个 `@media (prefers-color-scheme: dark) { … }` 逐字复制**，替换 popup.css 现有块。
 （`.hint.warn` 的文字色已在 Step 5 的 3b 迁掉。）
 
@@ -694,12 +700,13 @@ details[open] summary::before {
 
 - [ ] **Step 7：options.css——reduced-motion 收尾（本文件第一处 transition 的保险丝）**
 
-在文件**末尾**（`.search-empty` 块之后）追加。规格 §6 说「必须保留」，但 options.css 现状**没有**这个块（见「DOM 与现实差异」表）——这是**新增**，不是保留：
+在文件**末尾**（`.search-empty` 块之后）追加。规格 §6 要求 reduced-motion 下关掉过渡；options.css 现状**没有**这个块（见「DOM 与现实差异」表）——这是**新增**（规格侧旧措辞「保留」已更正）：
 
 ```css
 /* ------------------------------------------------------------------ 动效保险丝 */
 
-/* D2 起本页有过渡了：reduced-motion 下全部关掉（样机同一写法）。 */
+/* D2 起本页有过渡了：reduced-motion 下全部关掉。样机同一思路，但这里补上伪元素选择器——
+   样机的裸 `*` 不命中 ::before/::after，而本页 chevron 与旋钮的过渡恰好都挂在伪元素上。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1536,7 +1543,7 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 
 - `src/options/options.css` 里搜 `backdrop-filter`、`@import`、`url(` → 三处都期望 0 命中；
 - `src/popup/popup.css` 里搜 `backdrop-filter`、`@import` → 期望 0；搜 `url(` → **只允许**既存的 `--chevron` data-URI 一处（`%23000` 转义，无裸 `#`，D 轮不新增第二条）；
-- options.css 搜 `opacity` → 期望 0（守卫同款口径；popup 的两处 `opacity: 0` 是既存的无障碍隐藏通道，**保持原样**）；
+- options.css 搜 `opacity` → 期望 0（守卫同款口径；popup.css 里 grep 单词 `opacity` 有两处命中——文件头纪律注释一处 + **声明只有一处**：`:320` 隐藏 checkbox 的 `opacity: 0`，那是无障碍通道，**保持原样**）；
 - 两文件搜 `#[0-9a-fA-F]{3,8}\b` 于 `:root` 块之外 → options 期望 0，popup 也应为 0（D2 已把 `#fff` 清掉）。
 
 - [ ] **Step 3：变异验证汇总（规格 §8.3——「守卫仍在把关」要一次点齐；每条当场 revert 并复跑全绿）**
@@ -1622,4 +1629,4 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 **1. 规格逐节覆盖**：§1 四决定 → 头部 Architecture + D2 Step 8f/D3 Step 2a 不打包字体、D4 Step 2 零毛玻璃外链、非目标重申分段控件。§2 范围内三文件 → D1-D3 的 Files；弹窗「同步令牌与同类控件外观、不重排」→ D2 Step 8。§3.1/3.2 令牌表 → D1 Step 3/4/7（逐行对照过：含 `--surface-3` 取 #ececee、`--radius-pill` 保留 999、`--ease`/`--dur`/`--knob` 例外方向）。§4 组件 → 按钮/开关/输入下拉/chevron = D2；卡片分组/状态点/徽章/统计/搜索 = D3；`summary{cursor:pointer}` 保留 = D2 Step 6a。§5 排印 → D3 Step 2/5（含 tabular 三处）；8pt 节奏 → Step 3a/3c/10。§6 动效 → D2 Step 2/5/7（transform-only + reduced-motion 新增）。§7.1-7.8 → 守卫七处表 + M1-M4 + Step 5/7c 的四处文字色。§8 → 验收对照表。§9 → D4 Step 5 + 落地表末行（不声称已验证观感）。§10 D1-D4 → 四个 Task 一一对应。
 **2. 占位符扫描**：全文无「适当/酌情/类似 D1/TODO/留空」；所有「执行者填」都出现在落地读数表且每格标明来源命令原文；zip 的 N/新值处都同时给了取值命令。初稿曾写「同 D1 变异表」一处，已展开成独立行。
 **3. 命名一致性**：`--link`/`--ok-text`/`--danger-text`/`--track-off`/`--knob`/`--chip`/`--hover`/`--radius-card`/`--ease`/`--dur` 十个名字在 D1 定义（:root 与暗色块逐字），D2/D3 使用的拼写逐一比对过（含 `NOT_A_COLOR` 增补四项、断言里的 `'var(--ok-text)'` 等）；无 `--page`/`--separator` 等样机命名泄漏进真实 CSS。
-**4. 起草期发现并回写进本计划的仓库事实**（超出控制器简报的部分）：options.css 无 transition/无 reduced-motion（§6 的"保留"实为新增）、options 的 select 没有"现有 linear-gradient"（画法从样机引入）、`input[type="password"]` 不在样式列表内、展开行的编辑器是 flex 第三列（D3 Step 8 修）、`.privacy` 缺 `padding: 0`、`popup.css` 正文 `color:#fff` 既存（顺手令牌化）、样机 A 档覆盖与规格 §4 的圆角冲突按规格落地并记账。
+**4. 起草期发现并回写进本计划的仓库事实**（超出控制器简报的部分）：options.css 无 transition/无 reduced-motion（§6 的"保留"实为**新增**）、options 的 select 没有"现有 linear-gradient"（画法是从样机**引入**）、`input[type="password"]` 不在样式列表内、展开行的编辑器是 flex 第三列（D3 Step 8 修）、`.privacy` 缺 `padding: 0`、`popup.css` 正文 `color:#fff` 既存（顺手令牌化）、样机 A 档覆盖与规格 §4 的圆角冲突按规格落地并记账、两份 CSS 的 `:root` 注释头是**互指对方**而非逐字相同（D1 Step 7a 带 `git grep` 收尾自检）。⚠ 口径对齐：规格 §4「继续用现有 linear-gradient」与 §6「保留 reduced-motion」两处旧措辞已由控制器在规格侧更正为「引入 / 新增」——本计划全文按**更正后**的口径书写。
