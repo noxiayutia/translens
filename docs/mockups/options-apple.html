@@ -166,22 +166,38 @@
       }
       .lab-note b { color: var(--danger-text); font-weight: 600; }
 
-      /* ================================ 布局 ================================ */
-      .wrap { display: flex; align-items: flex-start; gap: 0; min-height: calc(100vh - 46px); }
+      /* ================================ 布局 ================================
+         A 表皮级：复刻真实页面的骨架（居中 1180 容器、导航在容器内且无面板底），
+                   所以 A 档下"毛玻璃"开关无效——真实页面的侧栏本来就没有底板。
+         B 分组卡片级：macOS 系统设置式（侧栏贴窗边满高 + 内容列在剩余空间里居中）。
+         ====================================================================== */
+      .wrap {
+        display: grid;
+        grid-template-columns: var(--nav-w) minmax(0, 1fr);
+        align-items: start;
+        min-height: calc(100vh - 46px);
+      }
+      html[data-layout="a"] .wrap { max-width: 1180px; margin: 0 auto; }
 
       .nav {
-        position: sticky; top: 46px; flex: none; width: var(--nav-w);
-        align-self: flex-start; max-height: calc(100vh - 46px); overflow: auto;
+        position: sticky; top: 46px; align-self: start;
+        max-height: calc(100vh - 46px); overflow: auto;
         padding: 18px 12px 22px;
         font-size: 13px;
+        border-radius: var(--radius-md);
       }
-      html[data-blur="on"] .nav {
+      html[data-layout="a"] .nav { background: transparent; }
+      html[data-layout="b"] .nav {
+        height: calc(100vh - 46px); max-height: none;
+        border-right: 1px solid var(--separator);
+        border-radius: 0;
+      }
+      html[data-layout="b"][data-blur="on"] .nav {
         background: color-mix(in srgb, var(--surface) 72%, transparent);
         -webkit-backdrop-filter: saturate(180%) blur(20px);
         backdrop-filter: saturate(180%) blur(20px);
       }
-      html[data-blur="off"] .nav { background: var(--surface); }
-      html[data-layout="b"] .nav { border-right: 1px solid var(--separator); }
+      html[data-layout="b"][data-blur="off"] .nav { background: var(--surface); }
       .brand {
         display: flex; align-items: center; gap: 8px;
         margin: 0 8px 18px; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;
@@ -216,7 +232,9 @@
       .nav-link.is-on .i, .nav-link:target .i { background: var(--accent); }
       .foot { margin: 22px 10px 0; font-size: 11.5px; line-height: 1.7; color: var(--text-3); }
 
-      .main { flex: 1; min-width: 0; padding: 26px 32px 90px; max-width: 780px; }
+      .main { min-width: 0; padding: 26px 32px 90px; }
+      /* B 档：内容列在剩余空间里居中（macOS 系统设置的读法）；A 档填满容器 */
+      html[data-layout="b"] .main { width: 100%; max-width: 880px; margin: 0 auto; }
       .title { font-size: 28px; font-weight: 700; letter-spacing: -0.028em; margin-bottom: 18px; }
 
       /* ================================ 搜索 ================================ */
@@ -506,17 +524,26 @@
       section > details p { margin-top: 8px; line-height: 1.7; }
       .rule-action { flex: none; font-size: 12px; color: var(--text-3); }
 
-      /* ================================ 窄窗口 ================================ */
+      /* ================================ 窄窗口 ================================
+         与真实页面同一策略：栅格退化成单列，导航变成顶部一行可横滚的胶囊链接。
+         这里的选择器要压过上面 A/B 两档的特异性，所以逐个点名。 */
       @media (max-width: 900px) {
-        .wrap { flex-direction: column; }
-        .nav {
-          position: static; width: auto; max-height: none;
+        .wrap,
+        html[data-layout="a"] .wrap,
+        html[data-layout="b"] .wrap {
+          display: block; max-width: none; margin: 0; min-height: 0;
+        }
+        .nav,
+        html[data-layout="b"] .nav {
+          position: static; height: auto; max-height: none; width: auto;
           display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 16px;
           border-right: 0; border-bottom: 1px solid var(--separator);
+          border-radius: 0; background: transparent;
         }
         .nav .grp, .nav .foot { display: none; }
         .nav-grp { display: contents; }
-        .main { padding: 20px 16px 70px; }
+        .main,
+        html[data-layout="b"] .main { padding: 20px 16px 70px; max-width: none; margin: 0; }
         .title { font-size: 24px; }
       }
     </style>
@@ -549,6 +576,8 @@
         ② <b>毛玻璃侧栏用的是 <code>backdrop-filter</code></b>，它有真实绘制代价：本页导航高亮用了
         16 条 <code>body:has(…:target)</code>，档案列表又会局部更新，低端机上可能掉帧。所以它做成可关的一档，
         要不要默认开由你定。
+        ③ <b>选 A 档时"侧栏毛玻璃"开关无效</b>——真实页面的左导航本来就没有底板，A 档复刻它；
+        只有 B 档（侧栏贴窗边满高）才用得上这个开关。
       </p>
     </div>
 
