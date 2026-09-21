@@ -209,3 +209,19 @@ describe('设置页样式：暗色块跨文件一致（D1 复盘补牙③）', (
     expect(Object.keys(popupDark).length).toBeGreaterThanOrEqual(20);
   });
 });
+
+describe('设置页样式：D3 版式层（只钉两条，其余肉眼验收——不造恒真式）', () => {
+  it('统计数字 24px/650/-0.03em 且 tabular-nums（刷新时数字不跳位）；状态点带 color-mix 光环', () => {
+    const stat = declarations(optionsCss, '.stat b');
+    expect(stat['font-size']).toBe('24px');
+    expect(stat['font-weight']).toBe('650');
+    expect(stat['letter-spacing']).toBe('-0.03em');
+    expect(stat['font-variant-numeric']).toBe('tabular-nums');
+    expect(declarations(optionsCss, '.dot[data-state="ok"]')['box-shadow']).toBe(
+      '0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent)',
+    );
+    expect(declarations(optionsCss, '.dot[data-state="bad"]')['box-shadow']).toBe(
+      '0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent)',
+    );
+  });
+});

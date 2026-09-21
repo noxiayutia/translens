@@ -79,9 +79,13 @@
 body {
   margin: 0;
   padding: 0;
-  font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* 系统栈不打包（规格 §1 第三决定）：Windows 实际落到 Segoe UI/微软雅黑——已知并接受的代价。 */
+  font: 400 14px/1.47 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  letter-spacing: -0.01em;
   color: var(--text);
   background: var(--surface-2);
+  -webkit-font-smoothing: antialiased;
 }
 
 /*
@@ -140,8 +144,9 @@ body {
   gap: 9px;
   margin: 0 0 18px;
   padding: 0 10px;
-  font-size: 16px;
-  letter-spacing: -0.01em;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .glyph {
@@ -175,15 +180,16 @@ body {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--text-2);
   text-decoration: none;
   border-radius: 8px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .nav-link:hover {
   color: var(--text);
-  background: var(--surface);
+  background: var(--hover);
 }
 
 .nav-link .i {
@@ -206,27 +212,12 @@ body:has(#sec-prompt:target) [data-nav="prompt"],
 body:has(#sec-cache:target) [data-nav="cache"],
 body:has(#sec-privacy:target) [data-nav="privacy"] {
   font-weight: 600;
-  color: var(--text);
-  background: var(--surface);
+  color: var(--accent);
+  background: var(--accent-weak);
 }
 
-body:has(#sec-engine:target) [data-nav="engine"]::before,
-body:has(#sec-language:target) [data-nav="language"]::before,
-body:has(#sec-shortcuts:target) [data-nav="shortcuts"]::before,
-body:has(#sec-glossary:target) [data-nav="glossary"]::before,
-body:has(#sec-site-rules:target) [data-nav="site-rules"]::before,
-body:has(#sec-prompt:target) [data-nav="prompt"]::before,
-body:has(#sec-cache:target) [data-nav="cache"]::before,
-body:has(#sec-privacy:target) [data-nav="privacy"]::before {
-  content: "";
-  position: absolute;
-  left: -1px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--accent);
-}
+/* accent-weak 药丸已承担活动项高亮；原先叠加的「左侧 3px 高亮条」整段删除——
+   双标记在 A 档导航上过重（药丸 + 加粗 + 变色已经够明确）。 */
 
 .foot {
   margin: 24px 4px 0;
@@ -246,13 +237,16 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   display: flex;
   align-items: baseline;
   gap: 12px;
-  margin: 0 0 4px;
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
 }
 
 .sec-head h2 {
   margin: 0;
-  font-size: 15px;
-  letter-spacing: -0.005em;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .sec-head .act {
@@ -261,7 +255,8 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 
 .sec-desc {
   margin: 0 0 14px;
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--text-2);
 }
 
@@ -269,10 +264,10 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 
 .item,
 .profile-row {
-  margin-bottom: 9px;
+  margin-bottom: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
 }
 
@@ -280,11 +275,19 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 13px 16px;
+  padding: 12px 16px;
 }
 
 .profile-row {
   overflow: hidden;
+}
+
+/* 展开行 = .profile-row.item（display:flex）：不 wrap 的话 `.profile-editor` 会作为第三列
+   和名字/按钮挤在同一行、被 overflow 剪裁——样机里「编辑器横贯卡下缘」的形态需要这一行。
+   纯 CSS 修复，DOM（engine.ts 的 append 顺序）一字不动。row-gap 归零让发丝线紧贴操作行。 */
+.profile-row.item {
+  flex-wrap: wrap;
+  row-gap: 0;
 }
 
 .grow {
@@ -301,6 +304,7 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 .name {
   font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.014em;
   overflow-wrap: anywhere;
 }
 
@@ -310,14 +314,16 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 11.5px;
   color: var(--text-3);
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 
 .badge {
   flex: none;
-  padding: 1px 9px;
+  padding: 2px 8px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   color: var(--accent);
   background: var(--accent-weak);
   border-radius: var(--radius-pill);
@@ -333,20 +339,30 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   margin-left: 2px;
   border-radius: 50%;
   background: var(--text-3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-3) 18%, transparent);
 }
 
 .dot[data-state="ok"] {
   background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
 }
 
 .dot[data-state="bad"] {
   background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
 .profile-editor {
-  padding: 12px;
-  background: var(--surface-2);
+  flex: 1 0 100%;
+  /* 负 margin 抵消 .item 的内边距，让灰底与发丝线出血到卡缘（样机同一形态）。 */
+  margin: 0 -16px -12px;
+  padding: 12px 16px 16px;
+  background: var(--surface-3);
   border-top: 1px solid var(--border);
+}
+
+.profile-editor .field {
+  padding: 12px 0;
 }
 
 /* 列表分隔符（术语行的 `→`）。 */
@@ -358,11 +374,8 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 /* 规则的动作展示：**静态文字**，不是下拉（本扩展只有「永不翻译」一个动作，见规格 §5）。 */
 .rule-action {
   flex: none;
-  padding: 1px 9px;
-  font-size: 11.5px;
-  color: var(--text-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
+  font-size: 12px;
+  color: var(--text-3);
   white-space: nowrap;
 }
 
@@ -402,19 +415,27 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   flex-wrap: wrap;
   gap: 26px;
   margin-bottom: 14px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
 
 .stat div {
-  font-size: 11.5px;
+  flex: 1 1 auto;
+  font-size: 12px;
   color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .stat b {
   display: block;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 650;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ------------------------------------------------------------------ 成组设置（一块卡片 + 行间细线） */
@@ -422,7 +443,7 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 .group {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
@@ -432,7 +453,8 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 13px 16px;
+  padding: 12px 16px;
+  min-height: 46px;
   border-top: 1px solid var(--border);
 }
 
@@ -442,7 +464,7 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 }
 
 .grow2:hover {
-  background: var(--surface-2);
+  background: var(--hover);
 }
 
 .lab {
@@ -480,7 +502,7 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 /* 「自定义」徽章 = 次级配色版（与强调色版的「使用中」区分开）。不许用 opacity（§7）。 */
 .badge-muted {
   color: var(--text-2);
-  background: var(--surface-3);
+  background: var(--chip);
 }
 
 /* ------------------------------------------------------------------ 模型目录（规格 §6.2 第 4 条） */
@@ -504,13 +526,21 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
 .models-list {
   max-height: 220px;
   overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
 .model-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 0;
+  min-height: 42px;
+  padding: 9px 12px;
+}
+
+.model-row + .model-row {
+  border-top: 1px solid var(--border);
 }
 
 .model-name {
@@ -545,13 +575,26 @@ body:has(#sec-privacy:target) [data-nav="privacy"]::before {
   margin: 8px 0 0;
 }
 
+/* 拉取结果容器：engine.ts 造的 .models-fetched（默认 hidden，[hidden] 兜底管显隐）。 */
+.models-fetched {
+  margin-top: 8px;
+  padding: 4px 12px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
 .fetched-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 0;
+  padding: 7px 0;
   font-size: 12.5px;
   color: var(--text-2);
+}
+
+.fetched-row + .fetched-row {
+  border-top: 1px solid var(--border);
 }
 
 /* ------------------------------------------------------------------ 表单控件 */
@@ -734,7 +777,7 @@ button:active:not(:disabled) {
 
 .actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   margin-top: 14px;
 }
 
@@ -742,9 +785,9 @@ button:active:not(:disabled) {
 
 .hint {
   margin: 0 0 12px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-2);
 }
 
 .status {
@@ -754,7 +797,8 @@ button:active:not(:disabled) {
   min-height: 1.4em;
   margin: 10px 0 0;
   font-size: 12.5px;
-  color: var(--text-3);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
   white-space: pre-wrap;
 }
 
@@ -777,7 +821,7 @@ button:active:not(:disabled) {
 }
 
 .status[data-kind="pending"] {
-  color: var(--text-2);
+  color: var(--link);
 }
 
 details {
@@ -824,30 +868,33 @@ details p {
 
 .privacy {
   margin: 0;
+  /* 现状缺 padding:0（浏览器默认 40px 左缩进挂着）——重排成卡时一并补上。 */
+  padding: 0;
   font-size: 12.5px;
   line-height: 1.75;
   color: var(--text-2);
   list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 
 .privacy li {
   padding: 13px 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-card);
 }
 
 .privacy li + li {
-  margin-top: 9px;
+  border-top: 1px solid var(--border);
 }
 
 .privacy code {
   padding: 1px 5px;
   font-size: 12px;
   color: var(--text);
-  background: var(--surface-2);
-  border-radius: 4px;
+  background: var(--chip);
+  border-radius: 5px;
 }
 
 /* ------------------------------------------------------------------ 窄窗口降级（规格 §11，未经真机渲染验证） */
@@ -893,11 +940,21 @@ details p {
 
 .search input {
   width: 100%;
-  padding: 10px 12px 10px 36px;
+  padding: 9px 13px 9px 34px;
   font-size: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-card);
+  background-color: var(--surface-3);
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.search input:hover {
+  background-color: var(--surface-3);
+  border-color: var(--border);
+}
+
+.search input:focus {
+  background-color: var(--surface);
+  border-color: var(--accent);
 }
 
 .search .mag {
