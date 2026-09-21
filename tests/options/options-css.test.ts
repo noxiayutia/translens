@@ -30,9 +30,9 @@ describe('设置页样式：令牌', () => {
 
   it('暗色只定义一次，且覆盖正文用到的每一个颜色令牌', () => {
     const dark = declarations(optionsCss, ':root', DARK);
-    expect(dark['--surface']).toBe('#1c1f23');
-    expect(dark['--text']).toBe('#e8eaed');
-    expect(dark['--danger']).toBe('#f87171');
+    expect(dark['--surface']).toBe('#1c1c1e');
+    expect(dark['--text']).toBe('#f5f5f7');
+    expect(dark['--danger']).toBe('#ff453a');
     // 暗色块不许把亮色令牌漏一半：正文里出现的**颜色**令牌必须都在暗色块里有值。
     //
     // 查的必须是 `dark`，不能是 `light`：按设计每个正文令牌在亮色 `:root` 里都有值，
@@ -51,16 +51,39 @@ describe('设置页样式：令牌', () => {
     const NOT_A_COLOR = new Set([
       '--radius-sm',
       '--radius-md',
+      '--radius-card',
       '--radius-pill',
+      '--ease',
+      '--dur',
       '--shadow-card',
       // 强调色上的文字色，亮/暗都是 `#ffffff`：暗色下强调色仍是深蓝，白字照样可读。
       // 这是设计上有据可查的例外，不是漏定义。
       '--on-accent',
+      // 开关旋钮与它同理：亮/暗都是 `#ffffff`（规格 §3.1）。iOS 的白钮在暗色下依然对——
+      // 底下是 `--track-off`/`--ok`，不是深色文字底。
+      '--knob',
     ]);
     const darkMissing = [...used].filter(
       (token) => light[token] !== undefined && dark[token] === undefined && !NOT_A_COLOR.has(token),
     );
     expect(darkMissing).toEqual([]);
+  });
+
+  it('对比度纪律：--ok/--danger 只出现在非文字属性上，绿/红文字一律走 --ok-text/--danger-text（规格 §7.8）', () => {
+    const body = stripCssComments(optionsCss);
+    // 正文里任何 `color:` 拿 `--ok`/`--danger` 都是不可读的亮绿/亮红文字（#34c759 白底约 2.2:1）。
+    // 背景（状态点、开关轨道）不受此限——它们本来就该用 iOS 亮色。
+    // 正则带 `^|[;{\s]` 边界：`background-color:` 之类不会被误伤，注释已由 stripCssComments 排除。
+    expect(body.match(/(?:^|[;{\s])color:\s*var\(--ok\)/g) ?? []).toEqual([]);
+    expect(body.match(/(?:^|[;{\s])color:\s*var\(--danger\)/g) ?? []).toEqual([]);
+    // 四处已核实的文字用法必须指向文字令牌（popup.css 的 `.hint.warn` 是第四处）。
+    expect(declarations(optionsCss, '.status[data-kind="ok"]')['color']).toBe('var(--ok-text)');
+    expect(declarations(optionsCss, '.status[data-kind="err"]')['color']).toBe('var(--danger-text)');
+    expect(declarations(optionsCss, '.link-danger')['color']).toBe('var(--danger-text)');
+    expect(declarations(popupCss, '.hint.warn')['color']).toBe('var(--danger-text)');
+    // 硬币的另一半：点与开关的背景仍用 --ok/--danger——迁移它们就是把 2.2:1 换成 4.5:1 再换回去。
+    expect(declarations(optionsCss, '.dot[data-state="ok"]')['background']).toBe('var(--ok)');
+    expect(declarations(optionsCss, '.dot[data-state="bad"]')['background']).toBe('var(--danger)');
   });
 });
 

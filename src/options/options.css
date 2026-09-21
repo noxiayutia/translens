@@ -21,41 +21,58 @@
   /* 下面这一组与 src/popup/popup.css 的 `:root` 必须逐字一致（两份 CSS 各写一份，
      不引第三个文件：扩展页面只加载自己那一份，共用文件会凭空多一个构建期依赖）。 */
   --surface: #ffffff;
-  --surface-2: #f6f7f9;
-  --surface-3: #eceef2;
-  --border: rgba(0, 0, 0, 0.1);
-  --border-strong: rgba(0, 0, 0, 0.18);
-  --text: #1a1d21;
-  --text-2: #5b6470;
-  --text-3: #8b93a0;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-weak: rgba(37, 99, 235, 0.1);
-  --ok: #16794a;
-  --danger: #c0342b;
+  --surface-2: #f5f5f7;
+  --surface-3: #ececee;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --text-3: #86868b;
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --accent-weak: rgba(0, 113, 227, 0.12);
+  --ok: #34c759;
+  --danger: #ff3b30;
   --on-accent: #ffffff;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.06);
-  --radius-sm: 6px;
-  --radius-md: 10px;
+  /* 单元 D 新增（规格 §3.1）。每个都要么在暗色块里有值，要么进守卫的 NOT_A_COLOR 例外清单。 */
+  --link: #0066cc; /* Apple 链接蓝：文字按钮专用，与按钮蓝 --accent 分职 */
+  --ok-text: #248a3d; /* 绿色文字专用：--ok 的 #34c759 在浅底上约 2.2:1，读不清 */
+  --danger-text: #d70015; /* 红色文字专用（「删除」与错误状态行） */
+  --track-off: rgba(120, 120, 128, 0.32); /* iOS 开关关态轨道 */
+  --knob: #ffffff; /* 开关旋钮：亮暗同值，走 NOT_A_COLOR 例外（同 --on-accent 的道理） */
+  --chip: rgba(120, 120, 128, 0.16); /* 徽章底、行内代码底 */
+  --hover: rgba(0, 0, 0, 0.035); /* 行/链接悬停底 */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.05);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-card: 18px;
   --radius-pill: 999px;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1); /* Apple 缓动（非颜色，例外清单） */
+  --dur: 200ms;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --surface: #1c1f23;
-    --surface-2: #262a2f;
-    --surface-3: #30353b;
+    --surface: #1c1c1e;
+    --surface-2: #000000;
+    --surface-3: #2c2c2e;
     --border: rgba(255, 255, 255, 0.12);
     --border-strong: rgba(255, 255, 255, 0.2);
-    --text: #e8eaed;
-    --text-2: #a8b0bb;
-    --text-3: #7d858f;
-    --accent: #4d8df6;
-    --accent-hover: #6ba1ff;
-    --accent-weak: rgba(77, 141, 246, 0.16);
-    --ok: #4ade80;
-    --danger: #f87171;
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.36);
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #8e8e93;
+    --accent: #0a84ff;
+    --accent-hover: #409cff;
+    --accent-weak: rgba(10, 132, 255, 0.22);
+    --ok: #30d158;
+    --danger: #ff453a;
+    --link: #419cff;
+    --ok-text: #30d158;
+    --danger-text: #ff453a;
+    --track-off: rgba(120, 120, 128, 0.42);
+    --chip: rgba(120, 120, 128, 0.32);
+    --hover: rgba(255, 255, 255, 0.05);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px rgba(0, 0, 0, 0.4);
   }
 }
 
@@ -669,7 +686,7 @@ button {
 .link-danger {
   padding: 4px 8px;
   font-size: 13px;
-  color: var(--danger);
+  color: var(--danger-text);
   background: none;
   border: none;
 }
@@ -715,11 +732,11 @@ button {
 }
 
 .status[data-kind="ok"] {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .status[data-kind="err"] {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .status[data-kind="pending"] {
