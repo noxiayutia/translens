@@ -133,3 +133,68 @@ describe('设置页样式：键盘与窄窗口', () => {
     expect(declarations(optionsCss, '[hidden]')['display']).toBe('none !important');
   });
 });
+
+describe('设置页样式：D2 控件层', () => {
+  it('按钮体系：主按钮药丸+--accent、次级是蓝链接 --link、危险链接悬停用 color-mix（样机映射）', () => {
+    // 合并规则按解析器语义整体点名（选择器必须完整相等），这正是它比子串匹配强的地方。
+    const shell = declarations(optionsCss, '.primary, .ghost');
+    expect(shell['border-radius']).toBe('var(--radius-pill)');
+    expect(shell['height']).toBeUndefined(); // 高度回到内容盒（样机 padding 撑高），旧 34px 必须已删
+    const primary = declarations(optionsCss, '.primary');
+    expect(primary['background']).toBe('var(--accent)');
+    expect(primary['color']).toBe('var(--on-accent)');
+    expect(primary['padding']).toBe('7px 17px');
+    expect(declarations(optionsCss, '.primary:hover')['background']).toBe('var(--accent-hover)');
+    const ghost = declarations(optionsCss, '.ghost');
+    expect(ghost['color']).toBe('var(--link)');
+    expect(ghost['background']).toBe('transparent');
+    expect(declarations(optionsCss, '.ghost:hover')['background']).toBe('var(--accent-weak)');
+    expect(declarations(optionsCss, '.link-danger')['background']).toBe('transparent');
+    expect(declarations(optionsCss, '.link-danger:hover')['background']).toBe(
+      'color-mix(in srgb, var(--danger) 12%, transparent)',
+    );
+  });
+
+  it('iOS 开关直接画在原生 checkbox 上（--track-off 关态 / --ok 开态 / --knob 旋钮 / translateX 滑动）', () => {
+    const sw = declarations(optionsCss, '.switch');
+    expect(sw['appearance']).toBe('none');
+    expect(sw['background']).toBe('var(--track-off)');
+    expect(sw['width']).toBe('44px');
+    expect(sw['height']).toBe('26px');
+    expect(declarations(optionsCss, '.switch:checked')['background']).toBe('var(--ok)');
+    const knob = declarations(optionsCss, '.switch::after');
+    expect(knob['background']).toBe('var(--knob)');
+    expect(knob['position']).toBe('absolute');
+    expect(declarations(optionsCss, '.switch:checked::after')['transform']).toBe('translateX(18px)');
+  });
+});
+
+describe('设置页样式：popup 镜像纪律（D1 复盘补牙②）', () => {
+  it('popup.css 正文：color: 不许拿 --ok/--danger（对比度），:root 之外不许有颜色字面量', () => {
+    const light = declarationBlock(popupCss, ':root');
+    const dark = declarationBlock(popupCss, ':root', DARK);
+    const rest = stripCssComments(popupCss)
+      .replace(`{${light}}`, '{}')
+      .replace(`{${dark}}`, '{}');
+    // 与 options 侧同款边界正则：background-color: 之类不误伤；注释已由 stripCssComments 排除。
+    expect(rest.match(/(?:^|[;{\s])color:\s*var\(--ok\)/g) ?? []).toEqual([]);
+    expect(rest.match(/(?:^|[;{\s])color:\s*var\(--danger\)/g) ?? []).toEqual([]);
+    expect(rest.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
+    expect(rest.match(/\b(?:rgba?|hsla?)\(/g) ?? []).toEqual([]);
+    // 刻意**不**断言 opacity：popup.css:320 的 `opacity: 0` 是 .field-toggle 隐藏 checkbox 的
+    // 无障碍通道（appearance 方案的一部分），它必须活着——options 侧的 opacity 禁令不外推。
+    // 同理 %23000（data-URI 转义）不含裸 #，hex 扫描对它天然免疫，与 options 守卫同一口径。
+  });
+});
+
+describe('设置页样式：暗色块跨文件一致（D1 复盘补牙③）', () => {
+  it('popup 暗色声明集 ⊆ options 暗色声明集，同名同值（守卫①镜像到暗块；防空转下限 ≥20）', () => {
+    const popupDark = declarations(popupCss, ':root', DARK);
+    const optionsDark = declarations(optionsCss, ':root', DARK);
+    for (const [name, value] of Object.entries(popupDark)) {
+      expect(`${name}: ${optionsDark[name]}`).toBe(`${name}: ${value}`);
+    }
+    // 防「popup 暗块被清空 → 循环空转恒真」：与守卫①的 >=17 同一手法，按现块 20 条声明钉底。
+    expect(Object.keys(popupDark).length).toBeGreaterThanOrEqual(20);
+  });
+});
