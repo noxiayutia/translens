@@ -225,3 +225,15 @@ describe('设置页样式：D3 版式层（只钉两条，其余肉眼验收—�
     );
   });
 });
+
+describe('设置页样式：D4 前置修正（「显示原文」态的两路反馈也只给未禁用按钮）', () => {
+  it('popup 的 [data-active="true"]：hover / active 两路的 filter 都带 :not(:disabled)（后缀是契约）', () => {
+    // 解析器对查不到的选择器直接抛错：CSS 若漂回那条合并规则
+    // `.primary[data-active="true"]:hover, .primary[data-active="true"]:active`，
+    // 这两条查询就当场红（Error 形态，不是断言 diff）——这就是这条断言的牙的读法。
+    // ⚠ 两条断言写在同一个 it 里：vitest 遇首个失败即抛出，所以**一次运行只响一层**；
+    //    要分别证明两半各有牙，必须按 0d 做两次独立运行（本计划第②条硬规矩）。
+    expect(declarations(popupCss, '.primary[data-active="true"]:hover:not(:disabled)')['filter']).toBe('brightness(0.92)');
+    expect(declarations(popupCss, '.primary[data-active="true"]:active:not(:disabled)')['filter']).toBe('brightness(0.92)');
+  });
+});

@@ -188,8 +188,15 @@ body {
   background: var(--text-2);
 }
 
-.primary[data-active="true"]:hover,
-.primary[data-active="true"]:active {
+/* 拆成两条、各自带 :not(:disabled)——与上面 `.primary:active:not(:disabled)` 同一纪律：
+   禁用态按下去不许有任何视觉反馈，这一路也不例外。`filter` 这一路此前没有禁用复位
+   （`.primary:disabled:hover` 只压 background），合并写法还会让守卫无法逐路点名。 */
+.primary[data-active="true"]:hover:not(:disabled) {
+  background: var(--text-2);
+  filter: brightness(0.92);
+}
+
+.primary[data-active="true"]:active:not(:disabled) {
   background: var(--text-2);
   filter: brightness(0.92);
 }
