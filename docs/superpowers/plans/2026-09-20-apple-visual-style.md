@@ -50,10 +50,10 @@
 | D2 Step 9 | **popup 镜像**：`color:` 上 --ok/--danger 禁令 + `:root` 外 hex/rgba/hsl 扫描（opacity 通道刻意豁免） | ②a（正则层）与 ②b（hex 层 `expected [ '#ffffff' ] to deeply equal []`）**两次独立运行** |
 | D2 Step 10 | **暗块跨文件**：popup 暗块声明集 ⊆ options 暗块 + `>= 20` 防空转 | ③a 漂值点名 + ③b 清空炸下限（`expected 0 to be greater than or equal to 20`），两次独立 |
 | D3 Step 0 | **按压契约**：`button:active:not(:disabled)`（options）与 `.primary:active:not(:disabled)`（popup）的 `transform` 声明 | 0d：各自漂回裸选择器 → 解析器抛错，两次独立 |
-| **D4 Step 0** | **按压/悬停反馈只给未禁用按钮（popup 的 `[data-active="true"]` 那一路）**：`declarations(popupCss, '.primary[data-active="true"]:active:not(:disabled)')['filter']` 精确 `toBe('brightness(0.92)')` | Step 0 的 `0c`：改断言先跑 → 解析器抛「样式表里没有选择器「.primary[data-active="true"]:active:not(:disabled)」」= 牙在；D4 表 **M16** 复认（把 CSS 退回合并规则 `.primary[data-active="true"]:hover, .primary[data-active="true"]:active` → 同一条断言再抛错） |
+| **D4 Step 0** | **按压/悬停反馈只给未禁用按钮（popup 的 `[data-active="true"]` 那一路）**：**两条**查询——`declarations(popupCss, '.primary[data-active="true"]:hover:not(:disabled)')['filter']` 与 `…:active:not(:disabled)` 同款查询，各精确 `toBe('brightness(0.92)')`，同置于一条 `it` | Step 0a 天然红形态 = 解析器抛「样式表里没有选择器「…**:hover**:not(:disabled)」」——**同一 `it` 里 `:hover` 是第一条，所以它先响；`:active` 那条的抛错此刻被吞掉，不等于它没牙**。两条各自有牙由 0d 的**两次独立运行**证明：(i) 退回合并规则 → 点名 `:hover`；(ii) 还原后单独把 `:active` 漂回裸选择器 → 点名 `:active`。D4 表 **M16** 同此口径 |
 | D3 Step 1 | 统计数字 24px/650/-0.03em/tabular + 状态点 color-mix 光环 | D3 Step 12 M1/M2 |
 
-（引用位置一律选择器/符号名——见前提 0 的硬规矩。文件终态 15 条用例。）
+（引用位置一律选择器/符号名——见前提 0 的硬规矩。文件终态 **16** 条用例：D3 收在 15，D4 Step 0 加 1。）
 
 ### 解析器语义（`tests/helpers/css.ts`——写期望与断言前必须按这个来）
 
