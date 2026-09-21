@@ -111,7 +111,7 @@
 
 ## 8. 验收标准
 
-1. `npx vitest run` 全绿（当前基线 **55 files / 1052 passed**）；`options.test.ts` 等**行为断言一条未改**（`git diff` 里它们应当不出现，出现即需说明理由）。
+1. `npx vitest run` 全绿（**起草时基线 55 files / 1052 passed**；各轮落地后的计数链见计划的「落地读数表」：D1 1053 → D2 1057 → D3 1058/1059 → **D4 1060**，一律按提交号读）；`options.test.ts` 等**行为断言一条未改**（`git diff` 里它们应当不出现，出现即需说明理由）。
 2. `npm run typecheck` exit 0；`npm run build` exit 0 且 `verify:dist` 14 项；`npm run zip` 成功且**逐字节可复现**（连跑两次 SHA256 一致）。
 3. `options-css.test.ts` 全绿，且其中"共用令牌一致"与"暗色覆盖"两条**仍然在真实地把关**（要求做一次变异：删掉暗色块里某个新令牌 → 必须红）。
 4. 明暗两套由**用户肉眼验收**；本轮不做任何"已验证观感"的声称。
