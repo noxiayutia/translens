@@ -366,6 +366,12 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
 | **设置页状态行**（`#engine-status`，删除当前档案那一支） | §5.3 | **「已删除当前在用的档案「X」，现在没有可用的翻译引擎，去设置页添加一个服务商档案。」** |
 | **后台返回给内容脚本**（`ok: false`） | `resolveEngine` 的 `problem` 原样当 `message`；`code` 用 `'AUTH'` | `NO_ENGINE_PROBLEM` 原样 |
 
+> ⚠ **表里那一串字是"契约字面"，不是"若干关键词的集合"**：任何断言都不许写成"必须含某个我脑子里
+> 概括出来的短语"——例如「没有可用引擎」**不在这个字面里**（`没有可用` 与 `翻译引擎` 之间隔着「的」，
+> 实测该子串不存在）。分工是：**字面**由 `settings.test.ts` 的**独立一条 `toBe`** 钉住；
+> **界面**断言比对常量；**词级**断言只取确实存在的四条词（`没有可用` / `翻译引擎` / `设置页` /
+> `服务商档案`）——详见 §7.3 第 18 条。
+
 **为什么 `code` 用 `'AUTH'` 而不是新造一个码**：内容脚本的 `describeError` 对 `AUTH` 是
 **原样透传 message**（不走任何罐头文案），`sameCodeFailureMessage` 对 `AUTH` 只追加一句
 「（在扩展设置里填好 API Key 后重新翻译此页）」——即"去设置页"的同义补充，方向正确；
@@ -607,14 +613,23 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
       （`expect((await area.get([SETTINGS_KEY]))[SETTINGS_KEY].version).toBe(4)`）——
       与既有的「打开页面不写存储：迁移发生在读的那一刻」同一条口径。
 17. **无引擎下的设置页与弹窗空态**（各一条）：
-    - 设置页：`seedSettings({ engineId: '', profiles: [] })` → `#engine-hint` 文本包含
-      「没有可用引擎」（用常量比对更硬，见 §7.3 第 18 条）、`profileRows()` 长度为 0、
+    - 设置页：`seedSettings({ engineId: '', profiles: [] })` → `#engine-hint` 文本**等于
+      `NO_ENGINE_PROBLEM` 常量**（比抄字面更硬，见第 18 条）、`profileRows()` 长度为 0、
       **`#profiles` 里没有任何 `[data-engine-free]` 节点**（这条要显式写，否则"整行消失"没有守卫）。
     - 弹窗：同一份设置 → `#engine-field` 的 `hidden === true`、
-      `#engine` 的 `options.length === 0`、提示区含「没有可用引擎」且带 `warn`。
-18. **文案的唯一来源**：上面所有断言一律 `toContain`/`toBe` **`NO_ENGINE_PROBLEM` 常量**，
-    或断言它包含「没有可用引擎」与「设置页」两个关键词（**不把整句复制进测试**——
-    复制一遍就等于有两个来源，这正是 `NO_MODEL_PROBLEM` 那条既有纪律的做法）。
+      `#engine` 的 `options.length === 0`、提示区以 `NO_ENGINE_PROBLEM` 开头且带 `warn`。
+18. **文案的唯一来源 + 常量自己的守卫（两条独立用例）**：
+    - 所有**界面**断言一律比对 `NO_ENGINE_PROBLEM` 常量（`toBe` / `toContain`），**不把整句抄进界面用例**——
+      抄一遍就等于有两个来源，这正是 `NO_MODEL_PROBLEM` 那条既有纪律的做法。
+    - **但"不抄整句"这条纪律不能推到底**：常量被改坏时，所有走常量的界面断言会**一起绿**（两边同源），
+      于是常量自己的字面必须有**一条独立的守卫用例**。落地形态是**两条独立 `it`**：
+      ① `expect(NO_ENGINE_PROBLEM).toBe('还没有可用的翻译引擎，去设置页添加一个服务商档案')`
+      ——整句字面，**必须单独成条**（否则它失败时会挡在词级断言前面，让下面四条词永远拿不到读数）；
+      ② 四条词级 `toContain`：`'没有可用'` / `'翻译引擎'` / `'设置页'` / `'服务商档案'`。
+      四条词各有**单字符杀法**（可→能 / 擎→挚 / 页→项 / 档→挡），**分四次独立运行**。
+      ⚠ **读数口径（落地实测）**：上面两条 `it` **同在一个文件**，而整句 `toBe` 对**任何**单字符改动都敏感——
+      所以**不过滤用例名**跑这个文件时，一次改动会看到 **2 红**（整句 + 对应那条词）；实施报告里
+      "每条词各 1 红"是**只点名词级那条**的读数。**两种口径的差别在"跑了哪些用例"，不在"谁没牙"。**
 19. **`e:` 键空间消亡的守卫**：`tests/options/engine-health.test.ts` 不再 import
     `FREE_ENGINE_HEALTH_KEY`（它已被删除），**并且**没有别的测试文件引用它——
     这条不需要新断言（删掉的符号被引用就是编译错），但**落地时要在提交信息里记一句**
@@ -653,9 +668,22 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
 5. `CURRENT_VERSION === 5`；`DEFAULT_SETTINGS.engineId === ''`。
 6. `ENGINES.map((e) => e.id)` **恰好等于 `['openai-compat']`**。
 7. `src/engines/google.ts` 与 `tests/engines/google.test.ts` 都不存在；
-   `grep` 全仓（`src/` + `tests/`）**除历史文档外**不再出现 `googleapis`、
-   `googleEngine`、`DEFAULT_ENGINE_ID`、`FREE_ENGINE_HEALTH_KEY`、`ENGINE_HEALTH_PREFIX`、
-   `test-free`、`data-engine-free`。
+   `grep` 全仓（`src/` + `tests/`）里作为**行为 / 实现**残留的 `googleapis`、`googleEngine`、
+   `DEFAULT_ENGINE_ID`、`FREE_ENGINE_HEALTH_KEY`、`ENGINE_HEALTH_PREFIX`、`test-free`、
+   `data-engine-free` **一处都没有**。
+   ⚠ **口径（T1 落地 + 独立验证实测）**：原文写"不再出现"是**不可能满足的**写法——它与
+   §7.3 第 17 条"必须**显式写** `[data-engine-free]` 的空态断言"直接互斥（一条要求字面量消失，
+   一条要求它出现）。正确的判据是**分母口径**：
+   - **唯一允许的 `googleapis` 残留在 `manifest.json` 的 `host_permissions`**，而那是 T2 的活；
+   - **显式空态守卫**（`…querySelector('[data-engine-free]')` 与 `[data-action="test-free"]`
+     的 `toBeNull()`）**必须留着**：留的是**断言**，不是行为，而且它们是"那一行真的没了"的守卫；
+   - **注释里的历史说明**（"那个形状随 `src/engines/google.ts` 一起删了"这类）不算残留。
+   独立验证者的逐符号读数：`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；
+   `FREE_ENGINE_HEALTH_KEY` = 1（注释）；`test-free` = 1（显式 `toBeNull` 断言）；
+   `data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` + 1 测试注释）。
+   且那两条空态断言**不是恒真式**（独立验证实测）：往列表里追加一个 `<div data-engine-free>` →
+   1 红（`expected <div data-engine-free></div> to be null`）；追加一个 `<div data-action="test-free">`
+   同理，各 1 红。
 
 **行为面（升级路径）**
 
@@ -676,8 +704,14 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
 
 **行为面（可读性）**
 
-13. 那句提示必须同时含**「没有可用引擎」**（说清是什么事）与**「设置页」**（说清去哪儿），
-    两处界面逐字相同（`NO_ENGINE_PROBLEM` 是唯一来源）。这两点在 §7.3 第 17/18 条各有一条断言。
+13. **那句提示要让人读明白两件事（场景描述，不是在要求某个连续子串）**：读完那句话应当知道
+    ①**现在没有可用引擎**（是什么事）与 ②**去设置页添加一个服务商档案**（去哪儿做）。
+    判定方式不是"必须含「没有可用引擎」这个四字子串"——**那个子串在契约字面里根本不存在**：
+    常量是「还没有可用的翻译引擎，去设置页添加一个服务商档案」，`没有可用` 与 `翻译引擎`
+    之间隔着「的」（这正是本轮实测推翻的一处预期，见 §7.3 第 18 条与计划的 T1 复盘）。
+    落地的判定 = **两条独立用例**：整句 `toBe` 常量字面（钉住契约本身）+ 四条词级 `toContain`
+    （`没有可用` / `翻译引擎` / `设置页` / `服务商档案`，各自有单字符杀法）。
+    另：两处界面**逐字相同**（`NO_ENGINE_PROBLEM` 是唯一来源），弹窗额外追加一句指路齿轮。
 14. 删除当前档案后：有可用档案 → 切到它并在状态行说清；没有 → `engineId === ''` + 那句提示。
 
 ## 9. 已知限制
@@ -726,9 +760,18 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
   2. 把 `optional_host_permissions` 删掉 → 必须红。
   3. 把 `resolveEngine` 的第 2 条规则改成"回落 `getEngine(OPENAI_COMPAT_ENGINE_ID)`" → 
      "零请求"端到端守卫与空态两条必须红。
+     ⚠ **落地实测（E1）更正这一条的读数口径**：空态那两条确实红，但"零请求"那条守卫**只红响应形状那半**——
+     `calls` 仍是 0：回落的 `openai-compat` 需要宿主权限，而权限闸在**发请求之前**就先抛 `AUTH`。
+     要真的让"零请求"断言（`toHaveLength(0)`）红，得用一个**今天可达**的反例：在权限闸里先 `await` 一次
+     真 `fetch`（计划 T1 的 M6c，实测恰好两条零请求断言红）。**别把"这条变异没红到它"读成"这条断言是恒真式"。**
   4. 把 v5 迁移那一步删掉 → 迁移三条必须红。
   5. 把 `profileHealthKey` 的 `p:` 前缀去掉 → §7.3 第 6 条那三条必须红（**逐条确认 1/2/3 各自的杀手**，
      别只看"这条用例红了"）。
+     ⚠ **落地实测（E1）更正**：把前缀整个去掉（`PROFILE_HEALTH_PREFIX = ''`）**只红第 6 条的第 4 条
+     形状断言**（`expected 'dup' to be 'p:dup'`），**三条行为牙都不红**——读写两侧共用同一个函数，
+     键只是换了个形状，行为上不可观察。**"逐条确认各自的杀手"这句才是对的**：第 6 条里"把前缀
+     写成裸 id 就红"的措辞要按**单侧变异**读（写侧交裸 id / `rowForKey` 拿键当 id / 读侧按裸 id 读记录，
+     即计划 T1 的 M5b/M5c/M5d，三次独立运行各自点名一条牙）。
 
 ---
 

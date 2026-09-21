@@ -11,6 +11,11 @@
 **规格：** `docs/superpowers/specs/2026-09-20-remove-free-engine-design.md`（`977cb89`，811 行，已逐行读完）。
 **格式范本：** `docs/superpowers/plans/2026-09-20-apple-visual-style.md`（单元 D）。
 
+> ⚠ **本文件在 T1 之后仍在增长**（T1 落地读数、变异实测更正、独立验证的四条发现都往这里并）。
+> **引用它时请注明版本 / 提交号**（例如"计划 `ce2df00` 版"或"计划在 `4e58561` 之后的那一版"）——
+> 只写"计划里说……"而不给版本，等于拿一份**可能已经过时的快照**当依据（本文件在 T1 落地那一轮
+> 就长出过 100 多行）。**规格文件同理。**
+
 ---
 
 ## 已核实的前提（不要重新发明）
@@ -53,6 +58,10 @@
    `tests/core/hash.test.ts` 1。**控制器之前说的"约 40 处"是把 `DEFAULT_ENGINE_ID` /
    `getEngine(DEFAULT_ENGINE_ID)` / `FREE_ENGINE_HEALTH_KEY` 一类引用一起算进去了**；
    **22 是正确口径**，且**逐类处置、不许批量替换**。
+   ⚠ **口径提醒（T1 落地实测）**：22 是**字面命中数**，不等于"当**当前引擎选择**用"的处数——
+   T1 落完之后字面量**还留着 12 处**（**7 处活的**是 v2/v4 迁移的**输入数据**，必须留；
+   **5 处**是注释里"说明删掉了什么"）。所以"T1 后 = 0"这个说法只对**口径**成立，
+   见「落地读数表」那一格。
 
 5. **本单元会碰到的每个"必红"点都已定位**（起草时逐条读过源文件与测试）：
 
@@ -123,7 +132,7 @@ T3 开工时**重新读一遍 README 再动手**，不要照抄交办时的行�
 
 ### 等待条件（写死，不许绕过）
 
-- **T1 可以在任何时候开工**：它要碰的 17 个文件里**没有一个是改名会话的在途文件**
+- **T1 可以在任何时候开工**：它要碰的 **18 个**文件里**没有一个是改名会话的在途文件**
   （`src/popup/popup.html` 与 `src/manifest.json` **不在** T1 的 Files 里）。
   ⚠ **T1 期间不得触碰**上面表格里的**全部 14 个路径**（含两个未跟踪文件）＋
   `src/options/options.html` / `src/options/options.css` / `scripts/verify-dist.mjs`。
@@ -147,7 +156,7 @@ T3 开工时**重新读一遍 README 再动手**，不要照抄交办时的行�
 | `src/options/sections/engine.ts` | 设置页档案区（行 / 编辑器 / 测试连接 / 删除） | T1：删免费行与 `test-free`、`rowForKey` 只认档案键、删除档案按 `firstUsableProfileId` 回落、`renderEngineHint` 两态 |
 | `src/popup/popup.ts` | 弹窗 | T1：下拉只列档案、0 个档案隐藏整行、`renderEngineHint` 的空态 |
 | `src/background/service-worker.ts` | 消息路由 + 无引擎闸 | T1：`engine === null \|\| problem !== undefined` 一处收口 + 注释改写；T2：两行 `supportsGlossary` 上方的注释定性 |
-| `src/background/scheduler.ts` | 批次调度与退避 | T2：3 处过时注释（不是规格说的 1 处） |
+| `src/background/scheduler.ts` | 批次调度与退避 | T2：**4 处**过时注释（不是规格说的 1 处；第 4 处是独立验证 F1 补点的 `translateOneWithRetry`） |
 | `src/core/hash.ts` | 缓存 key | T2：1 处过时注释（规格 §2 的范围清单里没有它） |
 | `src/content/index.ts` | 内容脚本：两条假话文案 | T2 |
 | `src/manifest.json` | 权限与描述 | T2：`host_permissions: []`、`description` 改写 |
@@ -157,7 +166,7 @@ T3 开工时**重新读一遍 README 再动手**，不要照抄交办时的行�
 | `tests/engines/registry.test.ts` | 注册表守卫 | T1：整份替换 |
 | `tests/shared/settings.test.ts` | 设置 / 迁移 / `resolveEngine` | T1：7 处改写 + 5 条新增 |
 | `tests/options/harness.ts` | 设置页夹具 | T1：新增 `seedWithProfile` |
-| `tests/options/engine-health.test.ts` | 状态点 + 免费行的四条 | T1：删 3 条、改 1 条、重写 1 条、换一条承重读数、删 `freeDot()` 与两个 import |
+| `tests/options/engine-health.test.ts` | 状态点 + 免费行的四条 | T1：删 3 条、改 1 条、重写 1 条、换一条承重读数、删 `freeDot()`；import 删两个符号、**补一个**（`profileIdFromHealthKey`，起草时误以为已在）；另去一处**不承重**的假前提夹具（`engineId` 改 `'p-a'`，实测无牙，见 M9） |
 | `tests/options/engine-expansion.test.ts` | 就地追加 | T1：删三处 `[data-engine-free]` 读数，改钉"草稿行在最后" |
 | `tests/options/engine-models.test.ts` | 模型目录 | T1：2 处夹具（规格点名点错了用例，见 T1 S5） |
 | `tests/options/options.test.ts` | 设置页行为（31 条） | T1：3 处夹具 + 删除当前档案那条整体改写 + 2 条新增 + 权限那条保留换夹具 |
@@ -166,20 +175,25 @@ T3 开工时**重新读一遍 README 再动手**，不要照抄交办时的行�
 | `tests/background/service-worker.test.ts` | 后台端到端 | T1：stub 改名改写 + 四条缓存用例显式播种 + 1 条新增零请求守卫 |
 | `tests/manifest.test.ts` | manifest 守卫 | T2：接口 + 正向 + **反向**两条 |
 | `tests/content/index.test.ts` | 内容脚本编排 | T2：那条必红用例 + 网络文案夹具 |
+| `tests/background/scheduler.test.ts` | 折叠同文本的收益 | T2：1 处过时注释（"Google 引擎不支持批量…免费额度"，独立验证 F1 补点；起草时漏了这个文件） |
 | 本文件 | 计划与落地读数 | T3：回填「落地读数表」 |
 
 ---
 
 ## Task T1：核心移除（引擎层 + 数据层 + 界面层 + 后台闸，**一个提交**）
 
-**Files（穷举，共 17 个路径，只碰这些）:**
-- Delete: `src/engines/google.ts`、`tests/engines/google.test.ts`
+**Files（穷举，共 18 个路径，只碰这些）:**
+- Delete: `src/engines/google.ts`、`tests/engines/google.test.ts`（**2 删**）
 - Modify: `src/engines/registry.ts`、`src/shared/settings.ts`、`src/options/engine-health.ts`、
-  `src/options/sections/engine.ts`、`src/popup/popup.ts`、`src/background/service-worker.ts`
+  `src/options/sections/engine.ts`、`src/popup/popup.ts`、`src/background/service-worker.ts`（**6 改**）
 - Modify: `tests/engines/registry.test.ts`、`tests/shared/settings.test.ts`、`tests/options/harness.ts`、
   `tests/options/engine-health.test.ts`、`tests/options/engine-expansion.test.ts`、
   `tests/options/engine-models.test.ts`、`tests/options/options.test.ts`、`tests/popup/popup.test.ts`、
-  `tests/core/hash.test.ts`、`tests/background/service-worker.test.ts`
+  `tests/core/hash.test.ts`、`tests/background/service-worker.test.ts`（**10 改**）
+
+> ⚠ **计数更正（T1 落地实测）**：本节原写"共 **17** 个路径"，逐条数是 **18**（2 删 + 6 改 + 10 改）。
+> 落地的提交 `4e58561` 正是 18 个路径——**以逐条清单为准，别信我数出来的那个数**（写这行时我把
+> 测试侧的 10 个数成了 9）。
 
 **为什么这一个 Task 结束时一定绿**（这是本 Task 存在的理由）：删掉的符号、改掉的类型、改掉的默认值
 与"所有引用它们的地方"**在同一个提交里**落地。中间态（S9 S10 之间）**故意是红的**——那是 typecheck
@@ -337,14 +351,40 @@ describe('getEngine', () => {
    *
    * 为什么两条都要：所有界面断言都走常量（规格 §7.3 第 18 条的唯一来源纪律），那条纪律的另一面
    * 就是"常量被改坏了没人管"——把 `NO_ENGINE_PROBLEM` 改一个字符，界面那几条一起绿（两边同源）。
-   * 这条是那个缺口的唯一守卫，同时也是验收 §8.13（"必须同时含「没有可用引擎」与「设置页」"）。
+   * 这条与下面那条**字面整句**断言一起，是那个缺口的守卫（字面那条更硬）。
+   * 它同时也是验收 §8.13（那句话必须**说清是什么事**、**说清去哪儿**）。
+   *
+   * ⚠ **实测更正（S8 全量跑出来的第一处真实红，不是推演）**：原计划写的
+   * `toContain('没有可用引擎')` 对规格 §6.1 钉住的字面 `还没有可用的翻译引擎，…` **不成立**
+   * ——它是 `还没有可用` + `的翻译引擎`，「没有可用引擎」六个字并不连续。规格 §8.13 / §7.3 第 18 条
+   * 写的是**概念名**，§6.1 钉的是**字面**（三处逐字相同），两者在这一点上互相矛盾。
+   * 文案以 §6.1 为准（唯一来源、且 T3 的 README 逐字引用它），所以这里断言这句话里**真正存在**
+   * 的那几个词：`没有可用` + `翻译引擎` = 「是什么事」，`设置页` + `服务商档案` = 「去哪儿」。
+   * **四条词各自都被单字符变异杀过**（分四次独立运行，读数见实施报告）：
+   * 可→能 / 擎→挚 / 页→项 / 档→挡。
    */
   it('那句话本身：说清是什么事、说清去哪儿（改一个字就红）', () => {
-    expect(NO_ENGINE_PROBLEM).toContain('没有可用引擎');
+    expect(NO_ENGINE_PROBLEM).toContain('没有可用');
+    expect(NO_ENGINE_PROBLEM).toContain('翻译引擎');
     expect(NO_ENGINE_PROBLEM).toContain('设置页');
     expect(NO_ENGINE_PROBLEM).toContain('服务商档案');
   });
+
+  /**
+   * 常量**字面**的最强形态：整句钉死。与上面那条词级断言是**两条独立的 `it`**，这一点是刻意的
+   * ——vitest 在一条用例里遇到首个失败就抛出，合成一条的话 `toBe` 会永远挡在四条词级断言前面，
+   * 那四条词从此拿不到自己的读数（也就无法证明它们不是装饰）。
+   *
+   * 牙：改**任意一个字符**都红。上面那四条词级断言各自只对一处改动敏感，本条对全部改动敏感。
+   */
+  it('那句话的字面被整句钉死（改一个字符就红）', () => {
+    expect(NO_ENGINE_PROBLEM).toBe('还没有可用的翻译引擎，去设置页添加一个服务商档案');
+  });
 ```
+
+> ⚠ **落地时的一个小瑕疵（不改代码，记在这里）**：上面那条**词级** `it` 的标题写的是"改一个字就红"，
+> 但它其实**只对自己那四个词敏感**——真正"改一个字就红"的是下面那条整句 `toBe`。标题与断言范围
+> 不完全对齐，读标题的人容易高估它；**以断言为准**。（将来重写标题时别把两条合并成一条。）
 
 **3e. 删掉「engineId 指向不存在的档案（并发删除留下的残值）」整条**（锚点唯一）：
 
@@ -555,9 +595,11 @@ import {
   ENGINE_HEALTH_KEY,
   loadEngineHealth,
   profileHealthKey,
+  profileIdFromHealthKey,
   saveEngineHealth,
 } from '../../src/options/engine-health';
 ```
+⚠ **`profileIdFromHealthKey` 必须补进来**（起草时误写"已在该文件的 import 块里"，实测**不在**；牙④ 用到它，不补就 typecheck 红在"找不到这个名字"）。
 并在 `from './harness'` 那块 import 之后新增一行（`NO_ENGINE_PROBLEM` 从 settings 拿）：
 
 ```ts
@@ -674,7 +716,15 @@ function freeDot(): HTMLElement {
     expect(profileIdFromHealthKey('p:dup')).toBe('dup');
   });
 ```
-（这也要求 import 里保留 `profileIdFromHealthKey`——它已在该文件的 import 块里。）
+（⚠ **实测更正**：`profileIdFromHealthKey` **当时并不在**该文件的 import 块里，起草时写"已在该文件的 import 块里"是错的。牙④ 用到它，所以这一步**必须顺手改 import 块**把 `profileIdFromHealthKey` 一起引进来，否则 typecheck 直接红在"找不到这个名字"。）
+
+**4f. 去一处不承重的假前提**：「草稿行点测试连接不落记录」那条的
+`await seedSettings({ engineId: 'google', profiles: [profileSeed()] });` → `engineId: 'p-a'`。
+⚠ **起草时漏了这一步**（Step 4 没写这处夹具），**而且它没有牙**：
+`handleTestProfile` 用的是**内联的草稿档案**（`resolveEngine({ engineId: id, profiles: [草稿] })`），
+根本不读存储里的 `engineId`——实测（M9）把它改回 `'google'` **全绿**（该文件 12 passed）。
+改它只是为了不给"当前引擎是 `google`"留一个 v5 之后已经不成立的假前提；
+**注释里要如实写"这里没有守卫"**（落地时已这么写），别谎称有牙。
 
 ### Step 5：`tests/options/engine-expansion.test.ts`、`engine-models.test.ts`、`options.test.ts`、`tests/core/hash.test.ts`、`harness.ts`
 
@@ -713,6 +763,17 @@ function freeDot(): HTMLElement {
     expect(after[3].querySelector('.profile-editor')).not.toBeNull();
   });
 ```
+
+> ⚠ **口径更正（独立验证 F2，只记账、不改代码）**：上面那句注释写的"插入位置改成 `prepend` /
+> 插到中间，**这两条**当场红"**不准确**——两条次序断言在**同一条 `it` 里**，而 vitest 首失败即抛：
+> - `expect(after[3].nextElementSibling).toBeNull()` **先响**，且它**有牙**（已实测）；
+> - `expect(pick('profiles').lastElementChild).toBe(after[3])` **被遮住**，而且它**逻辑上被前一条蕴含**
+>   （`after[3]` 后面没有任何兄弟节点 ⇒ 它必然是最后一个子节点）——**它拿不到自己的读数**；
+> - 真实的 `prepend` 变异甚至更早红在 `expect(after[3].dataset.profileId).toBe('__new__')`（见 M8）。
+>
+> 所以"这两条各有一次自己的红"这个说法**在这条用例里不成立**。**要用它，得单独跑一次**（把第一条
+> 临时注释掉再复跑），或者**如实承认它是一条"蕴含型"断言**——留着它是因为它把意图写得更直白，
+> **不是因为它有独立读数**。**别在注释里把它记成第二条牙。**
 
 **5b. `tests/options/engine-models.test.ts` 两处夹具**（⚠ **规格 §7.2 的 ④ 类把这条点错了用例**：
 它点的是「打开设置页 / 展开档案 / 聚焦输入框都不发请求」，而那条**已经是** `engineId: 'p-a'` +
@@ -1227,10 +1288,12 @@ Expected（起草时按改动面推演，实际以运行结果为准并**原样�
 Remove-Item src\engines\google.ts, tests\engines\google.test.ts
 npm run typecheck
 ```
-Expected: **非零退出**，一份"旧引用点清单"（这就是规格 §10 说的免费清单，它说对了）。
-清单上应当恰好覆盖：`src/shared/settings.ts`（`DEFAULT_ENGINE_ID` / `getEngine` 的返回类型）、
-`src/options/sections/engine.ts`（同上 + `FREE_ENGINE_HEALTH_KEY`）、`src/popup/popup.ts`、
-`src/background/service-worker.ts`、`tests/engines/registry.test.ts`。
+Expected: **非零退出**，一份"旧引用点清单"（这就是规格 §10 说的免费清单，它说对了——**但清单的形状与起草时的预期不同，如实记下**）。
+⚠ **实测**：**删文件这一步只给出 1 条** `TS2307`（`src/engines/registry.ts` 自己 import 不到 `./google`）。
+**换成新注册表之后**才是 3 个文件的清单：`src/shared/settings.ts`、`src/options/sections/engine.ts`、
+`src/popup/popup.ts`——⚠ `src/background/service-worker.ts` 与 `tests/engines/registry.test.ts`
+**都不在其中**（起草时把这两处也列进来了，实测它们不靠 `google.ts` 的类型通过编译）。
+**别把"删文件"那一条当成完整清单**：它只是注册表自己那一处，剩下的要等注册表改完才现形。
 
 `src/engines/registry.ts` **整份替换**为：
 
@@ -2019,22 +2082,26 @@ Expected: exit 0，尾部 `✓ 产物校验全部通过（14 项）`。
 
 | # | 变异 | 期望红（点名的用例） |
 | --- | --- | --- |
-| **M1** | 把 `dropFreeEngineSelection` 改成空操作（`return record;` 直接返回），或把 `CURRENT_VERSION` 改回 `4` | `tests/shared/settings.test.ts`「迁移 v4 → v5」四条里至少前两条红（`engineId` 仍是 `'google'`）。**保持默认值不动**是这条变异的关键：只改默认值不改迁移，`engineId` 会落到 `'google'` 而不是 `''`，同样是红 |
-| **M2** | `getEngine` 退回静默兜底：`return ENGINES.find((engine) => engine.id === id) ?? openAiCompatEngine;` | `tests/engines/registry.test.ts`「未知 id 返回 null」红（`expected 'openai-compat' to be null`）；`tests/shared/settings.test.ts`「engineId 不指向任何现存档案…」红 |
-| **M3** | `firstUsableProfileId` 的判据退化成"取第一个档案"：`return profiles[0]?.id ?? '';`（**不看 `activeModel`**） | 点名的两条：`tests/shared/settings.test.ts`「engineId 是 google → 数组里第一个 activeModel 非空的档案（不是…）」→ `expected 'p-empty' to be 'p-usable'`；`tests/options/options.test.ts`「删除当前档案时跳过没有当前模型的档案」→ `expected 'p-empty' to be 'p-b'` |
-| **M4** | 文案常量改一个字符：`NO_ENGINE_PROBLEM` 里「翻译引擎」→「翻译引挚」 | `tests/shared/settings.test.ts`「那句话本身…」红（`toContain('没有可用引擎')` 不含"引擎"两字连写时红得最清楚；若只改一个字如「服务商档案」→「服务商挡案」，则 `toContain('服务商档案')` 红）。⚠ **必须知道**：只改常量时，所有**走常量**的界面断言（弹窗/设置页/后台）会**一起绿**——两边同源，这正是那条字面断言存在的理由 |
-| **M4b** | 数字常量改一个字符：`CURRENT_VERSION` 5 → 6 | `tests/shared/settings.test.ts` 的 `expect(CURRENT_VERSION).toBe(5)` 红（且 `loadSettings` 的版本闸门会把 v5 数据当老数据处理，一批迁移用例跟着红） |
-| **M5** | `profileHealthKey` 的前缀改掉（`const PROFILE_HEALTH_PREFIX = '';`） | `tests/options/engine-health.test.ts` 改写后的那条 → **牙④**红（`expected 'dup' to be 'p:dup'`）。⚠ **如实记账**：牙①②③**不会**红——读写两侧共用同一个函数，前缀换了键只是换个形状，行为上不可观察（这正是 `engine-health.ts` 说"退回裸 id 是一次没有收益的改动"的意思）。要演示牙①②③各自的杀手，用 M5b/M5c/M5d |
-| **M5b** | `handleTestProfile` 交裸 id 而不是 `profileHealthKey(id)` 给 `runConnectionTest` | 同一条用例 **牙①**红（`storedHealth()[profileHealthKey('p:dup')]` 是 `undefined`） |
-| **M5c** | `rowForKey` 拿键当 id 用：`return rowById(key);` | 同一条用例 **牙②**红（`dotOf` 抛"档案行没有状态点"，或点停在 `idle`） |
-| **M5d** | `buildProfileRow` 按裸 id 读记录：`applyDot(dot, health[id])` | 同一条用例 **牙③**红（就地更新那一次仍绿，走完「保存」触发的整表重绘之后点回到 `idle`） |
-| **M6** | **删掉后台的提前返回**（`if (engine === null \|\| problem !== undefined)` 整句删掉） | `tests/background/service-worker.test.ts` 新守卫红，**但红的形态与本计划起草时的预期不同、必须如实记下**：`engine` 是 `null` → `translateBatch` 抛 TypeError → catch 收成 `{ ok: false, code: 'UNKNOWN', message: … }`，于是 `toEqual` 的 `code` 那一格红（`expected 'UNKNOWN' to be 'AUTH'`）；**`calls` 仍然是 0**（没有引擎就没有任何地方会构造请求——这正是 §8.12 说的"按构造"）。**所以"删掉提前返回 → 后台真发请求"这个说法在删掉免费引擎之后不再成立**（规格 §10 变异表第 3 条在这一点上不准确） |
-| **M6b** | 让 `resolveEngine` 的第 2 条规则**回落一个配置可用的引擎**：`return { engine: getEngine(OPENAI_COMPAT_ENGINE_ID), config: { apiKey: 'sk-x', baseUrl: 'https://api.example.com/v1', model: 'm' } };` | 同一条守卫**两条断言一起红**：`calls` 变成 1（`expected [ … ] to have a length of 0`）+ 响应形状不再是 `{ok:false,…}`。**这一条才是"零请求"那条断言的杀手**，M6 只杀掉形状那半 |
-| **M7** | 迁移里把 `record.profiles` 直接交给 `firstUsableProfileId`（去掉形状投影） | `tests/shared/settings.test.ts`「engineId 是 google 但一个能用的档案都没有 → 空串」的**第三种形状**（没有 `profiles` 键）红成 `TypeError: Cannot read properties of undefined (reading 'find')` |
-| **M8** | `insertDraftRow` 改回 `profilesList.prepend(row)` | `tests/options/engine-expansion.test.ts`「新增档案那一行也是就地追加」红（`expected <div…> to be null`） |
+| **M1** | 把 `dropFreeEngineSelection` 改成空操作（`return record;` 直接返回），或把 `CURRENT_VERSION` 改回 `4` | **实测 5 红**（如计划）：`tests/shared/settings.test.ts`「迁移 v4 → v5」四条里前几条红（`engineId` 仍是 `'google'`）。**保持默认值不动**是这条变异的关键：只改默认值不改迁移，`engineId` 会落到 `'google'` 而不是 `''`，同样是红 |
+| **M2** | `getEngine` 退回静默兜底：`return ENGINES.find((engine) => engine.id === id) ?? openAiCompatEngine;` | **实测只 1 红**：`tests/engines/registry.test.ts`「未知 id 返回 null」（`expected 'openai-compat' to be null`）。⚠ **计划原预测"`settings.test.ts` 那条也红"不成立**——机理：`resolveEngine` 的第 2 条规则（`engineId` 不命中档案）**已经不再用任意 id 去调 `getEngine`**（它直接返回 `null` + problem），所以这个兜底**只对 `'openai-compat'` 这个 id 可达**，而 v5 之后没有任何夹具会拿裸引擎 id 走那条路 |
+| **M3** | `firstUsableProfileId` 的判据退化成"取第一个档案"：`return profiles[0]?.id ?? '';`（**不看 `activeModel`**） | **实测 4 红**，点名的两条都在：`tests/shared/settings.test.ts`「engineId 是 google → 数组里第一个 activeModel 非空的档案（不是…）」→ `expected 'p-empty' to be 'p-usable'`；`tests/options/options.test.ts`「删除当前档案时跳过没有当前模型的档案」→ `expected 'p-empty' to be 'p-b'` |
+| **M4** | 文案常量改一个字符：`NO_ENGINE_PROBLEM` 里「翻译引擎」→「翻译引挚」 | **实测 1 红**：`tests/shared/settings.test.ts` 那条**词级**用例红（`toContain('翻译引擎')`）。⚠ **四种单字符杀法分四次独立运行**（提交说明里报的就是上面这种"点名对应那条词"的读数）：可→能 / 擎→挚 / 页→项 / 档→挡。⚠ **口径提醒**：整句 `toBe` 那条对**任何**单字符改动都敏感，所以**不过滤用例名**跑同一个文件时，一次改动会看到 **2 红**（整句 + 对应那条词）——"1 红"是只点名词级那条的读数；**两种口径的差别在"跑了哪些用例"，不在"谁没牙"**。⚠ **必须知道**：只改常量时，所有**走常量**的界面断言（弹窗/设置页/后台）会**一起绿**——两边同源，这正是那两条字面断言存在的理由 |
+| **M4b** | 数字常量改一个字符：`CURRENT_VERSION` 5 → 6 | **实测只 1 红**：`tests/shared/settings.test.ts` 里钉字面的那条（`expected 6 to be 5`）。⚠ **计划原预测"`loadSettings` 的版本闸门会把 v5 数据当老数据处理、一批迁移用例跟着红"不成立**——反过来说这是**好消息**：版本号是**单源**的，迁移用例喂的是**显式版本**的夹具（`{ version: 4, … }`），不受 `CURRENT_VERSION` 影响，改版本号只动"当前版本"这一处读数 |
+| **M5** | `profileHealthKey` 的前缀改掉（`const PROFILE_HEALTH_PREFIX = '';`） | **实测只 1 红** = **牙④**（`expected 'dup' to be 'p:dup'`）。⚠ **如实记账**：牙①②③**不会**红——读写两侧共用同一个函数，前缀换了键只是换个形状，行为上不可观察（这正是 `engine-health.ts` 说"退回裸 id 是一次没有收益的改动"的意思）。⚠ **规格 §7.3 第 6 条牙①的措辞与 §10 第 5 条"三条必须红"在这里都不准确**（已在规格 §10 第 5 条补了更正说明）：要演示牙①②③各自的杀手，用 M5b/M5c/M5d——**它们是单侧变异，这条是两侧同时改** |
+| **M5b** | `handleTestProfile` 交裸 id 而不是 `profileHealthKey(id)` 给 `runConnectionTest` | **实测 5 红（含牙①）**：同一条用例牙①红（`storedHealth()[profileHealthKey('p:dup')]` 是 `undefined`），另有四条第 6 条之外的用例跟着红（键形状不对，凡是读记录的都会露馅） |
+| **M5c** | `rowForKey` 拿键当 id 用：`return rowById(key);` | **实测 3 红（含牙②）**：同一条用例牙②红（`dotOf` 抛"档案行没有状态点"，或点停在 `idle`） |
+| **M5d** | `buildProfileRow` 按裸 id 读记录：`applyDot(dot, health[id])` | **实测 2 红**，点名的**牙③**落在**重绘那一行**（`tests/options/engine-health.test.ts` 里点「保存」触发 `renderProfiles` 之后读点的那一条）——就地更新那一次仍绿，**与计划逐字一致** |
+| **M6** | **删掉后台的提前返回**（`if (engine === null \|\| problem !== undefined)` 整句删掉） | **实测 2 红**，红的形态与本计划起草时的预期不同、必须如实记下：`tests/background/service-worker.test.ts` 新守卫的 `code` 那格红（`expected 'UNKNOWN' to be 'AUTH'`）+ 文案那格红（`message` 成了异常文本）。⚠ **计划原写的"抛点在 `translateBatch` 里"不成立**：真正的抛点在 `service-worker.ts` **自己**读 `engine.supportsGlossary` 那一行（`engine` 是 `null`）；**`calls` 仍然是 0**（没有引擎就没有任何地方会构造请求——这正是 §8.12 说的"按构造"）。**所以本计划起草时那半句"删掉提前返回 → 后台真发请求"不成立**（它是本计划自己的预测，规格里没有这句话；规格 §10 第 3 条错的是**另一处**，见 M6b），本计划用 M6c 补一个**真能红到零请求断言**的变异 |
+| **M6b** | 让 `resolveEngine` 的第 2 条规则**回落一个配置可用的引擎**：`return { engine: getEngine(OPENAI_COMPAT_ENGINE_ID), config: { apiKey: 'sk-x', baseUrl: 'https://api.example.com/v1', model: 'm' } };` | **实测只红响应形状那半，`calls` 仍是 0**：⚠ **计划原预测"`calls` 变成 1、这一条是零请求断言的杀手"不成立**——回落的 `openai-compat` 需要**宿主权限**，而权限闸在发请求**之前**就先抛 `AUTH`（`calls` 自然还是 0）。⚠ **规格 §10 变异表第 3 条**（"回落 `getEngine(OPENAI_COMPAT_ENGINE_ID)` → 零请求端到端守卫与空态两条必须红"）**在这一半上也不准确**：空态那两条会红（设置是 `''` 却被解析出一个能用的引擎），但"零请求"那条的 `calls` 断言**不红**。**所以这一条杀不掉 `toHaveLength(0)`**，要杀它得用 M6c |
+| **M6c** | 补充变异（落地时新增）：在权限闸**里面**先 `await` 一次真 `fetch`（即在抛 AUTH 之前真发一个请求） | **实测恰好 2 红**，且是两条**零请求**断言红：`expected [ … ] to have a length of +0 but got 1`。**这一条才是"零请求"那条断言的杀手**，同时它证明 `toHaveLength(0)` **不是恒真式**——一个"删代码都不红"的断言，必须再用一个**反例**证明它今天仍然可达（见「T1 落地复盘」第 3 条方法论） |
+| **M7** | 迁移里把 `record.profiles` 直接交给 `firstUsableProfileId`（去掉形状投影） | **实测 2 红**：`tests/shared/settings.test.ts` 里**没有 `profiles` 键**的两种形状都红成 `TypeError: Cannot read properties of undefined (reading 'find')`（生数据直通 → 抛；投影之后是 `[]` → 落到空串） |
+| **M8** | `insertDraftRow` 改回 `profilesList.prepend(row)` | `tests/options/engine-expansion.test.ts`「新增档案那一行也是就地追加」红。⚠ **实测红的行比计划预期的早一行**：不是 `expected <div…> to be null`（`nextElementSibling`），而是它上面的 `expected p-2 to be __new__`——草稿行跑到第 1 位，`after[3]` 成了原来的 `p-2` |
+| **M9** | 把 `tests/options/engine-health.test.ts` 那条夹具的 `engineId` 改回 `'google'`（撤销本单元的去假前提改动） | **实测 0 红，全绿**。⚠ **如实记账：这里没有守卫**——`handleTestProfile` 用**内联草稿档案**解析，从不读存储里的 `engineId`，所以那个字面量**不承重**；改它只是去掉一个假前提（数据层已经不认裸引擎 id 了），**不要**在注释里谎称有牙 |
+| **M10** | 在档案列表**尾部追加**一个 `<div data-engine-free>` 探针（模拟"免费引擎那一行又回来了"） | **实测 1 红**（`expected <div data-engine-free …> to be null`）：证明改写后的空态断言**不是 `null === null` 的恒真式**，它有牙 |
+| **M11** | 在 `insertDraftRow` 追加草稿行之后**再追加一个节点**（把"草稿行排最后"这条契约破坏掉，等价于旧实现里草稿行后面还跟着内置免费引擎那一行） | **实测只有第一条次序断言响**（独立验证 F2 更正）：`after[3].nextElementSibling` 不再是 `null` **先响且它有牙**；`lastElementChild === after[3]` **被遮住**（首失败即抛）**且逻辑上被前一条蕴含**——**它拿不到自己的读数**，别把它记成第二条牙（要给它读数得单独跑一次）。**这两条断言是替换 `[data-engine-free]` 三处读数的**——那三处在删行之后会退化成恒真式，M10/M11 就是替它们交的牙。⚠ **补做项**：提交 `4e58561` 的变异清单只记到 **M10**（M11 是复盘的补做项）——**若落地时没有单独跑过，先补跑再把读数填回来，不许把"期望红"写成"实测红"** |
 
-M1–M8 每次都要：改一处 → 跑**点名的那个测试文件** → 记录红形态 → **立刻 revert** → 复跑确认绿。
-把每次的读数（含 M6 那处"预期与现实不一致"）写进提交说明。
+M1–M11 每次都要：改一处 → 跑**点名的那个测试文件** → 记录红形态 → **立刻 revert** → 复跑确认绿。
+把每次的读数（含 M2/M4b/M6b 三处"预期与现实不一致"与 M9 "以为有牙、实测没有"）**如实**写进提交说明。
 
 ### Step 18：Commit
 
@@ -2057,7 +2124,8 @@ git show --stat HEAD
 - Modify: `tests/manifest.test.ts`（接口 + 正向 + **反向**两条守卫）
 - Modify: `src/content/index.ts`（`describeError` 的 RATE_LIMIT 支、`sameCodeFailureMessage` 的 NETWORK 支）
 - Modify: `tests/content/index.test.ts`（那条必红用例 + 网络文案夹具）
-- Modify: `src/background/scheduler.ts`（**3 处**注释）
+- Modify: `src/background/scheduler.ts`（**4 处**注释）
+- Modify: `tests/background/scheduler.test.ts`（**1 处**注释——独立验证 F1 补点，起草时漏了这个文件）
 - Modify: `src/background/service-worker.ts`（**只**那两行 `supportsGlossary` 上方的注释定性）
 - Modify: `src/core/hash.ts`（1 处注释——规格 §2 的范围清单里没有它，见下）
 - Modify: `src/options/options.html`（隐私区块那句「免费引擎不需要额外授权」——规格 §6 没点名，见下）
@@ -2288,9 +2356,9 @@ function describeError(response: { code: string; message: string }): string {
 Run: `npx vitest run tests/content/index.test.ts`
 Expected: 全绿（3a 那条转绿；`socket hang up` 的三条仍绿——它们与文案无关）。
 
-### Step 5：四处注释 / 静态文案
+### Step 5：五处注释 / 静态文案
 
-**5a. `src/background/scheduler.ts` 三处**（⚠ 规格 §2 说"仅一处注释"，实际**三处**）：
+**5a. `src/background/scheduler.ts` 四处**（⚠ 规格 §2 说"仅一处注释"，实际**四处**；第 4 处是独立验证 F1 补点的）：
 
 1. `// signal 是 TranslateRequest 的必填字段，两个引擎都真的用了它（fetch 的 signal、`
    → `// signal 是 TranslateRequest 的必填字段，唯一的适配器真的用了它（fetch 的 signal、`
@@ -2320,6 +2388,21 @@ Expected: 全绿（3a 那条转绿；`socket hang up` 的三条仍绿——它�
    * 一起命中或一起未命中，折叠不会改变任何一条的结果。
    */
 ```
+4. **`withEngineRetry` 上方那句点名了已删除的文件与函数**（独立验证 F1 补点的第 4 处；
+   `git grep translateOneWithRetry` 在 `4e58561` 上**仅此 1 处**，所以它会**活过整个单元 E**）：
+
+```ts
+ * 边界：批量重试是最后手段，条目级的抖动由引擎内部吸收（见 `engines/google.ts` 的
+ * `translateOneWithRetry`）。调度器只看得到「整批成功 / 整批失败」，一次调用摊成的
+```
+→
+```ts
+ * 边界：批量重试是最后手段，条目级的抖动由引擎内部吸收（**一次性发出多条文本的适配器
+ * 要自己按条目重试**）。调度器只看得到「整批成功 / 整批失败」，一次调用摊成的
+```
+⚠ **改法是"不指向具体实现"，不是删掉这半句**：它说的是"引擎要先按条目重试"这个**契约**，
+只是当初用 `google.ts` 的 `translateOneWithRetry` 当了例子——那个文件和函数都不在了，
+写名字的注释会变成**指向空气的指路牌**。
 **5b. `src/background/service-worker.ts` 那两行 `supportsGlossary` 上方的注释**（锚点唯一）：
 
 ```ts
@@ -2362,6 +2445,46 @@ Expected: 全绿（3a 那条转绿；`socket hang up` 的三条仍绿——它�
 ⚠ 三条约束：① 这一段**不进搜索索引**（`tests/options/search.test.ts` 明写），所以新增文字不会
 影响搜索断言；② 不许给这个 `<li>` 加 `.lab` 类、也不许新增 `.sec-desc`（那两条是 search.test 的
 形状护栏）；③ 保留「API Key」「档案」两个词在隐私区块里出现（同一文件别处有，不要顺手删）。
+
+**5e. `tests/background/scheduler.test.ts` 那句注释**（独立验证 F1 补点；T2 的 Files 里原本没有这个文件）：
+
+```ts
+  /**
+   * 同一批里字面完全相同的文本只翻一次。真实网页的导航、「Read more」、表头、免责声明
+   * 能占 20-40% 的段落数，而 Google 引擎不支持批量（一条文本一个请求），逐条发等于把
+   * 免费额度白烧在重复段上，正文反而会因 429 失败（审查实测：60 个相同段落打出 36 次 fetch）。
+   */
+```
+→
+```ts
+  /**
+   * 同一批里字面完全相同的文本只翻一次。真实网页的导航、「Read more」、表头、免责声明
+   * 能占 20-40% 的段落数，逐条发出去等于把同一段文本重复计费，正文反而更容易撞上 429
+   * （审查实测：60 个相同段落打出 36 次 fetch）。
+   */
+```
+⚠ **那半句"审查实测：60 个相同段落打出 36 次 fetch"是历史读数，一个字都不许改**：它记的是
+当初发现折叠收益的那次测量（当时"一条文本一个请求"，36 次是实打实的），换掉数字等于**篡改证据**；
+要改的只是**主语**（"Google 引擎不支持批量 / 免费额度" → "逐条发出去 / 重复计费"）。
+
+**F1 的判据（独立验证给的一句通则，跑一遍 grep 逐条判读）**：
+
+```powershell
+git grep -n -e translateOneWithRetry -e 'google\.ts' -e 'Google 引擎' -e 免费额度 -- src tests
+```
+
+⚠ **凡"点名已删除的文件 / 函数"的注释都要在 T2 里清掉或改成不指向具体实现的措辞**——
+但**例外不是漏网**，逐条判读的结论是：
+
+| 命中 | 处置 |
+| --- | --- |
+| `src/background/scheduler.ts` 的 `withEngineRetry` 上方（`translateOneWithRetry`） | **改**（5a 第 4 处） |
+| `src/background/scheduler.ts` 的折叠段（`Google 引擎` / `免费额度`） | **改**（5a 第 3 处） |
+| `tests/background/scheduler.test.ts` 的折叠用例注释（同上） | **改**（5e） |
+| `src/engines/registry.ts` 与 `tests/engines/registry.test.ts` 的「有人把 `google.ts` 加回来…」 | **留**：它在**说守卫**（"回来就红"正是那条断言的作用） |
+| `tests/background/service-worker.test.ts` 的「那个形状随 `src/engines/google.ts` 一起删」 | **留**：它在**说历史**（解释旧假响应的形状为什么不见了） |
+
+**改完之后同样的 grep 应当只剩上表"留"的三处。**
 
 ### Step 6：跑全量
 
@@ -2656,13 +2779,13 @@ git show --stat HEAD
 | 4 | `dist/manifest.json` 的 `host_permissions` 是 `[]`（源 + 产物） | 源：T2 S2 + S1 守卫；产物：T2 S7 |
 | 5 | `CURRENT_VERSION === 5`；`DEFAULT_SETTINGS.engineId === ''` | T1 S3b/S3c（**字面**断言） |
 | 6 | `ENGINES.map((e) => e.id)` 恰好 `['openai-compat']` | T1 S2 |
-| 7 | `google.ts` / `google.test.ts` 不存在；七类符号全仓不再出现 | T1 S9（删除）+ T1 S15；收口：T3 S3 的 `git grep` |
+| 7 | `google.ts` / `google.test.ts` 不存在；七类符号**作为行为 / 实现残留**一处不剩（**分母口径**：显式空态守卫与注释里的历史说明不算残留，见 T3 S3 与规格 §8.7 的口径段） | T1 S9（删除）+ T1 S15；收口：T3 S3 的 `git grep` |
 | 8 | v4 用户（`engineId: 'google'`，第一个有 `activeModel` 的是 X）→ 读到 X；清空 X 的模型后再读 → 仍是 X | T1 S3i 的第 1、4 条 |
 | 9 | v4 用户（全都没 `activeModel` / 没有档案）→ `''`，两处界面显示那句话 | T1 S3i 第 2 条 + T1 S5e-6（设置页）+ T1 S6e（弹窗）+ T1 S12e/S13e（实现） |
 | 10 | 首装：`engineId === ''`、`profiles === []`、弹窗引擎那一行隐藏、提示区指路、**不写任何档案骨架** | T1 S3b（默认值）+ S6e（弹窗空态）+ S5e-6（设置页空态）；"读一次设置不产生写入"由 T3 S3 的 vitest 全绿与 S3i 幂等用例共同覆盖 |
 | 11 | 无可用引擎：`{ ok: false, code: 'AUTH', message: NO_ENGINE_PROBLEM }` 且 `fetch` 0 次 | T1 S7d（端到端守卫）+ T1 S3f（单元层成对用例） |
 | 12 | 翻译路径上没有别处构造引擎（`getEngine` 返回 `null`，`resolveEngine` 原样交出去） | T1 S9（`registry.ts`）+ T1 S10f（`resolveEngine`）+ T1 S14b（后台收口） |
-| 13 | 那句话同时含「没有可用引擎」与「设置页」，两处界面逐字相同 | T1 S3d（常量**字面**断言）+ S6e（弹窗，走常量）+ S5e-6（设置页，走常量） |
+| 13 | 那句话**说清是什么事（没有可用引擎）也指路（去设置页添加一个服务商档案）**；两处界面逐字相同，且**整句字面**与四个词（没有可用 / 翻译引擎 / 设置页 / 服务商档案）各有独立读数 | T1 S3d（常量**整句 + 词级**写成**两条独立 `it`**；四条词各自被单字符变异杀过、**分四次独立运行**）+ S6e（弹窗，走常量）+ S5e-6（设置页，走常量）。⚠ **判据不是"这句话里含子串「没有可用引擎」"**（那句话里没有这个连续子串），而是上面那两件事都有话说 |
 | 14 | 删除当前档案后：有可用档案 → 切到它并说清；没有 → `''` + 那句话 | T1 S5e-4、S5e-5、S5e-6 |
 
 ---
@@ -2689,19 +2812,27 @@ git show --stat HEAD
 
 ## 落地读数表（**每格注明取数命令**；执行者回填）
 
-| 读数 | 取数命令 | 起草时基线 | T1 后 | T2 后 | T3 收口后 |
+| 读数 | 取数命令 | 起草时基线 | T1 后（实测） | T2 后 | T3 收口后 |
 | --- | --- | --- | --- | --- | --- |
-| 测试文件数 / 用例数 | `npx vitest run` | 55 / 1061 | 待填 | 待填 | 待填 |
-| 类型检查 | `npm run typecheck` | exit 0 | 待填 | 待填 | 待填 |
-| 构建 + 产物校验 | `npm run build` | exit 0，`✓ 产物校验全部通过（14 项）` | 待填 | 待填 | 待填 |
-| 产物清单 | `npm run build` 尾部清单 | 16 个文件，167.66 KB | 待填 | 待填 | 待填 |
-| zip 字节 / SHA256 | `Get-ChildItem *.zip` + `Get-FileHash -Algorithm SHA256` | 65643 / `048567C7AA429E78E394727A5BC278EBD22E9F921764F3371D7299253AA015B2` | 待填 | 待填 | 待填 |
-| 产物 `host_permissions` | `node -e "console.log(JSON.stringify(require('./dist/manifest.json').host_permissions))"` | `["https://translate.googleapis.com/*"]` | 待填 | 待填 | 待填 |
-| 七类符号残留（`src` + `tests`） | `git grep -n -e googleapis -e googleEngine -e DEFAULT_ENGINE_ID -e FREE_ENGINE_HEALTH_KEY -e ENGINE_HEALTH_PREFIX -e test-free -e data-engine-free -- src tests` | 命中（多处） | 待填 | 待填 | 待填 |
-| 22 处 `engineId: 'google'` | `git grep -n "engineId: 'google'" -- tests` | 22 处 | 0 | 0 | 0 |
-| 变异汇总 | 见各 Task 的变异表 | — | 待填（含 M6 与预期不一致那处） | 待填 | 待填 |
+| 测试文件数 / 用例数 | `npx vitest run` | 55 / 1061 | **54 / 1054，exit 0**（删掉 `tests/engines/google.test.ts` ⇒ 文件 55→54；用例 1061→1054） | 待填 | 待填 |
+| 类型检查 | `npm run typecheck` | exit 0 | exit 0 | 待填 | 待填 |
+| 构建 + 产物校验 | `npm run build` | exit 0，`✓ 产物校验全部通过（14 项）` | exit 0，`✓ 产物校验全部通过（14 项）` | 待填 | 待填 |
+| 产物清单 | `npm run build` 尾部清单 | 16 个文件，167.66 KB | 16 个文件，164.66 KB ⚠ **这个字节数的来源必须注明**（T1 独立验证发现）：它取自**工作树里混着改名会话在途改动**时的一次构建——工作树遗留的 `dist/` 合计正好 164.66，且它的 `dist/manifest.json` 写着 `"name": "TransLens"`、两个 HTML 与 CSS 的字节数都与干净构建不同；**干净检出 `git archive 4e58561` 上是 164.46 KB**。功能读数（exit 0 / 14 项）两边都成立，但**字节数不许说成"提交的读数"** | 待填 | 待填 |
+| zip 字节 / SHA256 | `Get-ChildItem *.zip` + `Get-FileHash -Algorithm SHA256` | 65643 / `048567C7AA429E78E394727A5BC278EBD22E9F921764F3371D7299253AA015B2` | 未取（T1 不打 zip；T3 收口时打一次） | 待填 | 待填 |
+| 产物 `host_permissions` | `node -e "console.log(JSON.stringify(require('./dist/manifest.json').host_permissions))"` | `["https://translate.googleapis.com/*"]` | 未取；**预期仍是旧值**（`src/manifest.json` 属 T2，T1 不许动） | 待填（= `[]`） | 待填 |
+| 七类符号残留（`src` + `tests`） | `git grep -n -e googleapis -e googleEngine -e DEFAULT_ENGINE_ID -e FREE_ENGINE_HEALTH_KEY -e ENGINE_HEALTH_PREFIX -e test-free -e data-engine-free -- src tests` | 命中（多处） | **作为行为 / 实现残留 = 0**。逐符号（T1 落地 + 独立验证复核）：`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；`FREE_ENGINE_HEALTH_KEY` = 1（注释）；`test-free` = 1（显式 `toBeNull` 断言）；`data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` 的 `host_permissions` = T2 的活 + 1 测试注释）。两条空态断言**非恒真**已实测（各追加一个探针 → 各 1 红）。⚠ **别拿命中数当读数**，见规格 §8.7 的口径段 | 待填 | 待填 |
+| 作为**当前引擎选择**的 `engineId: 'google'` | `git grep -n "engineId: 'google'" -- tests` 然后**逐条判读** | 22 处（起草时全部算作"当前引擎选择"） | **0 处**当当前引擎用。⚠ 字面量**仍有 12 处**：**7 处活的**是 v2/v4 迁移的**输入数据**（必须留，它们就是"老数据"本身）+ **5 处**注释/说明。**这一格不能拿 `git grep` 的命中数当读数** | 待填 | 待填 |
+| 变异汇总 | 见各 Task 的变异表 | — | **M1–M11 全部跑完**（读数见提交说明）：含 M2 / M4b / M6b 三处"计划预测不成立"、M9"以为有牙、实测全绿"、M6c 补做的可达反例 | 待填 | 待填 |
 
 ⚠ 收口那一列的读数是在"工作树已含改名会话成果（或已提交）"之上取的，记录时注明。
+
+⚠ **取数纪律（T1 独立验证的一条实测教训，写给 T2/T3 与后面的人）**：**产物字节数 / zip 字节 / SHA256
+这类读数必须在干净检出上取**——工作树里只要混着别人的在途改动，构建出来的字节数与产物内容就会
+**混入别人未提交的代码**。实测：T1 提交里记的"16 个文件 164.66 KB"在**提交本身**上复现不出来
+（干净副本是 **164.46 KB**），工作树那份 `dist/` 构建于提交之后约一分钟、`manifest.name` 已经是
+另一个会话改的 `TransLens`。这与"取读数前先 `git rev-parse HEAD`、把 HEAD 记在读数旁边"是
+**同一条纪律的两面**：**先说清"这是在哪个树、哪个提交上取的"，再说数字**；取不到干净读数时，
+**如实写"这个数取自工作树，含在途改动"**，别把它记成提交的读数。
 
 ---
 
@@ -2720,7 +2851,7 @@ git show --stat HEAD
 - 「已核实的前提 7」（类型变化不可拆）→ T1 是**一个**提交 → 验收表第 1/2/3 条的落点都是
   "每个 Task 结束跑全量" → 三者一致。
 - 「开工前检查」的等待条件 → T2 Step 0、T3 先决条件 → 一致。
-- T1 的 Files（17 个路径）与「文件结构」表逐行对应；T1 的**非目标**（不碰 `popup.html` /
+- T1 的 Files（**18 个路径**）与「文件结构」表逐行对应（起草时写成 17，逐条数是 18：2 删 + 6 改 `src` + 10 改 `tests`）；T1 的**非目标**（不碰 `popup.html` /
   `manifest.json` / `options.html`）与 T2 的 Files 无交集 → 一致（并行不冲突）。
 - 规格 §1.2 的五条裁决逐条落在：a → T2；b → T1 S3/S10f/S12e/S13e/S14b；c → T1 S13e + T2 S5b；
   d → T1 S4/Step 11；e → T1（不动 docs）+ T3（改 README）。
@@ -2776,6 +2907,112 @@ git show --stat HEAD
 22. 规格 §7.3 第 6 条那三条"牙"的杀手：本计划改成"写侧 / 就地更新 / 整表重绘"三条，
     并另加一条**形状**断言。这是推演 + 对 `applyExpansion`（它**不**重画列表）的代码核对结论，
     **M5b/M5c/M5d 三次独立运行是必须做的实证**（别只看"这条用例红了"）。
+
+**落地实测（T1 执行后回填；权威读数是提交 `4e58561` 的提交说明，本文件的每一格都以它为准）**：
+
+24. **三处"期望红形态"的预测不成立**：M2（只 1 红，预测会红的 `settings.test.ts` 那条不红）、
+    M4b（只 1 红，"一批迁移用例跟着红"不成立）、M6b（只红响应形状，`calls` 仍 0）。
+    三行都已改成实测读数并写明机理。**两种"不红"要分清**：一种不红是**那条路径今天已经不可达**
+    （M2 / M4b——反过来是**好消息**：`resolveEngine` 不再拿任意 id 调 `getEngine`、版本号是单源的，
+    那两条断言本来就不该跟着红）；另一种不红是**另一道闸先拦住了**（M6b 的宿主权限闸）——
+    后者必须另找反例，即 M6c。**没红的断言不等于没牙，但要说出它今天为什么可达。**
+25. **M9 是"以为有牙、实测全绿"**：把 `tests/options/engine-health.test.ts` 那条夹具的 `engineId`
+    改回 `'google'` 全绿（`handleTestProfile` 用**内联草稿档案**解析，从不读存储里的 `engineId`）。
+    已按实测把注释写成"这里没有守卫"。⚠ **"去假前提"与"加守卫"是两件事，别混着记账**：
+    去掉一个已经不成立的假设，不等于给这条用例添了一条牙。
+26. **S9 的"旧引用点清单"形状与本计划预期不同**：删文件只给 **1 条 `TS2307`**（注册表自己 import
+    不到 `./google`），**换完新注册表才是 3 个文件**；`src/background/service-worker.ts` 与
+    `tests/engines/registry.test.ts` **都不在其中**。"免费清单"这个说法只在**第二态**成立。
+27. **规格 §6.1 的字面不含子串「没有可用引擎」**（它是「没有可用」+「的」+「翻译引擎」）：
+    S3d 照 §8.13 抄的 `toContain('没有可用引擎')` **落地当场红**。裁决：**保留规格那句话**
+    （用户可见、T3 的 README 还要逐字引），**改断言**——整句 `toBe` + 四条真存在的词。
+28. **两处计数 / 口径错误**：Files 写"共 17 个路径"，逐条数是 **18**；落地读数表把
+    "22 处 `engineId: 'google'`"的 T1 后读数写成 `0`，而**字面量仍有 12 处**
+    （**7 处活的**是 v2/v4 迁移的**输入数据**，必须留；**5 处**是注释里的说明）。
+    那一格已改成**口径 + 分母**（"当作**当前引擎选择**用的 = 0"），并写明
+    **不许拿 `git grep` 的命中数当读数**。
+29. **S8（改完测试、还没改实现）的真实红形态入账**：`7 failed | 48 passed`（55 files）、
+    `22 failed | 1045 passed`（1067 tests），分布 `settings 9 / registry 2 / options 4 / popup 4 /
+    engine-health 1 / engine-expansion 1 / service-worker 1`。这是"先改测试后改实现"的**中间态读数**
+    （**不是**回归）：S9–S14 落完之后才回到 54 / 1054 全绿。**每一处红都要能对上"它守的是哪条新语义"**，
+    对不上的就是漏改的引用点。
+
+**T1 独立验证（pass，3 条 low + 1 条信息；验证者在 `git archive 4e58561` 的干净副本上取证，
+工作树一字未动）**：头条读数全部独立复现（54/1054、typecheck 0、build 0 + 14 项），迁移 19 条探针全过，
+零请求非恒真已独立重跑，`engine === null` 逐处**无静默支**，提交 18 路径与在途清单**零重叠**。四条发现：
+
+30. **F1（low，已并入 T2 Step 5）**：`src/background/scheduler.ts` 里 `withEngineRetry` 上方的
+    「见 `engines/google.ts` 的 `translateOneWithRetry`」与 `tests/background/scheduler.test.ts` 里
+    「而 Google 引擎不支持批量…免费额度…因 429 失败」**指向已删除的文件与函数**，而 T2 Step 5a 原来
+    只覆盖同段那一条 ⇒ **这两句会活过整个单元 E**（`git grep translateOneWithRetry 4e58561 -- src tests`
+    **仅此 1 处**）。已补进 T2 Step 5（5a 第 4 处 + 新的 5e），并加了一条通则与逐条判读表
+    （**点名 `google.ts`/`translateOneWithRetry` 的注释：说今天的实现就改，说守卫/历史就留**）。
+31. **F3（low，读数来源）**：T1 提交信息里的「16 个文件 164.66 KB」**在提交本身复现不出来**——
+    干净副本是 **164.46 KB**；工作树遗留的 `dist/`（构建于提交后约一分钟）合计正好 164.66，
+    且它的 `dist/manifest.json` 写着 `"name": "TransLens"` ⇒ **那个数字来自一次盖着另一个会话在途
+    改动的构建**。功能无碍（exit 0 与 14 项两边都成立），但读数不能说成是提交的。已在「落地读数表」
+    那一格注明来源，并把通则写进读数表下方（**产物字节数 / zip / SHA 必须在干净检出上取**）。
+32. **F2（low，只记账、不改代码）**：`tests/options/engine-expansion.test.ts` 那两条次序断言
+    **单次运行只能红第一条**（`lastElementChild === after[3]` 被 `nextElementSibling === null` 逻辑蕴含，
+    且 vitest 首失败即抛；`prepend` 变异更早红在 `profileId === '__new__'`）。已在 Step 5a 的代码块下方
+    与 M11 行改成"**第一条红，第二条被遮住且逻辑上被蕴含**"，并写明第一条**已实测有牙**。
+33. **F4（信息，已消解一处互斥）**：规格 §8.7 的"七类符号不再出现"与 §7.3 第 17 条的"必须**显式写**
+    `[data-engine-free]` 空态断言"**互斥**（一条要求字面量消失，一条要求它出现）。规格 §8.7 已改成
+    **分母口径**（作为**行为 / 实现**残留 = 0；显式空态守卫与注释里的历史说明不算残留），并写入
+    验证者的逐符号读数与"两条空态断言**非恒真**"的独立实测（追加探针 → 各 1 红）。
+    计划的验收表第 7 条与读数表那一格同步改成同一口径。
+
+### D. 落地踩坑（T1 实测）
+
+1. **test 侧的 5 条类型红**（"删掉免费引擎之后 `engine` 变成可为 `null`"这件事在测试侧也有涟漪，
+   计划起草时只想到了 `src` 侧）：
+   - `tests/popup/popup.test.ts` **两条** `engine.closest('.field')?.hidden`：`closest` 返回
+     `Element`，而 `Element` 上**没有** `hidden` → 要写成 `closest<HTMLElement>('.field')?.hidden`；
+   - `tests/shared/settings.test.ts` **三条** `engine.id` / `engine.translate(...)`：
+     `resolveEngine` 交出来的 `engine` 现在可能是 `null` → 要写成 `engine?.id` / `engine?.translate(...)`。
+   ⚠ **不许用 `!` 糊过去**：`engine === null` 正是本单元的新契约，"引擎必须在"要用 `?.` 让它在缺失时
+   **报红**，而不是用非空断言把红**压掉**。
+2. **三处已成假话的注释 / 标题同步改掉**（计划没逐条点名，属于"删掉一行之后，围着它的说明就变成谎话"
+   这一类，落地时**必须扫一遍**）：
+   - `tests/popup/popup.test.ts`：文件头补一句"夹具必须显式声明这条用例需要一个可用引擎"；
+     「落盘的是档案 id」那句的口径 `engineId = 档案 id 或 google` → `engineId = 某个档案的 id`；
+   - `tests/background/service-worker.test.ts`：文件头"免费接口一次请求一条文本"→"唯一剩下的适配器
+     一次请求带多条文本"；`stubGoogleFetch` → `stubEngineFetch`（注释里说明旧形状为什么随引擎一起删）；
+   - `tests/options/engine-health.test.ts`：`describe('内置免费引擎那一行')` →
+     `describe('档案记录键的形状（`p:` 前缀与档案 id 是两个概念）')`——**标题里点名的那一行已经不存在了。**
+3. **提交纪律**：`4e58561` 只带了 **18 个路径**，`git status --porcelain -uall` 里改名会话的在途文件
+   一个都没碰。**在途改动与自己改动同时在工作树里时，路径限定的 `git commit -- <显式路径>` 还不够**：
+   先看一遍 `git status --porcelain`，再逐路径核 `git diff -- <路径>`。
+
+---
+
+## T1 落地复盘（教训，写给后面的单元）
+
+1. **概念名不等于字面量。** 规格 §8.13 里的「没有可用引擎」是**概念名**（它是"那件事"的名字），
+   §6.1 钉的是**那句话的字面**（`还没有可用的翻译引擎，去设置页添加一个服务商档案`，逐字给用户看、
+   T3 的 README 还要逐字引）。起草时把概念名当成了子串，写出 `toContain('没有可用引擎')`——
+   **落地第一枪就红**。
+   **规矩**：**断言里只许出现"真的在字符串里连续出现"的东西**。要钉一句话就分两层：① 整句 `toBe`
+   （钉字面，改一个字就红）；② 词级 `toContain`（钉"说清了哪几件事"，每个词都是真子串）。
+   **概念名只留在注释与文档里，绝不进断言。**
+2. **一次运行只响一条 ⇒ 多层证明必须分多次独立运行。** 这是本仓硬规矩（见 T1 S3d 的注释与
+   apple-visual-style 计划里 D2/D4 的复盘）。本轮又撞上一次：常量那句话的**整句 `toBe`** 与
+   **四条词级 `toContain`** 若挤在同一个 `it` 里，整句会永远挡在四条词前面——四条词**拿不到任何读数**。
+   于是整句单独一条 `it`，四条词各自被单字符变异杀过、**分四次独立运行**
+   （可用→能用 / 引擎→引挚 / 设置页→设置项 / 档案→挡案）。
+   **判据**：一条 `it` 里"分层"的断言，**每一层都要有一次自己的红**；没有独立读数的层等于没有牙。
+3. **"删代码不红"要先问"这条路今天还可达吗"，再自己造一个反例。** 本轮 M6 删掉后台提前返回，
+   `calls` **仍然是 0**——不是断言没牙，是**没有引擎就按构造发不出请求**；M6b 让 `resolveEngine`
+   回落一个"配置可用"的引擎，`calls` **还是 0**——因为**宿主权限闸先抛了 AUTH**（另一道闸把路堵死了）。
+   两次"不红"合起来才说明：`toHaveLength(0)` 在**今天可达的路径**上根本没被走到。
+   **规矩**：删代码不红时，**不许**直接下"这条断言是恒真式"或"这条断言没牙"的结论，要做两步——
+   ① 问"这条路径今天还可达吗"（不可达 ⇒ 它是**防御性**的，**如实记账**，别谎称有牙）；
+   ② 可达就**自己造一个能让它该红的反例**（M6c：在权限闸里先 `await` 一次真 `fetch`）→
+   实测恰好两条零请求断言红。**这才叫"证明它不是恒真式"。**
+4. **改掉一行，围着它的说明会变成谎话。** 删掉免费引擎那一行 / 那个文件之后，**文件头、describe 标题、
+   口径注释**都可能当场变成假话（T1 实测三处，见「自审记录 D」第 2 条）。**删东西的 Step 必须带一句
+   "扫一遍提到它的注释与标题"**——本仓的规矩是"注释不许说谎"，而删掉的往往不只是代码，
+   还有**它周围的说明**。
 23. 规格 §7.2 第 ④ 类点名的用例与本计划实际改的两处不一致（规格点的是「打开设置页/展开档案/
     聚焦输入框都不发请求」，而那条**已经是** `'p-a'`；真正含字面量的两条是「取消草稿行」与
     「草稿保存成功后清掉草稿暂存」）——按 `grep` 结果入账，但**执行者应再核一次**。
