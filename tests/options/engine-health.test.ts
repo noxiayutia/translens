@@ -6,12 +6,11 @@
  * 另一半：内置免费引擎那一行（§3.1 的"不可删"）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
 import {
   ENGINE_HEALTH_KEY,
-  FREE_ENGINE_HEALTH_KEY,
   loadEngineHealth,
   profileHealthKey,
+  profileIdFromHealthKey,
   saveEngineHealth,
 } from '../../src/options/engine-health';
 import {
@@ -34,6 +33,7 @@ import {
   settle,
   waitFor,
 } from './harness';
+import { NO_ENGINE_PROBLEM } from '../../src/shared/settings';
 
 const CUSTOM_ORIGIN_PATTERN = 'https://api.example.com/*';
 
@@ -66,13 +66,6 @@ function dotOf(id: string): HTMLElement {
 
 function status(): HTMLElement {
   return pick<HTMLElement>('engine-status');
-}
-
-/** 内置免费引擎那一行的状态点。它没有 `data-profile-id`，只能按自己的标记找。 */
-function freeDot(): HTMLElement {
-  const dot = pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot');
-  if (dot === null) throw new Error('内置免费引擎那一行没有状态点');
-  return dot;
 }
 
 /**
@@ -118,10 +111,13 @@ describe('状态点的记录：读取与脏数据', () => {
     //
     // 这一条**不能只断言"零个档案行"**：本用例一个档案都没 seed，`profileRows()` 恒为 0，
     // 于是它在"`mount` 里根本不渲染列表"的变异下照样是绿的（加这条断言之前实测：那个变异
-    // 只红 6 条，绿的正是本条与上面那条纯存储的）。下面钉住内置免费引擎那一行——它是
-    // **每次重绘都会画出来**的那一行，有它在，"页面照常渲染"才是真的在断言渲染。
+    // 只红 6 条，绿的正是本条与上面那条纯存储的）。原来这里钉的是"内置免费引擎那一行**每次重绘
+    // 都会画出来**"——那一行随单元 E 删掉了，**承重的读数必须换一个，不许直接删**：
+    // 本用例没 seed 任何设置，`engineId` 是默认的 `''`，于是 `mount` 一定会把
+    // `#engine-hint` 写成那句"没有可用引擎"。它同样是"渲染真的发生了"的证据
+    // （`mount` 里不调用 `renderEngineHint` → 这个节点还是 HTML 里的空串 → 红）。
     expect(profileRows()).toHaveLength(0);
-    expect(pick('profiles').querySelector('[data-engine-free]')).not.toBeNull();
+    expect(pick<HTMLElement>('engine-hint').textContent).toBe(NO_ENGINE_PROBLEM);
   });
 
   it('两次并发写不互相吞：读-改-写按存储区串行（`Promise.all` 形态）', async () => {
@@ -230,7 +226,12 @@ describe('状态点三态', () => {
     const fetchMock = vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好'));
     vi.stubGlobal('fetch', fetchMock);
     chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
-    await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
+    // ⚠ 夹具取 `p-a` 而不是 `'google'`：**实测（变异轮 M9）证明这条夹具并不承重**——
+    // `handleTestProfile` 用的是**内联的草稿档案**（`resolveEngine({ engineId: id, profiles: [草稿] })`），
+    // 根本不读存储里的 `engineId`，所以把它改回 `'google'` 这条用例照样全绿（12 passed）。
+    // 改它只是为了不给"当前引擎是 google"留一个 v5 之后已经不成立的假前提；
+    // **别把它读成"这里有一个必红的守卫"**。
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed()] });
     await loadOptions();
 
     // `__new__` 是草稿哨兵（与 `options.test.ts` 同一个字面量：它不导出，按契约写死）。
@@ -338,128 +339,61 @@ describe('状态点三态', () => {
   });
 });
 
-describe('内置免费引擎那一行', () => {
-  it('在列表最后，带「内置」，没有删除也没有编辑（不可删）', async () => {
-    await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
-    await loadOptions();
-
-    const free = pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free]');
-    expect(free).not.toBeNull();
-    expect(free!.textContent).toContain(getEngine(DEFAULT_ENGINE_ID).name);
-    expect(free!.textContent).toContain('内置');
-    expect(free!.querySelector('[data-action="delete-profile"]')).toBeNull();
-    expect(free!.querySelector('[data-action="toggle"]')).toBeNull();
-    // 它排在真实档案之后；而且**不带** data-profile-id（既有用例只数真实档案）。
-    expect(profileRows()).toHaveLength(1);
-    expect(pick<HTMLElement>('profiles').lastElementChild).toBe(free);
-  });
-
-  it('点它的「测试连接」真的发一次请求，成功之后点变绿', async () => {
-    // 夹具按**实际实现**给：免费引擎（`src/engines/google.ts` 的 `parseGoogleResponse`）读的是
-    // `[[[译文, 原文, …], …], null, 源语言, …]` 这个嵌套数组，不是 OpenAI 兼容那份 `choices`。
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en']));
-    vi.stubGlobal('fetch', fetchMock);
-    await seedSettings({ engineId: 'google', targetLang: 'zh-Hans' });
-    await loadOptions();
-
-    const free = pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free]')!;
-    free.querySelector<HTMLButtonElement>('[data-action="test-free"]')!.click();
-
-    await waitFor(() => status().dataset.kind === 'ok');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    // 免费引擎没有 Key，脱敏必须**原样放行**。这条断言昨天守的是"空串不能当要抹的 Key"
-    // （那时有一支 `key.length === 0` 的分支），今天空串落在**长度门槛 8** 之外，所以它守的
-    // 是门槛本身：把门槛删掉或降到 0，译文会变成 `你***好`，这条当场红（不是恒真）。
-    expect(status().textContent).toContain('你好');
-    await waitFor(() => pick<HTMLElement>('profiles').querySelector<HTMLElement>('[data-engine-free] .dot')!.dataset.state === 'ok');
-  });
-
-  it('档案 id 撞上 `google` 也不串台：免费行的记录落在引擎键上，档案行仍是从没测过', async () => {
-    // 脏存储可达：`pickProfile` 对档案 id 只要求"非空字符串"，不做保留字检查（出厂 UI 造不出来，
-    // `createProfileId()` 恒带 `p-` 前缀，但存档/外部写入能）。这是"两个键空间"改法之前的
-    // 撞车形状：那时两类键共用一个字符串空间，两行共用一个槽——点免费行亮的是**档案行**，
-    // 重绘后两行同时绿。
-    //
-    // 变异口径（两种"合回去"的形态都自己复现过，红的先后不一样，都是本条用例的杀手）：
-    // - 只合**键空间**（裸 id + 引擎键 `google`）、保留"先认引擎键"的分派 → 2 红，本条最先红的是
-    //   下面那条**键断言**（引擎的记录落在 `google` 这个档案键上）；
-    // - 连 `rowForKey` 的分派也一起还原成 `rowById` 优先 → 也是 2 红，但本条最先红的是**点断言**
-    //   （`freeDot()` 停在 idle：免费行的结果落到了 id 为 `google` 的档案行上），键断言是拿掉
-    //   点断言之后的第二条杀手。
-    // 另有一个只把**档案侧前缀**去掉、其余不动的形态：它不走本条，红在"测试连接成功 / 写不进去 /
-    // `e:free` 用例"三条上（3 红）——`rowForKey` 再也解不出档案行，那几个点根本不会更新。
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en']));
-    vi.stubGlobal('fetch', fetchMock);
-    await seedSettings({
-      engineId: 'google',
-      targetLang: 'zh-Hans',
-      profiles: [profileSeed({ id: 'google', label: '恰好叫 google 的档案' })],
-    });
-    await loadOptions();
-
-    expect(dotOf('google').dataset.state).toBe('idle');
-    pick<HTMLElement>('profiles').querySelector<HTMLButtonElement>('[data-action="test-free"]')!.click();
-    await waitFor(() => status().dataset.kind === 'ok');
-    await waitFor(async () => Object.keys(await storedHealth()).length > 0);
-
-    // 免费行的点亮了，档案行的点**没被它点亮**。
-    expect(freeDot().dataset.state).toBe('ok');
-    expect(dotOf('google').dataset.state).toBe('idle');
-
-    // 记录落在引擎键上；档案那一格（`p:google`）里什么都没有——这一条钉死"把两个键空间合回去"。
-    expect((await storedHealth())[profileHealthKey('google')]).toBeUndefined();
-    expect((await storedHealth())[FREE_ENGINE_HEALTH_KEY]).toEqual({ state: 'ok', detail: '' });
-
-    // 重绘（展开档案行会重画整个列表）之后两行各念自己那一份记录：共用槽时这里两行同时绿。
-    rowOf('google').querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
-    expect(dotOf('google').dataset.state).toBe('idle');
-    expect(freeDot().dataset.state).toBe('ok');
-  });
-
-  it('档案 id 直接取成引擎键本身（`e:free`）也不串台：两类键按构造不相等', async () => {
-    // 最极端的脏值：档案 id 就是引擎键。判据是"前缀不同 ⇒ 永不相等"——档案键 `p:e:free`、
-    // 引擎键 `e:free`，两个字符串在第一个字符上就分开了。
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([[['你好', 'hello', null, null, 10]], null, 'en'])) // 免费引擎那次
-      .mockResolvedValueOnce(chatResponse('<<<1>>>\n你好')); // 档案那次（OpenAI 兼容）
-    vi.stubGlobal('fetch', fetchMock);
+describe('档案记录键的形状（`p:` 前缀与档案 id 是两个概念）', () => {
+  /**
+   * **键空间的唯一一条守卫**（`e:` 键空间随免费引擎一起消亡之后，这条用例守的东西换了）。
+   *
+   * 标题：档案 id 可以长得像任何东西（含 `p:` 前缀本身）：记录键由前缀**加**出来，
+   * 点从记录键**解**回来，账不串。
+   *
+   * 夹具取 `'p:dup'`：它**今天已经没有特殊含义、但长得最像键**（`p:` + `dup` 恰好是另一个
+   * 档案的记录键形状）。这条同时覆盖了"永远不要从存储里的老 `p:` 键认领记录"那半条说明——
+   * 因为档案 id 恰好等于"另一个档案的键"。
+   *
+   * 三条行为层的牙（逐条写在这里，别只看"这条用例红了"）：
+   * - **牙①（写侧）**：`handleTestProfile` 若不把 `profileHealthKey(id)` 交出去、而是交**裸 id**，
+   *   存储里落的键是 `'p:dup'`，而下面按 `profileHealthKey('p:dup')` = `'p:p:dup'` 取值 → 红。
+   * - **牙②（就地更新）**：`rowForKey` 若不再从记录键**解**出 id（拿键当 id 用），
+   *   键 `'p:p:dup'` 找不到任何行，点停在 `idle` → 红。
+   * - **牙③（整表重绘）**：`buildProfileRow` 若按**裸 id** 读 `health[id]`，就地更新那一次仍然绿
+   *   （`recordHealth` 自己会更新点），只有走一次**真的重绘**才露馅——所以这里点一次「保存」
+   *   触发 `renderProfiles`，再读点。
+   *
+   * **如实记账**：`PROFILE_HEALTH_PREFIX` 从 `'p:'` 改成 `''`（或别的）在**行为上不可观察**
+   * （读写两侧共用同一个函数，键只是换了个形状），所以它**不是上面三条牙的杀手**——那正是
+   * `engine-health.ts` 里说"退回裸 id 是一次没有收益的改动"的意思。它由下面第四条断言钉住。
+   */
+  it('档案 id 可以长得像任何东西（含 `p:` 前缀本身）：记录键由前缀加出来，点从记录键解回来，账不串', async () => {
+    const dirtyId = 'p:dup';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(chatResponse('<<<1>>>\n你好')));
     chromeStub.permissions.grantedOrigins.add(CUSTOM_ORIGIN_PATTERN);
     await seedSettings({
-      engineId: 'google',
+      engineId: dirtyId,
       targetLang: 'zh-Hans',
-      profiles: [profileSeed({ id: FREE_ENGINE_HEALTH_KEY, label: 'id 就是引擎键的档案' })],
+      profiles: [profileSeed({ id: dirtyId, label: '长得像记录键的档案' })],
     });
     await loadOptions();
 
-    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('idle');
-    pick<HTMLElement>('profiles').querySelector<HTMLButtonElement>('[data-action="test-free"]')!.click();
+    rowOf(dirtyId).querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
+    actionButton(editorOf(dirtyId), 'test-profile').click();
     await waitFor(() => status().dataset.kind === 'ok');
-    await waitFor(async () => (await storedHealth())[FREE_ENGINE_HEALTH_KEY] !== undefined);
+    await waitFor(async () => (await storedHealth())[profileHealthKey(dirtyId)] !== undefined);
 
-    // ① 免费行按**引擎键**取到点；那一条 id 恰为引擎键的档案行没被点亮。
-    expect(freeDot().dataset.state).toBe('ok');
-    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('idle');
-    // ② 档案那一格（`p:e:free`）此时还不存在——引擎的结果没有写进档案的键。
-    expect((await storedHealth())[profileHealthKey(FREE_ENGINE_HEALTH_KEY)]).toBeUndefined();
+    // 牙①：写侧用的必须是 `profileHealthKey(id)`（= `p:p:dup`），不是裸 id。
+    expect((await storedHealth())[profileHealthKey(dirtyId)]).toEqual({ state: 'ok', detail: '' });
+    // 牙②：`rowForKey` 必须从记录键解回 id 才能找到这一行的点。
+    expect(dotOf(dirtyId).dataset.state).toBe('ok');
 
-    // 重绘一次，确认"各读各的那一格"在列表重画之后仍然成立。
-    rowOf(FREE_ENGINE_HEALTH_KEY).querySelector<HTMLButtonElement>('[data-action="toggle"]')!.click();
-    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('idle');
-    expect(freeDot().dataset.state).toBe('ok');
+    // 牙③：整表重绘（点一次「保存」→ `renderProfiles` → 重新 `applyDot`）之后仍然各念各的那一格。
+    actionButton(editorOf(dirtyId), 'save-profile').click();
+    await waitFor(() => (status().textContent ?? '').includes('已保存档案'));
+    expect(dotOf(dirtyId).dataset.state).toBe('ok');
+    expect((await storedHealth())[profileHealthKey(dirtyId)]).toEqual({ state: 'ok', detail: '' });
 
-    // 再把**这个档案**也测一次：两条记录各自落在自己的键上，两个点各自亮自己的。
-    actionButton(editorOf(FREE_ENGINE_HEALTH_KEY), 'test-profile').click();
-    await waitFor(() => status().dataset.kind === 'ok');
-    await waitFor(
-      async () => (await storedHealth())[profileHealthKey(FREE_ENGINE_HEALTH_KEY)] !== undefined,
-    );
-
-    expect(dotOf(FREE_ENGINE_HEALTH_KEY).dataset.state).toBe('ok');
-    expect(freeDot().dataset.state).toBe('ok');
-    expect(await storedHealth()).toEqual({
-      [FREE_ENGINE_HEALTH_KEY]: { state: 'ok', detail: '' },
-      [profileHealthKey(FREE_ENGINE_HEALTH_KEY)]: { state: 'ok', detail: '' },
-    });
+    // 牙④（**形状守卫，不是行为守卫**）：键的形状本身是刻意的选择——`p:` 前缀就是
+    // "记录键"与"档案 id"两个概念的分界（见 `engine-health.ts` 顶部）。行为上删掉它不可观察，
+    // 所以只有这一条会在"有人把前缀删了"时响。别把它读成"串台又回来了"。
+    expect(profileHealthKey('dup')).toBe('p:dup');
+    expect(profileIdFromHealthKey('p:dup')).toBe('dup');
   });
 });

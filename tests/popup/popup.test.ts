@@ -11,7 +11,7 @@
  *
  * DOM 用 `src/popup/popup.html` 的**真实内容**（`DOMParser` 解析后取 body），不手抄一份结构：
  * id 改名、控件漏写这类错误应当在测试里失败，而不是两边一起错。同理，下拉框的期望值来自
- * `core/lang` 与 `engines/registry`，不手抄语言表。
+ * `core/lang`，不手抄语言表。
  *
  * 内容脚本在真机上是 `chrome.tabs.sendMessage` 的接收方，替身不注册它（见 `chrome-stub`
  * 的 `StubTabs.responder`），由用例扮演：**只回话、不断言**——responder 里断言失败会变成
@@ -22,9 +22,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LANGUAGES } from '../../src/core/lang';
-import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
 import { MSG, type PageState } from '../../src/shared/messages';
-import { CURRENT_VERSION, DISPLAY_MODES, SETTINGS_KEY } from '../../src/shared/settings';
+import { CURRENT_VERSION, DISPLAY_MODES, NO_ENGINE_PROBLEM, SETTINGS_KEY } from '../../src/shared/settings';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 
 /**
@@ -85,6 +84,20 @@ function ui(): PopupUi {
  */
 async function seedSettings(patch: Record<string, unknown>): Promise<void> {
   await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, ...patch } });
+}
+
+/**
+ * ⑤ 类用例（"整份回写不抹掉别的字段"）要一个**真的存在**的 `engineId`：
+ * 夹具必须显式声明"这条用例需要一个可用引擎"，不能靠默认值——v5 起默认是 `''` = 没有可用引擎。
+ */
+async function seedWithProfile(patch: Record<string, unknown> = {}): Promise<void> {
+  await seedSettings({
+    engineId: 'p-a',
+    profiles: [
+      { id: 'p-a', label: '我的接口', baseUrl: 'https://api.test.example/v1', models: ['m'], activeModel: 'm', apiKey: 'sk-a' },
+    ],
+    ...patch,
+  });
 }
 
 /** 直读存储：验证"改动真的落盘了"，而不是只改了弹窗里的内存副本。 */
@@ -214,6 +227,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.resetModules();
+  // 6e 起本文件会 stub 全局 `fetch`（"零请求"那条断言要数它）：用例中途失败时
+  // 那句手工的 `vi.unstubAllGlobals()` 跑不到，下一个用例就会带着一个假 fetch 开跑。
+  vi.unstubAllGlobals();
 });
 
 describe('popup.html 结构', () => {
@@ -234,7 +250,7 @@ describe('popup.html 结构', () => {
 });
 
 describe('弹窗初始化', () => {
-  it('按存储里的设置选中目标语言与档案；下拉 = 免费接口 + 每个档案按名字', async () => {
+  it('按存储里的设置选中目标语言与档案；下拉**只列档案**', async () => {
     await seedSettings({
       targetLang: 'ja',
       engineId: 'p-deep',
@@ -253,9 +269,8 @@ describe('弹窗初始化', () => {
     expect(Array.from(targetLang.options).map((option) => option.value)).toEqual(
       LANGUAGES.map((lang) => lang.code),
     );
-    const free = getEngine(DEFAULT_ENGINE_ID);
+    // 下拉里**没有内置项**了（免费接口已删）：选项就是档案，一个不多一个不少。
     expect(Array.from(engine.options).map((option) => [option.value, option.textContent])).toEqual([
-      [free.id, free.name],
       ['p-deep', '我的 DeepSeek'],
     ]);
     // 活动标签页是唯一的查询口径：后台标签页的状态不该被读进来。
@@ -537,7 +552,6 @@ describe('引擎提示区（判据看的是 resolveEngine 解析出来的那一�
     // 下拉按名字列出三个档案——名字带出来了，密钥没带。
     const { engine } = ui();
     expect(Array.from(engine.options).map((option) => option.textContent)).toEqual([
-      getEngine(DEFAULT_ENGINE_ID).name,
       'DeepSeek 直连',
       '硅基流动',
       'Ollama 本机',
@@ -557,22 +571,56 @@ describe('引擎提示区（判据看的是 resolveEngine 解析出来的那一�
     expect(hint.textContent).toContain('设置页');
   });
 
-  it('零配置引擎不警告，并说明无需 Key', async () => {
-    await seedSettings({ engineId: 'google' });
-    await loadPopup();
-
-    const { hint } = ui();
-    expect(hint.classList.contains('warn')).toBe(false);
-    expect(hint.textContent).toBe('零配置可用，无需 API Key。');
-  });
-
-  it('切换引擎后提示区跟着重算（免费 ↔ 没填 Key 的档案）', async () => {
-    await seedSettings({ engineId: 'google', profiles: [profileOf({ apiKey: '' })] });
+  it('没有可用引擎：下拉那一行隐藏、提示区说出那句话并加 warn、零请求', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    await seedSettings({ engineId: '', profiles: [] });
     await loadPopup();
 
     const { engine, hint } = ui();
-    expect(hint.classList.contains('warn')).toBe(false);
+    // 「翻译引擎」那一整行隐藏：一个空下拉是"点了没得选"的死控件，该由提示区说那句话。
+    // ⚠ 这一行**没有自己的 id**（`popup.html` 不加新 id，理由见 `popup.ts` 里 `engineField` 的注释）：
+    // 按结构取"`#engine` 的唯一 `.field` 祖先"，与 `#model-field` 走同一套 `.field[hidden]` 机制。
+    expect(engine.closest<HTMLElement>('.field')?.hidden).toBe(true);
+    expect(engine.options).toHaveLength(0);
+    expect(hint.classList.contains('warn')).toBe(true);
+    // 弹窗里没有「新增档案」按钮，只有右上角的齿轮，所以这句比设置页那句多一个"去哪做"。
+    // **核心句逐字来自常量**（唯一来源），不在测试里抄一遍整句。
+    expect(hint.textContent).toBe(`${NO_ENGINE_PROBLEM}。点右上角齿轮打开设置页。`);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
+  it('有档案时那一行照常显示（上面那条的反面：不写它，「永远隐藏」也能过）', async () => {
+    await seedWithProfile();
+    await loadPopup();
+
+    const { engine } = ui();
+    expect(engine.closest<HTMLElement>('.field')?.hidden).toBe(false);
+    expect(Array.from(engine.options).map((option) => option.value)).toEqual(['p-a']);
+  });
+
+  it('切换引擎后提示区跟着重算（档案 ↔ 档案：缺 Key ↔ 已配置）', async () => {
+    chromeStub.permissions.grantedOrigins.add('https://api.test.example/*');
+    await seedSettings({
+      engineId: 'p-1',
+      profiles: [
+        profileOf({ id: 'p-1', label: '没填 Key 的', apiKey: '' }),
+        profileOf({ id: 'p-2', label: '填了 Key 的', apiKey: 'sk-test' }),
+      ],
+    });
+    await loadPopup();
+
+    const { engine, hint } = ui();
+    // 起点：当前档案没有 Key → 警告。
+    expect(hint.classList.contains('warn')).toBe(true);
+    expect(hint.textContent).toBe('该引擎需要 API Key，请先在设置中填写。');
+
+    engine.value = 'p-2';
+    engine.dispatchEvent(new Event('change'));
+    await waitFor(() => !hint.classList.contains('warn'));
+    expect(hint.textContent).toBe('已配置你自己的 API Key。');
+
+    // 再切回去：警告回来（两个方向都钉，免得"只在挂载时算一次"的实现蒙过去）。
     engine.value = 'p-1';
     engine.dispatchEvent(new Event('change'));
     await waitFor(() => hint.classList.contains('warn'));
@@ -605,7 +653,7 @@ describe('引擎提示区（判据看的是 resolveEngine 解析出来的那一�
 
 describe('语言与引擎选择的持久化', () => {
   it('切换目标语言写进存储，其它字段原样保留', async () => {
-    await seedSettings({ targetLang: 'zh-Hans', engineId: 'google' });
+    await seedWithProfile({ targetLang: 'zh-Hans' });
     await loadPopup();
 
     const { targetLang } = ui();
@@ -617,13 +665,13 @@ describe('语言与引擎选择的持久化', () => {
     await waitFor(async () => (await storedSettings()).targetLang === 'fr');
     const stored = await storedSettings();
     expect(stored.targetLang).toBe('fr');
-    expect(stored.engineId).toBe('google');
+    expect(stored.engineId).toBe('p-a');
     expect(stored.version).toBe(CURRENT_VERSION);
   });
 
   it('选中档案即落盘档案 id，且整份回写不会抹掉任何档案已填的 Key', async () => {
     await seedSettings({
-      engineId: 'google',
+      engineId: 'p-a',
       profiles: [
         { id: 'p-a', label: 'A 家', baseUrl: 'https://a.example/v1', models: ['ma'], activeModel: 'ma', apiKey: 'sk-keep-a' },
         { id: 'p-b', label: 'B 家', baseUrl: 'https://b.example/v1', models: ['mb'], activeModel: 'mb', apiKey: 'sk-keep-b' },
@@ -637,7 +685,7 @@ describe('语言与引擎选择的持久化', () => {
 
     await waitFor(async () => (await storedSettings()).engineId === 'p-b');
     const stored = await storedSettings();
-    // 落盘的是档案 id（弹窗与存储的口径：engineId = 档案 id 或 google），不是 label。
+    // 落盘的是档案 id（弹窗与存储的口径：engineId = 某个档案的 id），不是 label。
     expect(stored.engineId).toBe('p-b');
     // 保存的是弹窗手里那份**完整**设置：两份 Key 都必须原样写回，不能被投影掉的字段覆盖成空。
     const profiles = stored.profiles as Array<Record<string, unknown>>;
@@ -645,7 +693,7 @@ describe('语言与引擎选择的持久化', () => {
   });
 
   it('保存被拒绝时说明原因并回滚下拉，不留下"改了其实没生效"', async () => {
-    await seedSettings({ targetLang: 'zh-Hans', engineId: 'google' });
+    await seedWithProfile({ targetLang: 'zh-Hans' });
     await loadPopup();
 
     const { targetLang, status } = ui();
@@ -842,7 +890,7 @@ describe('显示模式', () => {
   });
 
   it('切换显示模式写进存储，其它字段原样保留', async () => {
-    await seedSettings({ displayMode: 'translated-only', targetLang: 'ja', engineId: 'google' });
+    await seedWithProfile({ displayMode: 'translated-only', targetLang: 'ja' });
     await loadPopup();
 
     const { displayMode } = ui();
@@ -854,7 +902,7 @@ describe('显示模式', () => {
     expect(stored.displayMode).toBe('bilingual');
     // 整份回写：别的字段不能被这次改动抹掉。
     expect(stored.targetLang).toBe('ja');
-    expect(stored.engineId).toBe('google');
+    expect(stored.engineId).toBe('p-a');
   });
 
   it('页面已翻译时如实提示"重新翻译此页生效"，不假装立即生效', async () => {

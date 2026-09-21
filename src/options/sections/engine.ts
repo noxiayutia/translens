@@ -35,7 +35,6 @@
 // 不变量（`activeModel === '' || models.includes(activeModel)`）因此**按构造**成立。
 // 有一处对参考图的**有意偏离**要记着：折叠行保留了次级 meta（地址 · 当前模型）——
 // 5 个档案时"哪个档案打哪个地址、用哪个模型"是一眼就该看见的信息（规格 §6.1）。
-import { getEngine, DEFAULT_ENGINE_ID } from '../../engines/registry';
 import { toEngineError, type EngineConfig, type Translator } from '../../engines/types';
 import {
   hasHostPermission,
@@ -46,7 +45,9 @@ import { MSG, type FetchModelsResponse } from '../../shared/messages';
 import {
   DEFAULT_SETTINGS,
   PROVIDER_PRESETS,
+  NO_ENGINE_PROBLEM,
   createProfileId,
+  firstUsableProfileId,
   isAllowedBaseUrl,
   loadSettings,
   resolveEngine,
@@ -56,7 +57,6 @@ import {
 import { describe, element, fillSelect, requireWithin, runSafely, setStatus, type StatusKind } from '../dom';
 // 状态点的记录（§4.3）：独立于 `store.ts` 的会话内记忆，见 `engine-health.ts` 顶部的说明。
 import {
-  FREE_ENGINE_HEALTH_KEY,
   forgetEngineHealth,
   loadEngineHealth,
   profileHealthKey,
@@ -188,37 +188,6 @@ function applyDot(dot: HTMLElement, record: EngineHealth | undefined): void {
   }
   dot.dataset.state = 'bad';
   dot.title = `最近一次测试连接失败：${record.detail}`;
-}
-
-/**
- * 内置免费引擎那一行：名字 + 内置徽章 + 状态点 + 测试连接。
- * **没有删除、没有编辑**（§3.1：内置免费引擎不可删，也没有可编辑的配置）。
- * 它不带 `data-profile-id`：既有用例的 `profileRows()` 只数真实档案。
- *
- * 状态点读的是引擎键 `FREE_ENGINE_HEALTH_KEY`。它与档案键（`p:<id>`）按构造不可能相等，
- * 所以免费行与档案行**不会互相点亮**（见 `engine-health.ts` 里那两个键空间）。这一行也没有
- * 任何取自 `ctx` 的东西（配置是零配置、状态点来自会话记录），所以不接区块上下文。
- */
-function buildFreeEngineRow(): HTMLElement {
-  const engine = getEngine(DEFAULT_ENGINE_ID);
-  const row = element('div', 'item');
-  row.dataset.engineFree = '';
-
-  const line = element('span', 'line');
-  line.append(element('span', 'name', engine.name), element('span', 'badge', '内置'));
-  const dot = element('span', 'dot');
-  applyDot(dot, health[FREE_ENGINE_HEALTH_KEY]);
-  line.append(dot);
-
-  const grow = element('span', 'grow');
-  grow.append(line, element('span', 'meta', '无需 API Key'));
-  row.append(grow);
-
-  const test = element('button', 'ghost tiny', '测试连接');
-  test.type = 'button';
-  test.dataset.action = 'test-free';
-  row.append(test);
-  return row;
 }
 
 /**
@@ -565,11 +534,10 @@ function restoreEditor(id: string, editor: Element): void {
 /**
  * 展开 / 收起只动受影响的那一两行。
  *
- * 为什么不是 `renderProfiles(ctx)`：那个函数开头清空整张列表再重建（档案行 + 免费引擎行），
+ * 为什么不是 `renderProfiles(ctx)`：那个函数开头清空整张列表再重建（每个档案一行），
  * 于是**每次点开一个档案都要重建 N+1 行**——代价随档案数线性增长，用户点一下要等。
  * 展开只改三件东西：这一行触发按钮的 `aria-expanded` 与文案、这一行里**有没有**
- * `.profile-editor`、以及摘/插编辑器前后各一次暂存的读与写。列表结构、行顺序、免费引擎行、
- * 其它行通通不动。
+ * `.profile-editor`、以及摘/插编辑器前后各一次暂存的读与写。列表结构、行顺序、其它行通通不动。
  *
  * `renderProfiles` 只留给"数据真的变了"的路径：挂载、保存后、删除后、重载。
  */
@@ -599,14 +567,11 @@ function applyExpansion(ctx: SectionContext): void {
 
 /**
  * 只追加「新档案（未保存）」那一行，不动其余行。
- * 草稿行永远排在免费引擎行**之前**（与 `renderProfiles` 的追加顺序一致）。
+ * 追加在**最后**：草稿行与真实档案行同序（`renderProfiles` 也是这个顺序）。
  */
 function insertDraftRow(ctx: SectionContext): void {
   if (rowById(NEW_DRAFT_ID) !== null) return;
-  const row = buildProfileRow(ctx, NEW_DRAFT_ID);
-  const free = profilesList.querySelector('[data-engine-free]');
-  if (free === null) profilesList.append(row);
-  else free.before(row);
+  profilesList.append(buildProfileRow(ctx, NEW_DRAFT_ID));
 }
 
 function renderProfiles(ctx: SectionContext): void {
@@ -622,21 +587,36 @@ function renderProfiles(ctx: SectionContext): void {
   if (expandedId === NEW_DRAFT_ID) {
     profilesList.append(buildProfileRow(ctx, NEW_DRAFT_ID));
   }
-  // 内置免费引擎永远排在最后（§3.1：它不可删），每次重绘都跟着列表一起画。
-  profilesList.append(buildFreeEngineRow());
 }
 
-/** 档案区顶部的说明：当前在用哪一档（选择器的真相在弹窗，这里如实指路）。 */
+/**
+ * 档案区顶部的说明（选择器的真相在弹窗，这里如实指路）。两种情形，判据都是 `resolveEngine`：
+ * - `engine === null`（含首装、含失效 engineId）→ **`NO_ENGINE_PROBLEM` 原样**。这句话由
+ *   `resolveEngine` 产出（唯一来源），这里只负责显示。设置页的空态就是"这句话 + 页面上现成的
+ *   「+ 新增档案」按钮"——**不新增空态 DOM、不预置草稿行**（预置草稿行 = 预置了半个档案骨架）。
+ * - 命中档案 → 那句"当前在用档案「X」…"（原样保留）。
+ *
+ * 旧实现在失效 `engineId` 下显示的是「当前在用免费接口（零配置）…」——那句在删掉引擎之后
+ * 彻底不成立，而且它今天就在误导（用户以为自己没配任何东西却"在用免费接口"）。
+ */
 function renderEngineHint(ctx: SectionContext): void {
   const snapshot = ctx.settings();
   if (snapshot === null) return;
-  const { engine } = resolveEngine(snapshot);
+  const { engine, problem } = resolveEngine(snapshot);
+  if (engine === null) {
+    // `engine === null` ⇒ `problem` 必定有值（`resolveEngine` 的第 2 条规则）；类型系统看不出
+    // 这层因果，所以退到同一个常量，而不是写非空断言（`!`）——断言会在将来某次改动后静默变成谎言。
+    engineHint.textContent = problem ?? NO_ENGINE_PROBLEM;
+    return;
+  }
   const selected = snapshot.profiles.find((profile) => profile.id === snapshot.engineId);
-  if (engine.needsKey && selected !== undefined) {
+  if (selected !== undefined) {
     engineHint.textContent = `当前在用档案「${selected.label}」。点这一行右侧的「编辑」展开；在弹窗的「翻译引擎」里按名字切换。`;
     return;
   }
-  engineHint.textContent = '当前在用免费接口（零配置）。档案配好后，在弹窗的「翻译引擎」下拉里按名字选中才会生效。';
+  // 命中档案的一支不可能走到这里（`engine !== null` ⇒ `engineId` 命中了某个档案）。
+  // 留着它是**防御性**的：真走到这里，说"没有可用引擎"比说一句关于档案的话更诚实。
+  engineHint.textContent = NO_ENGINE_PROBLEM;
 }
 
 /* ------------------------------------------------------------------ 行为 */
@@ -734,12 +714,12 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
 }
 
 /**
- * 真发一次极短请求并上报结果——档案与内置免费引擎**走同一条路**。
+ * 真发一次极短请求并上报结果。今天只有档案走这条路。
  * 抽出来的理由不是"少写几行"：状态点的记录、超时、错误码展开这三件事必须两处一致，
  * 各写一份必然漂移。
  *
  * `healthKey` 为 `null` = **这次测试不落记录**（只有草稿行走这条：见 `recordHealth`）；
- * 其余调用方交的是 `profileHealthKey(id)` 或免费引擎的 `FREE_ENGINE_HEALTH_KEY`。
+ * 其余调用方交的是 `profileHealthKey(id)`。
  */
 async function runConnectionTest(
   ctx: SectionContext,
@@ -780,29 +760,23 @@ async function runConnectionTest(
 }
 
 /**
- * 记录键 → 该去哪一行找点。**两个键空间的划分只有这一处**：引擎键 → 免费引擎那一行；
- * 档案键（`p:<id>`）→ 按 `data-profile-id` 找 `<id>` 那一行。
+ * 记录键 → 该去哪一行找点。**这层映射只有这一处**：`p:<档案 id>` → 按 `data-profile-id`
+ * 找 `<id>` 那一行。
  *
- * 为什么这里不需要"键序"：键自带前缀，前缀决定去哪一行，**按构造**不存在"一个字符串既可能
- * 是档案 id、又可能是引擎键"的形状。旧写法（先 `rowById(id)`、找不到再回落免费行）正是被
- * 档案 id 抢先的那条路：一条 id 恰好等于引擎键的档案会把免费行的结果接到自己那一行上。
+ * 这里曾经还有一支「引擎键 → 内置免费引擎那一行」（`key === FREE_ENGINE_HEALTH_KEY`），
+ * 随免费接口一起删掉了：**引擎键这个键空间已经不存在**，函数只剩一条路。
+ *
  * 不认识的键返回 `null` 是防御性的一支（本函数只接调用方刚拼出来的键）；老构建写下的裸 id
- * 也根本到不了这里——所有读取处一律按新键取，这正是"不写迁移"的口径。唯一会被老键命中的形状
- * 是 `p:<id>` 那种（只能来自手改存储）：读取处按 `p:<id>` 取值，id 对上的档案行就会认领它；
- * 例外与取舍的完整说明在 `engine-health.ts` 的迁移那一段。
+ * 也根本到不了这里——所有读取处一律按 `p:<id>` 取，这正是"不写迁移"的口径。唯一会被老键
+ * 命中的形状是 `p:<id>` 那种（只能来自手改存储）：读取处按 `p:<id>` 取值，id 对上的档案行
+ * 就会认领它；例外与取舍的完整说明在 `engine-health.ts` 的迁移那一段。
  */
 function rowForKey(key: string): HTMLElement | null {
-  if (key === FREE_ENGINE_HEALTH_KEY) {
-    return profilesList.querySelector<HTMLElement>('[data-engine-free]');
-  }
   const id = profileIdFromHealthKey(key);
   return id === null ? null : rowById(id);
 }
 
-/**
- * 找某一行的状态点。档案行走 `data-profile-id`；**内置免费引擎那一行刻意没有 id**
- * （见 `buildFreeEngineRow`），所以只能按它自己的标记找（`rowForKey` 分派）。
- */
+/** 找某一行的状态点：键 → 行（`rowForKey`）→ 那一行的 `.dot`。 */
 function healthDot(key: string): HTMLElement | null {
   return rowForKey(key)?.querySelector<HTMLElement>('.dot') ?? null;
 }
@@ -817,7 +791,7 @@ function healthDot(key: string): HTMLElement | null {
  * 也没人清理的幽灵键（实测改前：草稿点一次「测试连接」，会话存储里就多一条 `{"__new__":…}`）。
  * 连接结果本身照常写在状态行上，那才是用户当场要看的东西。
  *
- * 交进来的 `key` 是**已经分好键空间**的记录键（`profileHealthKey` / `FREE_ENGINE_HEALTH_KEY`），
+ * 交进来的 `key` 是**记录键**（`profileHealthKey`），
  * 不再兼作 DOM 上的档案 id：行由 `rowForKey` 从键推出来（键 → 行只有一处判断）。
  */
 async function recordHealth(
@@ -886,6 +860,12 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
     setStatus(engineStatus, 'err', problem);
     return;
   }
+  // 到这里 `engine` 一定非 null（`engineId` 就是上面这个档案的 id，`resolveEngine` 的第 1 条
+  // 规则必然命中）——类型系统看不出这层因果，所以显式收一句，不写非空断言 `!`。
+  if (engine === null) {
+    setStatus(engineStatus, 'err', NO_ENGINE_PROBLEM);
+    return;
+  }
 
   // 草稿行不落记录（`__new__` 既没有点可更新、也没有清理出口）：把 `null` 交给同一条路。
   // 其余情况交的是**档案键**（不是裸 id）——键空间的分法只有 `engine-health.ts` 一处。
@@ -898,18 +878,10 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
   );
 }
 
-/** 内置免费引擎的测试连接：没有表单值可读，配置就是空的（免费接口零配置）。 */
-async function handleTestFreeEngine(ctx: SectionContext): Promise<void> {
-  const { engine, config } = resolveEngine({ engineId: DEFAULT_ENGINE_ID, profiles: [] });
-  // 记录写在**引擎键**上，不是档案那一格（见 `engine-health.ts` 的两个键空间）：
-  // 就算某个档案的 id 恰好等于这个键，它的记录键也是 `p:` 开头的另一个字符串。
-  await runConnectionTest(ctx, FREE_ENGINE_HEALTH_KEY, engine, config, `免费引擎「${engine.name}」`);
-}
-
 /**
- * 删除一个档案。若删的正是**当前在用**的那个，`engineId` 明确回落到免费接口并说明——
- * 绝不能留下一个指向不存在档案的 id。（为什么回落免费引擎而不是"下一个档案"：下一个
- * 档案可能没填 Key、地址可能没授权，删一个档案不该让用户突然翻译失败。）
+ * 删除一个档案。若删的正是**当前在用**的那个，`engineId` 明确切到剩下的档案里第一个
+ * **配好模型**的（`firstUsableProfileId`，与 v5 迁移同一份判据），一个都没有就置 `''`
+ * ——绝不能留下一个指向不存在档案的 id，也绝不留下一个"悬空但看起来还在用"的选择。
  */
 async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<void> {
   let latest: Settings;
@@ -935,11 +907,18 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
   }
   const wasCurrent = latest.engineId === id;
   const remaining = latest.profiles.filter((profile) => profile.id !== id);
+  // 回落判据与 v5 迁移**同一个函数、同一份判据**：落到剩下的档案里第一个有当前模型的，
+  // 一个都没有就置 `''`（= 没有可用引擎）。
+  // 旧理由（"下一个档案可能没填 Key、地址可能没授权，删一个档案不该让用户突然翻译失败"）
+  // **不再成立、也不再需要**：v4 起每个档案都有 `activeModel` 这个明确信号，
+  // `firstUsableProfileId` 挑的正是用户真的配好过的那一个；而"没配好"的档案不再是
+  // "会静默失败"，而是 `NO_ENGINE_PROBLEM` 那句可行动的话。
+  const fallback = wasCurrent ? firstUsableProfileId(remaining) : latest.engineId;
 
   const saved = await ctx.save(
     engineStatus,
     '设置未能保存',
-    { profiles: remaining, engineId: wasCurrent ? DEFAULT_ENGINE_ID : latest.engineId },
+    { profiles: remaining, engineId: fallback },
   );
   if (!saved) return;
 
@@ -948,11 +927,19 @@ async function handleDeleteProfile(ctx: SectionContext, id: string): Promise<voi
   if (expandedId === id) expandedId = null;
   renderProfiles(ctx);
   renderEngineHint(ctx);
+  // 「没有可用引擎」那一支的尾句**以常量为核**（唯一来源），不各写一份字面量：
+  // 于是这里读到的是「已删除当前在用的档案「X」，还没有可用的翻译引擎，去设置页添加一个服务商档案。」
+  // ⚠ 规格 §5.3 给的字面是「…，**现在**没有可用的翻译引擎，…」，而 §6.1 给的是
+  // 「**还没有**可用的翻译引擎，…」——两者只能取一个。取常量那一支：§5.3 自己写着
+  // "实现时以常量拼接，不各写一份字面量"，而 §6.1 也写着"两处的核心句必须逐字相同（都由常量拼接）"。
+  const fallbackLabel = remaining.find((profile) => profile.id === fallback)?.label;
   setStatus(
     engineStatus,
     'ok',
     wasCurrent
-      ? `已删除当前在用的档案「${target.label}」，引擎已回落到「${getEngine(DEFAULT_ENGINE_ID).name}」，请在弹窗里重新选择。`
+      ? fallbackLabel === undefined
+        ? `已删除当前在用的档案「${target.label}」，${NO_ENGINE_PROBLEM}。`
+        : `已删除当前在用的档案「${target.label}」，引擎已切换到「${fallbackLabel}」，请在弹窗里重新选择。`
       : `已删除档案「${target.label}」。`,
   );
   // 它的测试记录一并清掉。内存里的那份**立刻**扔掉（在 `try` 之前）：否则界面下一次重绘
@@ -1257,11 +1244,6 @@ export const engineSection: Section = {
       }
       const actionEl = target.closest<HTMLElement>('[data-action]');
       const action = actionEl?.dataset.action ?? null;
-      // 免费引擎那一行不在 `[data-profile-id]` 里，必须在行判断之前处理。
-      if (action === 'test-free') {
-        runSafely(engineStatus, '测试连接失败', () => handleTestFreeEngine(ctx));
-        return;
-      }
       const row = target.closest('[data-profile-id]');
       if (!(row instanceof HTMLElement)) return;
       // 动作元素必须落在这一行里，别让嵌套/无关的 `[data-action]` 串到别的行上。

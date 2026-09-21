@@ -20,8 +20,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LANGUAGES } from '../../src/core/lang';
-import { DEFAULT_ENGINE_ID, getEngine } from '../../src/engines/registry';
-import { CURRENT_VERSION, DISPLAY_MODES, PROVIDER_PRESETS, SETTINGS_KEY } from '../../src/shared/settings';
+import { CURRENT_VERSION, DISPLAY_MODES, NO_ENGINE_PROBLEM, PROVIDER_PRESETS, SETTINGS_KEY } from '../../src/shared/settings';
 import {
   CUSTOM_BASE_URL,
   CUSTOM_ORIGIN_PATTERN,
@@ -44,6 +43,7 @@ import {
   rowButton,
   rowOf,
   seedSettings,
+  seedWithProfile,
   setModel,
   settle,
   storedProfiles,
@@ -263,7 +263,9 @@ describe('设置页：初始化与列表渲染', () => {
 
 describe('设置页：档案增删改（全部直读存储验证）', () => {
   it('新增档案：落盘的字段一字不差，id 稳定且不拿 label 当 id；不偷改 engineId', async () => {
-    await seedSettings({ engineId: 'google' });
+    // 夹具里**真有一个档案**，`engineId` 指向它：这样"保存档案不碰选择"这句才有判别力
+    // ——播种 `''` 再断言 `''`，一个"把 engineId 重置成空"的 bug 照样能过。
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed()] });
     await loadOptions();
 
     pick<HTMLButtonElement>('add-profile').click();
@@ -275,8 +277,9 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     fieldOf(editor, '.profile-api-key').value = 'sk-typed';
     actionButton(editor, 'save-profile').click();
 
-    await waitFor(async () => (await storedProfiles()).length === 1);
-    const [saved] = await storedProfiles();
+    await waitFor(async () => (await storedProfiles()).length === 2);
+    const [seeded, saved] = await storedProfiles();
+    expect(seeded.id).toBe('p-a');
     expect(saved).toEqual({
       id: expect.any(String),
       label: '我的接口',
@@ -289,8 +292,8 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect((saved.id as string).trim().length).toBeGreaterThan(0);
     // id 不是 label（label 随便改，引用不能跟着漂）。
     expect(saved.id).not.toBe('我的接口');
-    // 保存档案不碰选择：engineId 仍是 google，提示区如实指路弹窗。
-    expect((await storedSettings()).engineId).toBe('google');
+    // 保存档案不碰选择：engineId 仍是 `p-a`（选择档案是弹窗的职责），提示区如实指路弹窗。
+    expect((await storedSettings()).engineId).toBe('p-a');
     expect(engineStatus().dataset.kind).toBe('ok');
     expect(engineStatus().textContent).toContain('弹窗');
   });
@@ -391,7 +394,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
   });
 
   it('本机回环 http 在设置页可保存（Ollama），非回环的 http 仍被当场拒绝——正反成对', async () => {
-    await seedSettings({ engineId: 'google' });
+    await seedSettings({ engineId: 'p-a' });
     await loadOptions();
     pick<HTMLButtonElement>('add-profile').click();
     const editor = editorOf('__new__');
@@ -545,7 +548,7 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect(stored.concurrency).toBe(7);
   });
 
-  it('删除当前在用的档案：engineId 落到存在的目标（免费引擎）并给出提示，绝不留下悬空引用', async () => {
+  it('删除当前在用的档案：engineId 切到剩下的第一个有当前模型的档案，并给出提示', async () => {
     await seedSettings({
       engineId: 'p-a',
       profiles: [profileSeed(), profileSeed({ id: 'p-b', label: '另一家', baseUrl: 'https://b.example/v1' })],
@@ -558,15 +561,65 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     await waitFor(async () => (await storedProfiles()).length === 1);
     const stored = await storedSettings();
     expect((stored.profiles as Array<Record<string, unknown>>).map((profile) => profile.id)).toEqual(['p-b']);
-    // 回落到一个**存在**的目标：免费引擎（下一个档案可能没填 Key / 没授权，不能用它赌）。
-    expect(stored.engineId).toBe(DEFAULT_ENGINE_ID);
+    // 回落到剩下的档案里**第一个有当前模型的**：与 v5 迁移同一个函数、同一份判据。
+    // （旧实现回落到免费接口，理由"下一个档案可能没填 Key / 没授权"随免费引擎一起作废：
+    //  v4 起每个档案都有 activeModel 这个明确信号，挑的就是用户真的配好过的那一个。）
+    expect(stored.engineId).toBe('p-b');
     expect(engineStatus().dataset.kind).toBe('ok');
     expect(engineStatus().textContent).toContain('已删除当前在用的档案「我的 DeepSeek」');
-    expect(engineStatus().textContent).toContain(getEngine(DEFAULT_ENGINE_ID).name);
+    expect(engineStatus().textContent).toContain('引擎已切换到「另一家」');
     expect(engineStatus().textContent).toContain('弹窗');
-    // 界面上那行也跟着消失了，「使用中」不再指着幽灵。
+    // 界面上那行也跟着消失了，**「使用中」搬到了新的当前档案上**（旧断言是"不含使用中"，
+    // 那是因为旧实现回落到免费接口、没有任何档案是当前——语义变了，读数必须跟着变）。
     expect(profileRows().map((row) => row.dataset.profileId)).toEqual(['p-b']);
-    expect(profileRows()[0].textContent).not.toContain('使用中');
+    expect(rowOf('p-b').textContent).toContain('使用中');
+  });
+
+  it('删除当前在用的档案且已无可用引擎：engineId 置空，并说出那句可行动的话', async () => {
+    await seedSettings({ engineId: 'p-a', profiles: [profileSeed()] });
+    await loadOptions();
+
+    rowButton('p-a', 'delete-profile').click();
+
+    await waitFor(async () => (await storedProfiles()).length === 0);
+    expect((await storedSettings()).engineId).toBe('');
+    expect(engineStatus().dataset.kind).toBe('ok');
+    expect(engineStatus().textContent).toContain('已删除当前在用的档案「我的 DeepSeek」');
+    // 那句话以常量为核（唯一来源）——**断言常量**，不把整句抄进测试。
+    expect(engineStatus().textContent).toContain(NO_ENGINE_PROBLEM);
+    expect(profileRows()).toEqual([]);
+    // 顶部说明也跟着走了（`renderEngineHint` 的 `engine === null` 那一支）。
+    expect(pick<HTMLElement>('engine-hint').textContent).toBe(NO_ENGINE_PROBLEM);
+  });
+
+  it('删除当前档案时跳过没有当前模型的档案：回落到剩下的第一个**可用**档案', async () => {
+    // 牙：回落判据退化成"取剩下的第一个"（不看 `activeModel`）时，这里读到的是 `p-empty` → 红。
+    await seedSettings({
+      engineId: 'p-a',
+      profiles: [
+        profileSeed(),
+        profileSeed({ id: 'p-empty', label: '没配模型的', models: [], activeModel: '' }),
+        profileSeed({ id: 'p-b', label: '配好的', baseUrl: 'https://b.example/v1' }),
+      ],
+    });
+    await loadOptions();
+
+    rowButton('p-a', 'delete-profile').click();
+
+    await waitFor(async () => (await storedProfiles()).length === 2);
+    expect((await storedSettings()).engineId).toBe('p-b');
+    expect(engineStatus().textContent).toContain('引擎已切换到「配好的」');
+  });
+
+  it('没有可用引擎时的设置页空态：顶部说出那句话、一行档案都没有、也不再有任何内置项', async () => {
+    await seedSettings({ engineId: '', profiles: [] });
+    await loadOptions();
+
+    expect(pick<HTMLElement>('engine-hint').textContent).toBe(NO_ENGINE_PROBLEM);
+    expect(profileRows()).toHaveLength(0);
+    // "整行消失"必须有**显式**守卫：不写这一条，谁把 `buildFreeEngineRow` 加回来都不会红。
+    expect(pick<HTMLElement>('profiles').querySelector('[data-engine-free]')).toBeNull();
+    expect(pick<HTMLElement>('profiles').querySelector('[data-action="test-free"]')).toBeNull();
   });
 
   it('删除没在用的档案：engineId 原样不动', async () => {
@@ -775,12 +828,17 @@ describe('设置页：语言与显示（change 即存，没有保存按钮）', 
     expect(pick<HTMLElement>('target-hint').textContent ?? '').not.toContain('保存语言与显示');
   });
 
-  it('免费引擎下改设置：一个宿主权限申请都不发（google 的地址已在 host_permissions 里）', async () => {
-    // 档案化之后，"不申请权限"这条断言从保存路径上消失了：没有它，
-    // "无条件给当前档案地址申请权限"这类回归不会被任何人发现——免费引擎明明
-    // 不需要授权，却每次都弹一个用户看不懂的框。这里钉住：engineId=google 时
-    // 改语言，permissions.request 一次都不许被调用。
-    await seedSettings({ engineId: 'google', profiles: [profileSeed()] });
+  it('改一个与权限无关的设置（目标语言）：一次宿主权限申请都不发', async () => {
+    // 这条口径的来历：档案化之后"不申请权限"这条断言从保存路径上消失了。旧版用
+    // `engineId: 'google'`（免费引擎没有 origin 可申请）来钉它——引擎删掉之后那句话没有对象了，
+    // 但**这条用例并不因此变成恒真式**：夹具换成"当前档案有自己的 origin"之后它反而**更硬**。
+    // 实测（起草时推演的最小变异）：把 `handleTargetLangChange` 改成顺手为当前档案的 origin 申请权限，
+    // - 旧夹具（engineId: 'google'）→ 当前档案不存在，**照旧全绿**（拿不到 origin 可申请）；
+    // - 新夹具（engineId: 'p-a'）→ `requests` 变成 `[[CUSTOM_ORIGIN_PATTERN]]` → **当场红**。
+    // 所以这里不删也不改写成"保存已授权的档案不再弹框"——那一条 `options.test.ts` 里已经有一份
+    // 完整的成对用例（「保存档案按**该档案自己的 origin** 申请宿主权限；已授权过就不再弹框」），
+    // 再写一遍就是重复，而不是覆盖。
+    await seedWithProfile({ targetLang: 'zh-Hans' });
     await loadOptions();
 
     pick<HTMLSelectElement>('target-lang').value = 'ja';
@@ -790,6 +848,8 @@ describe('设置页：语言与显示（change 即存，没有保存按钮）', 
     expect(chromeStub.permissions.requests).toEqual([]);
     // 也不许有任何"顺手授予"：一次授权都不该发生。
     expect([...chromeStub.permissions.grantedOrigins]).toEqual([]);
+    // 被选的档案确实有一个会被误申请的 origin（否则上面那条又变成恒真式）。
+    expect(profileSeed().baseUrl).toBe(CUSTOM_BASE_URL);
   });
 
   it('期间弹窗改过的其它字段不会被旧快照抹掉', async () => {

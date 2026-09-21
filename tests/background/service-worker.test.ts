@@ -6,15 +6,16 @@
  * 本文件在模块体里先 `installChromeStub()`，再用 `beforeAll` 动态 import，静态 import
  * 会把求值顺序反过来（ESM 的静态 import 先于模块体执行）。
  *
- * 引擎走的是真实现 + 假 `fetch`：免费接口一次请求一条文本，假响应把请求里的 `q`
- * 回显成 `【q】`，于是"发了几个请求、请求带什么参数、结果有没有落盘"都能直接断言。
+ * 引擎走的是真实现 + 假 `fetch`：唯一剩下的适配器一次请求带多条文本，假响应把请求体里每个
+ * 编号标记后面的文本回显成 `【…】`，于是"发了几个请求、请求带什么参数、结果有没有落盘"
+ * 都能直接断言。
  */
 import process from 'node:process';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TranslationCache } from '../../src/core/cache';
 import { chromeArea } from '../../src/shared/chrome-area';
 import { MSG } from '../../src/shared/messages';
-import { CURRENT_VERSION, SETTINGS_KEY } from '../../src/shared/settings';
+import { CURRENT_VERSION, NO_ENGINE_PROBLEM, SETTINGS_KEY } from '../../src/shared/settings';
 import { installChromeStub, type ChromeStub } from '../helpers/chrome-stub';
 
 const stub: ChromeStub = installChromeStub();
@@ -36,19 +37,63 @@ async function useSettings(raw: Record<string, unknown>): Promise<void> {
   await stub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, ...raw } });
 }
 
-/** 免费接口的假响应：把 `q` 参数回显成 `【q】`，同时记下每个请求的 URL。 */
-function stubGoogleFetch(): URL[] {
-  const calls: URL[] = [];
-  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+interface StubCall {
+  url: URL;
+  body: { model: string; messages: Array<{ role: string; content: string }> };
+}
+
+/**
+ * 唯一剩下那个适配器（OpenAI 兼容）的假响应：把请求体里每个编号标记后面的文本回显成 `【…】`，
+ * 并记下每个请求的 URL 与请求体。
+ *
+ * 名字与形状都换了：旧版是 `stubGoogleFetch`，造的是免费接口那份**嵌套数组**
+ * （`[[[译文, 原文, …], …], null, 源语言, …]`）。那个形状随 `src/engines/google.ts`
+ * 一起删掉了——**今天没有任何生产代码会解析它**，留着一个"看起来还在"的假响应只会误导下一个人。
+ */
+function stubEngineFetch(): StubCall[] {
+  const calls: StubCall[] = [];
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    calls.push(url);
-    const text = url.searchParams.get('q') ?? '';
-    return new Response(JSON.stringify([[[`【${text}】`, text]]]), {
+    const body = JSON.parse(String(init?.body)) as StubCall['body'];
+    calls.push({ url, body });
+    const user = body.messages.find((message) => message.role === 'user')?.content ?? '';
+    const texts = [...user.matchAll(/<<<\d+>>>\n([^\n]*)/g)].map((match) => match[1] as string);
+    const content = texts.map((text, index) => `<<<${index + 1}>>>\n【${text}】`).join('\n');
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
   });
   return calls;
+}
+
+/** 「能真的发出请求」的档案：baseUrl 固定，Key 非空，模型是当前项。 */
+const ENGINE_BASE_URL = 'https://api.example.com/v1';
+const ENGINE_ORIGIN_PATTERN = 'https://api.example.com/*';
+
+function usableProfile(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'p-a',
+    label: '我的接口',
+    baseUrl: ENGINE_BASE_URL,
+    models: ['m'],
+    activeModel: 'm',
+    apiKey: 'sk-a',
+    ...over,
+  };
+}
+
+/**
+ * 显式播种"有可用引擎"的设置，并把这个 origin 标成**已授权**。
+ *
+ * ⚠ 授权这一步不能省：`beforeEach` 的 `stub.reset()` 会清空 `grantedOrigins`，而
+ * `openai-compat` 在 `fetch` 之前会先查宿主权限（没授权就抛 AUTH，一个请求都不发）。
+ * 旧版这四条用例之所以"什么都不用写"，是因为它们靠 `DEFAULT_SETTINGS.engineId === 'google'`
+ * 走通了免费接口那条**不需要授权**的路——v5 起默认是 `''`，那条路没有了。
+ */
+async function useUsableEngine(over: Record<string, unknown> = {}): Promise<void> {
+  stub.permissions.grantedOrigins.add(ENGINE_ORIGIN_PATTERN);
+  await useSettings({ engineId: 'p-a', profiles: [usableProfile()], ...over });
 }
 
 /** 存储区里全部缓存条目（`jt:meta` 是计数元数据，不是条目）。 */
@@ -97,7 +142,8 @@ describe('runtime.onMessage 消息路由', () => {
   });
 
   it('合法消息返回 true，异步响应 { ok: true, results } 且结果已写进两层存储', async () => {
-    const calls = stubGoogleFetch();
+    const calls = stubEngineFetch();
+    await useUsableEngine();
 
     const dispatch = translateTexts({
       items: [
@@ -117,7 +163,12 @@ describe('runtime.onMessage 消息路由', () => {
       ],
     });
 
-    expect(calls.map((url) => url.searchParams.get('q'))).toEqual(['Hello', 'World']);
+    // 唯一适配器一次请求带多条文本（免费接口是"一条文本一个请求"，那个形状随它一起删了）。
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.toString()).toBe('https://api.example.com/v1/chat/completions');
+    const user = calls[0].body.messages.find((message) => message.role === 'user')?.content ?? '';
+    expect(user).toContain('<<<1>>>\nHello');
+    expect(user).toContain('<<<2>>>\nWorld');
 
     // 落盘：译文不只在响应里，也在两块存储里各存了一份（session 命中优先，local 跨会话保留）。
     for (const area of ['session', 'local'] as const) {
@@ -133,15 +184,17 @@ describe('runtime.onMessage 消息路由', () => {
   });
 
   it('payload.targetLang 优先于设置里的 targetLang', async () => {
-    const calls = stubGoogleFetch();
-    await useSettings({ engineId: 'google', targetLang: 'ja' });
+    const calls = stubEngineFetch();
+    await useUsableEngine({ targetLang: 'ja' });
 
     await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }], targetLang: 'en' }).response();
-    expect(calls[0].searchParams.get('tl')).toBe('en');
+    const systemOf = (call: StubCall): string =>
+      call.body.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(systemOf(calls[0])).toContain('Target language: en');
 
     // 没带就按设置走（同一个 payload 形状，只有这一处差异）。
     await translateTexts({ items: [{ id: 'item-2', text: 'World' }] }).response();
-    expect(calls[1].searchParams.get('tl')).toBe('ja');
+    expect(systemOf(calls[1])).toContain('Target language: ja');
   });
 
   /**
@@ -280,6 +333,33 @@ describe('runtime.onMessage 消息路由', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  /**
+   * **「没有可用引擎 ⇒ 零请求」的端到端守卫**，也是本单元行为的**直接对立面**：
+   * 起草规格时实测过，**改之前**同样的设置会真的发出一次 `translate.googleapis.com` 请求、
+   * 返回 `{ ok: true, results: [{ text: '【Hello】' }] }`（免费接口静默兜底）。所以这条断言
+   * 不是恒真式——它今天红、改完才绿。
+   *
+   * 牙在哪（两条各管一半，逐条记清楚，别只看"这条用例红了"）：
+   * - `toEqual` 那条钉**响应形状**：`engine === null` 的提前返回被删掉时，`translateBatch`
+   *   拿到 `null` 会抛成 `{ ok: false, code: 'UNKNOWN' }`（**不是** `AUTH` + 那句话）→ 红。
+   *   注意：此时 `calls` **仍然是 0**——没有引擎就没有任何地方会去构造请求（这正是规格 §8.12
+   *   说的"按构造"）。所以"删掉提前返回"**不会**让后台"真发请求"，规格 §10 变异表第 3 条的
+   *   说法在这一点上不准确（见本计划 T1 的 M6/M6b）。
+   * - `toHaveLength(0)` 那条钉**未来**：谁要是给 `resolveEngine` 加回一个**配置可用**的兜底
+   *   引擎（M6b 演示的那种），请求立刻发出去，这条红。
+   */
+  it('没有可用引擎：整条返回 AUTH + 那句话，一个请求都不发', async () => {
+    const calls = stubEngineFetch();
+    await useSettings({ engineId: '', profiles: [] });
+
+    await expect(translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response()).resolves.toEqual({
+      ok: false,
+      code: 'AUTH',
+      message: NO_ENGINE_PROBLEM,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
   it('loadSettings 抛错时返回 { ok: false, code, message }', async () => {
     // 存储里的版本号高于本代码：`loadSettings` 拒读，异常在 handleTranslateTexts 里被收成响应。
     // 注意这条走的是**读设置**这条路径；`:108-111` 那个 catch 是兜底，今天没有可达的引擎触发点
@@ -294,7 +374,8 @@ describe('runtime.onMessage 消息路由', () => {
   });
 
   it('端口已关闭（sendResponse 抛错）时静默丢弃，不留下未处理拒绝', async () => {
-    stubGoogleFetch(); // 引擎走真实现，给个假响应让批次真的跑完
+    stubEngineFetch(); // 引擎走真实现，给个假响应让批次真的跑完
+    await useUsableEngine();
     stub.runtime.failSendResponse = true;
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown): void => {
@@ -492,7 +573,8 @@ describe('两层缓存的层次顺序', () => {
    * 所以断言必须落在**方向**上：读会话层优先、持久层命中回填会话层。
    */
   it('两层都有同一个 key 时读会话层，持久层里被改坏的旧译文不会顶掉它', async () => {
-    const calls = stubGoogleFetch();
+    const calls = stubEngineFetch();
+    await useUsableEngine();
 
     await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response();
     expect(calls).toHaveLength(1);
@@ -511,7 +593,8 @@ describe('两层缓存的层次顺序', () => {
   });
 
   it('会话层没有时从持久层命中并回填会话层，且不打回引擎', async () => {
-    const calls = stubGoogleFetch();
+    const calls = stubEngineFetch();
+    await useUsableEngine();
 
     await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }] }).response();
     expect(calls).toHaveLength(1);

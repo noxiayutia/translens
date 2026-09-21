@@ -3,7 +3,7 @@ import { TieredCache, TranslationCache, type StorageArea } from '../core/cache';
 import { EngineError, toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
 import { isFetchModelsMessage, isTranslateTextsMessage, MSG, type FetchModelsResponse, type TranslateTextsResponse } from '../shared/messages';
-import { DEFAULT_SETTINGS, loadSettings, resolveEngine, type Settings } from '../shared/settings';
+import { DEFAULT_SETTINGS, NO_ENGINE_PROBLEM, loadSettings, resolveEngine, type Settings } from '../shared/settings';
 import { fetchModels } from './models';
 import { translateBatch } from './scheduler';
 
@@ -90,20 +90,33 @@ async function handleTranslateTexts(
   try {
     const settings = await loadSettings(persistentArea);
     // 「用哪个引擎 + 用哪份配置」只有一处解析（shared/settings 的 resolveEngine）：
-    // engineId 现在是 `google` 或某个档案的 id，别处各写一份 if 迟早和这里漂移。
+    // `engineId` 现在是**某个档案的 id**，或 `''`（= 没有可用引擎）。没有第二个解析点——
+    // **不许**在这里再写一个 `if (settings.engineId === '')`。
     const { engine, config, problem } = resolveEngine(settings);
-    // 档案没有当前模型：**在这里就返回**（§3.3）。规格要的是一句可行动的话，而不是带着空 model
-    // 去打接口换回一句 HTTP 400（上次 `deepseek` 那次事故的形状）。
-    // 整条请求失败（不是条目级失败）：这件事对这批里的每一条都成立，没有"逐条重试"的意义。
-    //
-    // ⚠ **这道闸不负责"零请求"**：零请求由 `src/engines/openai-compat.ts:64-67` 的空 model 闸
-    // **构造性**保证（它在 `fetch` 之前就抛 AUTH）。这道闸改变的是**失败粒度与文案**：
-    // 没有它 → 条目级 `{ ok: true, results: [{ code: 'AUTH', message: '尚未填写模型名…' }] }`；
-    // 有它 → 整条 `{ ok: false, code: 'AUTH', message: problem }`。别把它记成"少发一次请求的守卫"。
-    //
-    // ⚠ **接线完成前不许合进 release**（与 C1 的过渡映射同一条纪律）：`problem` 在类型上是可选的，
-    // 漏接一处不会编译失败，只会在真机上表现为"用户拿到一句通用的、指不到去哪儿的话"。
-    if (problem !== undefined) return { ok: false, code: 'AUTH', message: problem };
+    /**
+     * 两道收口在这一行合并——对用户是同一件事：带一句可行动的话整条返回，**一个请求都不发**。
+     *
+     * - `engine === null`：`engineId` 不指向任何现存档案（含残留的 `'google'`、`'openai-compat'`
+     *   这类裸引擎 id）。这里也是**类型上必须**收住的地方：`translateBatch` 要一个真的 `Translator`。
+     * - `problem !== undefined`：档案没有当前模型（`NO_MODEL_PROBLEM`）。
+     *
+     * 两句都由 `resolveEngine` 产出（唯一来源），这里只负责转达与选错误码。
+     *
+     * 为什么 `code` 用 `'AUTH'` 而不是新造一个码：内容脚本的 `describeError` 对 AUTH **原样透传**
+     * message（不走罐头文案），`sameCodeFailureMessage` 对 AUTH 只追加一句"在扩展设置里…"
+     * （方向正确），而 AUTH **不在** `RETRYABLE_CODES` 里——不会给用户挂一排点了必然失败的重试按钮。
+     *
+     * ⚠ **这道闸不是"零请求"的守卫**（本单元更正了旧注释的这半句）：没有可用引擎时零请求是
+     * **按构造**成立的——`resolveEngine` 交出来的 `engine` 是 `null`，没有任何地方会去构造一个
+     * 引擎对象，"忘了拦一处就发出去"这条路径**按构造**不存在。这道闸改变的是**失败粒度与文案**：
+     * 没有它 → `translateBatch` 拿到 `null` 会抛成 `{ ok: false, code: 'UNKNOWN' }`（一句用户看不懂
+     * 的话）；有它 → 整条 `{ ok: false, code: 'AUTH', message: problem }`。
+     * 有读数的那条端到端守卫在 `tests/background/service-worker.test.ts`：
+     * 「没有可用引擎：整条返回 AUTH + 那句话，一个请求都不发」。
+     */
+    if (engine === null || problem !== undefined) {
+      return { ok: false, code: 'AUTH', message: problem ?? NO_ENGINE_PROBLEM };
+    }
     const targetLang = payload.targetLang ?? settings.targetLang;
 
     // 上限随设置变化；上限是实例属性而条目挂在存储区上，所以每个存储区只能有这一个实例

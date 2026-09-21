@@ -3,6 +3,7 @@ import {
   CURRENT_VERSION,
   DEFAULT_SETTINGS,
   LEGACY_PROFILE_ID,
+  NO_ENGINE_PROBLEM,
   NO_MODEL_PROBLEM,
   PROVIDER_PRESETS,
   SETTINGS_KEY,
@@ -34,8 +35,11 @@ function profile(over: Partial<EngineProfile> = {}): EngineProfile {
 describe('mergeSettings', () => {
   it('空对象得到完整默认值', () => {
     expect(mergeSettings({})).toEqual(DEFAULT_SETTINGS);
-    expect(DEFAULT_SETTINGS.engineId).toBe('google');
+    expect(DEFAULT_SETTINGS.engineId).toBe('');
     expect(DEFAULT_SETTINGS.profiles).toEqual([]);
+    // `CURRENT_VERSION` 是**字面**钉住的：迁移的版本闸门、`saveSettings` 的防降级、README 的
+    // 升级说明都靠这个数字，改它必须是有意识的动作（不是"跟着某个常量一起漂"）。
+    expect(CURRENT_VERSION).toBe(5);
   });
 
   it('保留用户已设置的值', () => {
@@ -260,7 +264,7 @@ describe('BaseURL 校验（它决定 API Key 发往哪里，逐档案生效）',
 describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + 配置」', () => {
   it('engineId 命中某个档案 → OpenAI 兼容引擎 + 那份档案的配置（逐字段）', () => {
     const { engine, config } = resolveEngine({ engineId: 'p1', profiles: [profile()] });
-    expect(engine.id).toBe('openai-compat');
+    expect(engine?.id).toBe('openai-compat');
     expect(config).toEqual({
       apiKey: 'sk-keep',
       baseUrl: 'https://api.deepseek.com/v1',
@@ -273,28 +277,57 @@ describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + �
       engineId: 'p2',
       profiles: [profile(), profile({ id: 'p2', apiKey: 'sk-b', baseUrl: 'https://b.example/v1', models: ['m2'], activeModel: 'm2' })],
     });
-    expect(engine.id).toBe('openai-compat');
+    expect(engine?.id).toBe('openai-compat');
     expect(config).toEqual({ apiKey: 'sk-b', baseUrl: 'https://b.example/v1', model: 'm2' });
   });
 
-  it('engineId 是 google → 免费引擎 + 空配置，档案完全不参与', () => {
-    const { engine, config } = resolveEngine({ engineId: 'google', profiles: [profile()] });
-    expect(engine.id).toBe('google');
-    expect(config).toEqual({});
+  /**
+   * 「没有可用引擎」的**四种形状走同一条路**（这是本单元最核心的一条语义变更）：
+   * `''`（首装）、残留的 `'google'`、`'openai-compat'` 这类**裸引擎 id**、被别处删掉的档案 id。
+   * 一个特例都不许有——写「若 engineId === 'google' 则…」的补丁就是第二个解析点。
+   */
+  it('engineId 不指向任何现存档案 → 没有可用引擎 + 那句可行动的话，不抛错', () => {
+    for (const engineId of ['', 'google', 'openai-compat', '已删掉的']) {
+      const resolved = resolveEngine({ engineId, profiles: [profile()] });
+      expect(resolved.engine).toBeNull();
+      expect(resolved.config).toEqual({});
+      expect(resolved.problem).toBe(NO_ENGINE_PROBLEM);
+    }
   });
 
-  it('engineId 指向不存在的档案（并发删除留下的残值）→ 回落免费引擎，不抛错', () => {
-    const { engine, config } = resolveEngine({ engineId: '已删掉的', profiles: [profile()] });
-    expect(engine.id).toBe('google');
-    expect(config).toEqual({});
+  /**
+   * 上面那条断言的是"等于常量"，这条断言的是**常量自己的字面**。
+   *
+   * 为什么两条都要：所有界面断言都走常量（规格 §7.3 第 18 条的唯一来源纪律），那条纪律的另一面
+   * 就是"常量被改坏了没人管"——把 `NO_ENGINE_PROBLEM` 改一个字符，界面那几条一起绿（两边同源）。
+   * 这条与下面那条**字面整句**断言一起，是那个缺口的守卫（字面那条更硬）。
+   * 它同时也是验收 §8.13（那句话必须**说清是什么事**、**说清去哪儿**）。
+   *
+   * ⚠ **实测更正（S8 全量跑出来的第一处真实红，不是推演）**：原计划写的
+   * `toContain('没有可用引擎')` 对规格 §6.1 钉住的字面 `还没有可用的翻译引擎，…` **不成立**
+   * ——它是 `还没有可用` + `的翻译引擎`，「没有可用引擎」六个字并不连续。规格 §8.13 / §7.3 第 18 条
+   * 写的是**概念名**，§6.1 钉的是**字面**（三处逐字相同），两者在这一点上互相矛盾。
+   * 文案以 §6.1 为准（唯一来源、且 T3 的 README 逐字引用它），所以这里断言这句话里**真正存在**
+   * 的那几个词：`没有可用` + `翻译引擎` = 「是什么事」，`设置页` + `服务商档案` = 「去哪儿」。
+   * **四条词各自都被单字符变异杀过**（分四次独立运行，读数见实施报告）：
+   * 可→能 / 擎→挚 / 页→项 / 档→挡。
+   */
+  it('那句话本身：说清是什么事、说清去哪儿（改一个字就红）', () => {
+    expect(NO_ENGINE_PROBLEM).toContain('没有可用');
+    expect(NO_ENGINE_PROBLEM).toContain('翻译引擎');
+    expect(NO_ENGINE_PROBLEM).toContain('设置页');
+    expect(NO_ENGINE_PROBLEM).toContain('服务商档案');
   });
 
-  it('裸 openai-compat（没配任何档案）→ 引擎自己给出可行动的 AUTH 提示，不是网络错误', async () => {
-    const { engine, config } = resolveEngine({ engineId: 'openai-compat', profiles: [] });
-    expect(engine.id).toBe('openai-compat');
-    await expect(
-      engine.translate({ texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal: new AbortController().signal }, config),
-    ).rejects.toThrow(/API Key/);
+  /**
+   * 常量**字面**的最强形态：整句钉死。与上面那条词级断言是**两条独立的 `it`**，这一点是刻意的
+   * ——vitest 在一条用例里遇到首个失败就抛出，合成一条的话 `toBe` 会永远挡在四条词级断言前面，
+   * 那四条词从此拿不到自己的读数（也就无法证明它们不是装饰）。
+   *
+   * 牙：改**任意一个字符**都红。上面那四条词级断言各自只对一处改动敏感，本条对全部改动敏感。
+   */
+  it('那句话的字面被整句钉死（改一个字符就红）', () => {
+    expect(NO_ENGINE_PROBLEM).toBe('还没有可用的翻译引擎，去设置页添加一个服务商档案');
   });
 
   it('config.model 取的是 activeModel，不是清单里的其它项', () => {
@@ -330,16 +363,14 @@ describe('档案解析：resolveEngine 是唯一一处「engineId → 引擎 + �
    * 它杀的是恒真式：若 `problem` 无脑恒有值，弹窗会在**能用**的配置上也报"还没有模型"，
    * 用户按那句提示去添加一个已经有的模型。
    */
-  it('能用的配置不背那句"还没有模型"：有当前模型、免费引擎都不给 problem', () => {
+  it('能用的配置不背那句"没有可用引擎"：命中档案且模型齐全时一个 problem 都没有', () => {
     expect(resolveEngine({ engineId: 'p1', profiles: [profile()] }).problem).toBeUndefined();
-    // 免费引擎没有"模型清单"这个概念，档案里的空 activeModel 与它无关（engineId 不指向任何档案）。
-    expect(
-      resolveEngine({ engineId: 'google', profiles: [profile({ models: [], activeModel: '' })] }).problem,
-    ).toBeUndefined();
-    expect(resolveEngine({ engineId: 'google', profiles: [] }).problem).toBeUndefined();
-    // `openai-compat` **不是**档案 id：它照样走"没命中档案"那一支（引擎可由 `getEngine` 归一，
-    // 与引擎有关的那条既有用例在下面「裸 openai-compat…」里守着）。
-    expect(resolveEngine({ engineId: 'openai-compat', profiles: [] }).problem).toBeUndefined();
+    // 反例半边：同一个档案、只是没有当前模型——给的是**另一句**（NO_MODEL_PROBLEM），
+    // 不是"没有可用引擎"（两句话的处置完全不同：一个去加模型，一个去加档案）。
+    const noModel = resolveEngine({ engineId: 'p1', profiles: [profile({ models: [], activeModel: '' })] });
+    expect(noModel.engine).not.toBeNull();
+    expect(noModel.problem).toBe(NO_MODEL_PROBLEM);
+    expect(noModel.problem).not.toBe(NO_ENGINE_PROBLEM);
   });
 });
 
@@ -399,6 +430,34 @@ describe('零请求的构造性保证：空 model 的配置连一次 fetch 都�
     // 两半都不放松：既断言"这一次真的成功了"（`resolves` 与上面对称），也断言请求体的 model。
     await expect(openAiCompatEngine.translate(request, filled.config)).resolves.toEqual(['你好']);
     expect(calls).toEqual([{ model: 'm-1' }]);
+  });
+
+  /**
+   * 「没有可用引擎 ⇒ 零请求」的**单元层**成对用例。
+   *
+   * 反面：`engineId: 'openai-compat'`（一个**裸引擎 id**，不是任何档案的 id）今天能命中
+   * `getEngine` 并返回那个引擎——本单元之后它和 `''`、`'google'`、失效档案 id 走同一条路。
+   * 正面：同一个 `resolveEngine`，`engineId` 换成有 `activeModel` 的档案 id，请求能真的发出去
+   * （否则"整条链路根本不发请求"的实现也能让反面通过）。
+   */
+  it('没有可用引擎时不构造任何引擎、零请求（成对：换成真档案就恰好发一次）', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>> 你好' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+    const signal = new AbortController().signal;
+
+    const none = resolveEngine({ engineId: 'openai-compat', profiles: [] });
+    expect(none.engine).toBeNull();
+    expect(none.problem).toBe(NO_ENGINE_PROBLEM);
+
+    const usable = resolveEngine({ engineId: 'p1', profiles: [profile()] });
+    expect(usable.engine).not.toBeNull();
+    await usable.engine?.translate({ texts: ['Hello'], from: 'auto', to: 'zh-Hans', signal }, usable.config);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -496,7 +555,7 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
     }
   });
 
-  it('engineId 是 google 时不产生档案，也不改 engineId（那份 engineConfig 多半是没选过的残留）', async () => {
+  it('engineId 是 google 时不产生档案；v5 那一步再把它抹成空串（那份 engineConfig 多半是没选过的残留）', async () => {
     const area = new MemoryStorage();
     await area.set({
       [SETTINGS_KEY]: {
@@ -508,7 +567,8 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
     });
     const settings = await loadSettings(area);
     expect(settings.profiles).toEqual([]);
-    expect(settings.engineId).toBe('google');
+    // v5 迁移把 `'google'` 抹掉了：没有档案可挑，于是落到 `''`（= 没有可用引擎）。
+    expect(settings.engineId).toBe('');
   });
 
   it('engineConfig 坏掉也得到一个空档案而不是崩：字段全按默认补齐', async () => {
@@ -719,6 +779,79 @@ describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
     await saveSettings(loaded, area);
     const raw = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY] as { profiles: Array<Record<string, unknown>> };
     expect(Object.keys(raw.profiles[0]).sort()).toEqual(['activeModel', 'apiKey', 'baseUrl', 'id', 'label', 'models']);
+  });
+});
+
+/**
+ * v4 → v5：删掉免费接口之后，存储里 `engineId: 'google'` 的老数据必须改指向一个真的存在的东西。
+ *
+ * 三条口径（与 `dropFreeEngineSelection` 的注释逐条对应）：
+ * 1. **只认 `'google'` 这个字面值**，其余脏值不替用户猜（它们走"没有可用引擎"）；
+ * 2. 挑的是**第一个有 `activeModel`** 的档案——夹具里**故意让第一个档案没有当前模型**，
+ *    否则"取第一个"与"取第一个可用的"分不开（这是那个判据唯一的杀手）；
+ * 3. 迁移**只在读的时候**发生，存储里那份原文一个字节都不动。
+ */
+describe('迁移 v4 → v5：免费引擎的选择要迁到第一个有当前模型的档案', () => {
+  const usable = { id: 'p-usable', label: '配好的', baseUrl: 'https://b.example/v1', models: ['m'], activeModel: 'm', apiKey: 'sk-b' };
+  const empty = { id: 'p-empty', label: '没选模型的', baseUrl: 'https://a.example/v1', models: [], activeModel: '', apiKey: 'sk-a' };
+
+  it('engineId 是 google → 数组里第一个 activeModel 非空的档案（不是"第一个档案"）', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 4, engineId: 'google', profiles: [empty, usable] } });
+
+    const settings = await loadSettings(area);
+    // 牙：判据退化成"取第一个档案"（`profiles[0].id`）时，这里读到的是 `p-empty` → 红。
+    expect(settings.engineId).toBe('p-usable');
+    expect(settings.version).toBe(CURRENT_VERSION);
+  });
+
+  it('engineId 是 google 但一个能用的档案都没有 → 空串（三种形状都走这条路）', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      // ① 有档案，但全都没有当前模型。
+      { version: 4, engineId: 'google', profiles: [empty] },
+      // ② 没有任何档案。
+      { version: 4, engineId: 'google', profiles: [] },
+      // ③ **连 `profiles` 键都没有**（v1/v2 里 `engineId: 'google'` 的老数据就长这样）。
+      //    迁移层拿到的是**生数据**：把它直接交给 `firstUsableProfileId` 会在 `.find` 上抛 TypeError，
+      //    整个 `loadSettings` 跟着挂——`dropFreeEngineSelection` 里的形状投影就是为这一格存在的。
+      { version: 4, engineId: 'google' },
+    ];
+
+    for (const record of cases) {
+      const area = new MemoryStorage();
+      await area.set({ [SETTINGS_KEY]: record });
+      expect((await loadSettings(area)).engineId).toBe('');
+    }
+  });
+
+  it('幂等：连读两次结果相同，且存储里那份原文没被改写（迁移发生在读的那一刻）', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 4, engineId: 'google', profiles: [usable] } });
+
+    const first = await loadSettings(area);
+    const second = await loadSettings(area);
+    expect(first.engineId).toBe('p-usable');
+    expect(second.engineId).toBe(first.engineId);
+    // 落盘要等用户下一次改动触发 `saveSettings` 的整份覆盖写；读不写存储
+    // （与既有的「打开页面不写存储：迁移发生在读的那一刻」同一条口径）。
+    const stored = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY] as Record<string, unknown>;
+    expect(stored.version).toBe(4);
+    expect(stored.engineId).toBe('google');
+  });
+
+  it('只有 v4 那一次会挑：迁移产物再读一次不会被改回去（版本号已是 5）', async () => {
+    const area = new MemoryStorage();
+    await area.set({ [SETTINGS_KEY]: { version: 4, engineId: 'google', profiles: [empty, usable] } });
+    const migrated = await loadSettings(area);
+    // 用户接着把那个档案的当前模型清空（合法操作：删掉最后一个模型会置空）。
+    const cleared = {
+      ...migrated,
+      profiles: migrated.profiles.map((item) => ({ ...item, models: [], activeModel: '' })),
+    };
+    await saveSettings(cleared, area);
+
+    // 再读：engineId 仍是迁移当时挑的那个（**没有**因为"它现在没有模型了"被重挑或置空）。
+    expect((await loadSettings(area)).engineId).toBe('p-usable');
   });
 });
 

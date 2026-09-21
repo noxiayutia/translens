@@ -1,6 +1,6 @@
 // src/shared/settings.ts
 import type { StorageArea } from '../core/cache';
-import { DEFAULT_ENGINE_ID, getEngine, OPENAI_COMPAT_ENGINE_ID } from '../engines/registry';
+import { getEngine, OPENAI_COMPAT_ENGINE_ID } from '../engines/registry';
 import type { EngineConfig, Term, Translator } from '../engines/types';
 import { chromeArea } from './chrome-area';
 
@@ -108,10 +108,14 @@ export const DISPLAY_MODES: ReadonlyArray<{ value: DisplayMode; label: string }>
 export interface Settings {
   version: number;
   /**
-   * 当前用的引擎：**`google`（免费接口）或某个档案的 `id`**。
+   * 当前用的引擎：**某个档案的 `id`**，或 `''`（= **没有可用引擎**）。
+   *
    * 「档案 → 用哪个引擎 + 哪份配置」的解析只有一处：{@link resolveEngine}。
    * 调用方（service worker、弹窗、设置页）一律走它，不许各自写一份 if。
-   * 指向不存在的档案时解析回落免费引擎；设置页删除档案时会把这里落到一个**存在**的目标。
+   *
+   * v5 起 `'google'` 不再是合法取值（免费接口已整体删除）：任何不指向现存档案的值
+   * ——残留的 `'google'`、`'openai-compat'` 这类裸引擎 id、被别处删掉的档案 id——
+   * 都表现为「没有可用引擎 + 一句可行动的话 + 零网络请求」，**不再回落到任何引擎**。
    */
   engineId: string;
   /** 服务商档案列表。曾经这里是一份匿名的 `engineConfig`，v2 → v3 迁移见 `migrate`。 */
@@ -139,8 +143,14 @@ export interface Settings {
 
 export const SETTINGS_KEY = 'jinyi:settings';
 
-/** 当前设置 schema 版本；改动字段语义时递增。v4：`EngineProfile.model` → `models` + `activeModel`。 */
-export const CURRENT_VERSION = 4;
+/**
+ * 当前设置 schema 版本；改动字段语义时递增。
+ *
+ * v4：`EngineProfile.model` → `models` + `activeModel`。
+ * v5：删掉 Google 免费接口——`engineId: 'google'` 迁到第一个有 `activeModel` 的档案
+ *     （一个都没有就置 `''`，见 {@link dropFreeEngineSelection}）。
+ */
+export const CURRENT_VERSION = 5;
 
 /**
  * v2 → v3 迁移产物固定用这个 id（老 `engineId === 'openai-compat'` 也迁到它）。
@@ -153,7 +163,11 @@ const FALLBACK_PROFILE_LABEL = '我的接口';
 
 export const DEFAULT_SETTINGS: Settings = {
   version: CURRENT_VERSION,
-  engineId: DEFAULT_ENGINE_ID,
+  // `''` 的语义是**没有可用引擎**，不再是"某个引擎的 id"。首装因此就是
+  // `profiles: []` + `engineId: ''`：弹窗与设置页各自显示那句可行动的话（§6.1）。
+  // `mergeSettings` 的 `pickString(input.engineId, DEFAULT_SETTINGS.engineId)` 因此在
+  // 字段缺失时天然落到 `''`——缺字段与显式空串**同义**，这正是我们要的。
+  engineId: '',
   profiles: [],
   targetLang: 'zh-Hans',
   sourceLang: 'auto',
@@ -365,7 +379,8 @@ export function mergeSettings(raw: unknown, version: unknown = undefined): Setti
  * {@link resolveEngine} 的解析结果：引擎 + 送给它的那份配置 + **能不能用**的一句原因。
  */
 export interface ResolvedEngine {
-  engine: Translator;
+  /** `null` = 没有可用引擎（`engineId` 不指向任何现存档案）。此时 `problem` 必定有值。 */
+  engine: Translator | null;
   config: EngineConfig;
   /**
    * 这个档案**今天不能用来翻译**时的一句可读原因；能用时为 `undefined`。
@@ -388,24 +403,57 @@ export interface ResolvedEngine {
 export const NO_MODEL_PROBLEM = '这个档案还没有模型，点「添加模型」或「拉取可用模型」';
 
 /**
+ * 「没有可用引擎」那句话的**唯一来源**（与 {@link NO_MODEL_PROBLEM} 同级）。
+ *
+ * 弹窗、设置页、后台各写一份必然漂移（先例见 `isAllowedBaseUrl`）。首装时两处的措辞差异是
+ * **刻意的**：设置页那句就是"去做这件事"，弹窗那句多一个"去哪做"（弹窗里没有「新增档案」
+ * 按钮，只有右上角的齿轮）。**两处的核心句逐字相同**——都由本常量拼出来，不各写一份字面量。
+ */
+export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页添加一个服务商档案';
+
+/**
+ * 第一个「有当前模型」的档案的 id；一个都没有时返回 `''`（= 没有可用引擎）。
+ *
+ * **两个调用方共用这一份判据**：v4 → v5 迁移（`dropFreeEngineSelection`）与设置页删除当前档案时
+ * 的回落。两处各写一份必然漂移，先例就是 `resolveEngine` 里那条专门解释为什么用 `trim()` 的注释。
+ *
+ * 参数类型是 `Pick<EngineProfile, 'id' | 'activeModel'>` 而不是整个 `EngineProfile`：迁移那一侧
+ * 拿到的是**存储里的生数据**（`mergeSettings` 还没跑，`profiles` 是 `unknown`），它只需要先证明
+ * "`id` 是字符串、`activeModel` 是字符串"就能问这条判据——**判据本身仍然只有这一份**。
+ *
+ * `trim()` 口径与 {@link resolveEngine} 完全一致：只填了空格的 `activeModel` 算"没有当前模型"。
+ * 顺序 = 数组顺序（`pickProfiles` 保证它是存储顺序），也就是用户在设置页看到的第一行。
+ */
+export function firstUsableProfileId(
+  profiles: readonly Pick<EngineProfile, 'id' | 'activeModel'>[],
+): string {
+  return profiles.find((profile) => profile.activeModel.trim().length > 0)?.id ?? '';
+}
+
+/**
  * 「engineId → 用哪个引擎 + 用哪份配置」的**唯一一处**解析。
  *
- * service worker、弹窗、设置页全走它。写第二份 if 的代价是现成的：某天加一种引擎，
- * 漏掉的那个调用点就会拿档案 id 去 `getEngine` 里查不到、静默回落到免费引擎——
- * 用户以为在用 DeepSeek，实际在烧 Google 额度。
+ * service worker、弹窗、设置页全走它。**不许**在别处再写一个 `if (settings.engineId === '')`
+ * ——那就是第二个解析点，下次加引擎一定有一处漏掉。
  *
- * 解析规则（`engineId` 只有两种取值形态）：
- * - 命中某个档案 → OpenAI 兼容引擎 + **那份**档案的 `{apiKey, baseUrl, model}`；
- *   `activeModel` 是空串时**额外**给出 `problem`（{@link NO_MODEL_PROBLEM}）。空模型这
- *   件事只有这里能说清：引擎是通用适配器，它不知道"档案""模型清单"这些词，只会说一句
- *   用户照着找不到去哪儿的「尚未填写模型名」。
- * - 没命中 → `getEngine` 的既有语义（'google' 即免费引擎；未知 id 回落免费引擎）。
- *   档案被别处删掉后留下的失效 engineId 因此照常可用，只是安静地用免费接口——
- *   设置页删除当前档案时承诺过把 engineId 落到存在的目标，这里是最后一道防线。
+ * 解析规则只有三条：
+ * 1. `engineId` 命中某个档案 → OpenAI 兼容引擎 + **那份**档案的 `{apiKey, baseUrl, model}`；
+ *    `activeModel` 是空串（或只有空白）时**额外**给出 `problem`（{@link NO_MODEL_PROBLEM}）。
+ *    空模型这件事只有这里能说清：引擎是通用适配器，它不知道"档案""模型清单"这些词，
+ *    只会说一句用户照着找不到去哪儿的「尚未填写模型名」。
+ * 2. `engineId` **不命中任何档案** → `{ engine: null, config: {}, problem: NO_ENGINE_PROBLEM }`。
+ *    **这是「没有可用引擎」的唯一产出点。** `''`、残留的 `'google'`、`'openai-compat'` 这类
+ *    裸引擎 id、被别处删掉的档案 id，走的都是这一条——**没有"兜底到某个别的引擎"这回事**，
+ *    也不写「若 engineId === 'google' 则…」的补丁（它只是"一个不存在的 id"）。
+ * 3. 其余（命中档案且模型齐全）→ 无 `problem`。
+ *
+ * 命中档案那一支交出来的 `engine` **类型上仍可能是 `null`**（`getEngine` 的返回类型如此）：
+ * 三个调用点因此都要显式收口。这不是噪音，它是"没有可用引擎成为一等状态"之后必须付的账
+ * ——`service-worker.ts` 用 `engine === null || problem !== undefined` 一次收住两件事。
  */
 export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>): ResolvedEngine {
   const profile = settings.profiles.find((item) => item.id === settings.engineId);
-  if (profile === undefined) return { engine: getEngine(settings.engineId), config: {} };
+  if (profile === undefined) return { engine: null, config: {}, problem: NO_ENGINE_PROBLEM };
   const engine = getEngine(OPENAI_COMPAT_ENGINE_ID);
   const config: EngineConfig = { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.activeModel };
   // 判空口径与引擎实现**一致**：只有空白字符也算"没填"（`openai-compat` 取 `config.model` 时
@@ -466,7 +514,9 @@ function resolveArea(area?: StorageArea): StorageArea {
  *
  * **v3 → v4：每个档案的单 `model` 抬起成 `models` + `activeModel`。**见 `liftProfileModels`。
  *
- * 迁移按 `storedVersion` 分支、**只在 `loadSettings` 里发生**：v4 数据从版本闸门
+ * **v4 → v5：`engineId: 'google'` 改指向第一个有 `activeModel` 的档案。**见 `dropFreeEngineSelection`。
+ *
+ * 迁移按 `storedVersion` 分支、**只在 `loadSettings` 里发生**：v5 数据从版本闸门
  * （`storedVersion >= CURRENT_VERSION`）直接原样返回，不会被重复抬起——幂等性靠的就是
  * 这一道闸门加上"每一步只在它自己那一版及更老的形状上发生"。
  */
@@ -482,6 +532,11 @@ function migrate(raw: unknown, storedVersion: number): unknown {
   }
   if (storedVersion < 4) {
     record = liftProfileModels(record);
+  }
+  // 排在 `liftProfileModels` **之后**：`activeModel` 是它抬出来的（v1/v2/v3 的数据在这一步
+  // 之前还没有这个字段）。
+  if (storedVersion < 5) {
+    record = dropFreeEngineSelection(record);
   }
   return record;
 }
@@ -509,6 +564,42 @@ function liftProfileModels(record: Record<string, unknown>): Record<string, unkn
       return { ...lifted, models: model.length > 0 ? [model] : [], activeModel: model };
     }),
   };
+}
+
+/**
+ * v4 → v5 的迁移：**只做一件事**——`engineId === 'google'`（那个已删除的免费接口）改指向
+ * 「第一个有当前模型的档案」，一个都没有就置 `''`（= 没有可用引擎）。
+ *
+ * 四条刻意的口径：
+ * 1. **只认 `'google'` 这个字面值**，不做"认不出来就重挑"的泛化：v5 迁移的输入是**声明的 v4
+ *    数据**，那个版本里 `engineId` 的合法取值只有 `'google'` 与档案 id 两种形状；其他值
+ *    （脏存储、手工改过）**不替用户猜**——它们在新语义下表现为"没有可用引擎 + 一句可行动的话"，
+ *    不猜 = 不发请求，是安全的默认方向。
+ * 2. **判据只有 `firstUsableProfileId` 一份**（`trim()` 后为空即"没有当前模型"），与
+ *    `resolveEngine`、与设置页删除档案那条回落**完全同源**。
+ * 3. **参数是存储里的生数据**：`mergeSettings` 还没跑，`record.profiles` 可能是 `undefined`
+ *    / 非数组 / 装着非对象，所以这里先做一次**形状投影**再问判据。直接
+ *    `firstUsableProfileId(record.profiles as EngineProfile[])` 会在 `profiles` 缺失时抛
+ *    TypeError（`tests/shared/settings.test.ts` 的「engineId 是 google 时不产生档案」就喂了
+ *    这种数据：v2 + `engineId: 'google'` + 没有 `profiles` 键），整个 `loadSettings` 会跟着挂。
+ * 4. **产物里不留 `engineId: 'google'` 的任何痕迹**（与 `foldLegacyEngineConfig` 删
+ *    `engineConfig` / `providerPreset`、`liftProfileModels` 删 `model` 同一条纪律）。
+ *
+ * 幂等靠 `migrate` 开头那道版本闸门（`storedVersion >= CURRENT_VERSION` 直接原样返回），
+ * 本函数因此只需要处理"第一次读到 v4"那一次。
+ */
+function dropFreeEngineSelection(record: Record<string, unknown>): Record<string, unknown> {
+  if (record.engineId !== 'google') return record;
+  const raw = Array.isArray(record.profiles) ? record.profiles : [];
+  const candidates: Array<Pick<EngineProfile, 'id' | 'activeModel'>> = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+    const entry = item as { id?: unknown; activeModel?: unknown };
+    if (typeof entry.id === 'string' && typeof entry.activeModel === 'string') {
+      candidates.push({ id: entry.id, activeModel: entry.activeModel });
+    }
+  }
+  return { ...record, engineId: firstUsableProfileId(candidates) };
 }
 
 /**

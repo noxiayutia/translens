@@ -116,13 +116,11 @@ describe('展开就地更新：代价不随档案数增长', () => {
   });
 
   it('新增档案那一行也是就地追加：不动已有的行', async () => {
-    // 草稿行的插入走 `insertDraftRow`（只 append 一行，排在免费引擎行之前），
-    // 不是 `renderProfiles`。断言的读数是"已有行的 DOM 节点身份没变"——
-    // 整表重建时这些引用会全部失效（`isConnected` 变 false）。
+    // 草稿行的插入走 `insertDraftRow`（只 append 一行），不是 `renderProfiles`。
+    // 断言的读数是"已有行的 DOM 节点身份没变"——整表重建时这些引用会全部失效。
     await seedSettings({ engineId: 'p-0', profiles: seeds(3) });
     await loadOptions();
     const before = profileRows();
-    const freeBefore = pick<HTMLElement>('profiles').querySelector('[data-engine-free]');
 
     pick<HTMLButtonElement>('add-profile').click();
     await settle();
@@ -138,9 +136,12 @@ describe('展开就地更新：代价不随档案数增长', () => {
     // 于是"只追加、不动已有的行"这个读数必须逐行钉**身份**——`insertDraftRow` 哪天换回
     // `renderProfiles`（整表重建），节点身份全变，这一行当场红（读数是 `[false, false, false]`）。
     expect(after.slice(0, 3).map((row, index) => row === before[index])).toEqual([true, true, true]);
-    // 免费引擎那一行也还是原来那个节点，而且排在草稿行之后。
-    expect(pick<HTMLElement>('profiles').querySelector('[data-engine-free]')).toBe(freeBefore);
-    expect(after[3].nextElementSibling).toBe(freeBefore);
+    // 草稿行**就地追加在最后**：它后面没有任何行了（内置免费引擎那一行随单元 E 删掉）。
+    // ⚠ 这两条断言是**替换**掉原来的 `[data-engine-free]` 三处读数的：那三处在删行之后会变成
+    // `null === null` 的恒真式（静默通过），而"草稿行排在最后"仍然是承重的——
+    // 插入位置改成 `prepend` / 插到中间，这两条当场红。
+    expect(after[3].nextElementSibling).toBeNull();
+    expect(pick<HTMLElement>('profiles').lastElementChild).toBe(after[3]);
     // 草稿行展开着（新增档案的语义就是"当场开始填"）。
     expect(after[3].querySelector('.profile-editor')).not.toBeNull();
   });

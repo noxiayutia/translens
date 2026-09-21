@@ -334,7 +334,7 @@ describe('取消：丢弃面板编辑，存储一个字节不动', () => {
   });
 
   it('取消草稿行：整行移除（草稿没有存储里对应的东西，收起它只会留个空壳）', async () => {
-    await seedSettings({ engineId: 'google' });
+    await seedSettings();
     await loadOptions();
     pick<HTMLButtonElement>('add-profile').click();
     await settle();
@@ -543,7 +543,7 @@ describe('未保存输入的暂存：隐式收起保住它，取消丢弃它（�
     // 这件事只在草稿这一支上**可观察**——残留的 `__new__` 那条会在下一次"新增档案"时把旧草稿
     // 预填回去。（同档案保存后的清理**不可观察**：保存后 `renderProfiles` 会按新快照重建那一行，
     // DOM 本来就不是旧草稿。别为不可观察的那半编一条断言。）
-    await seedSettings({ engineId: 'google' });
+    await seedSettings();
     await loadOptions();
 
     pick<HTMLButtonElement>('add-profile').click();

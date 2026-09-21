@@ -22,7 +22,7 @@ describe('hashString', () => {
 
 describe('buildCacheKey', () => {
   const base = {
-    engineId: 'google',
+    engineId: 'p-a',
     configHash: 'cfg-openai-gpt-4o-mini',
     sourceLang: 'auto',
     targetLang: 'zh-Hans',
@@ -38,7 +38,7 @@ describe('buildCacheKey', () => {
   it('任一字段变化都会改变 key', () => {
     const key = buildCacheKey(base);
     expect(buildCacheKey({ ...base, text: 'Hello world!' })).not.toBe(key);
-    expect(buildCacheKey({ ...base, engineId: 'openai-compat' })).not.toBe(key);
+    expect(buildCacheKey({ ...base, engineId: 'p-b' })).not.toBe(key);
     expect(buildCacheKey({ ...base, targetLang: 'ja' })).not.toBe(key);
     expect(buildCacheKey({ ...base, glossaryHash: 'abc' })).not.toBe(key);
     expect(buildCacheKey({ ...base, promptHash: 'abc' })).not.toBe(key);

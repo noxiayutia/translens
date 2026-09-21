@@ -140,6 +140,18 @@ export async function seedSettings(patch: Record<string, unknown> = {}): Promise
   await chromeStub.storage.local.set({ [SETTINGS_KEY]: { version: CURRENT_VERSION, ...patch } });
 }
 
+/**
+ * 「这条用例需要一个**能用的**引擎」的显式夹具入口。
+ *
+ * 默认设置是 `engineId: ''` + `profiles: []` = **没有可用引擎**（v5 起 `''` 就是这个意思）。
+ * 凡是没有显式声明引擎的用例都会落到那个状态——这不是回归，而是把一条一直存在的隐性前提
+ * **显式化**：需要引擎的用例从此在夹具名上就看得出来。**不许**靠"把默认值改回某个 id"
+ * 让它们继续绿。
+ */
+export async function seedWithProfile(patch: Record<string, unknown> = {}): Promise<void> {
+  await seedSettings({ engineId: 'p-a', profiles: [profileSeed()], ...patch });
+}
+
 /** 直读存储：验证「改动真的落盘了」，而不是只改了页面里的内存副本。 */
 export async function storedSettings(): Promise<Record<string, unknown>> {
   const raw = await chromeStub.storage.local.get([SETTINGS_KEY]);

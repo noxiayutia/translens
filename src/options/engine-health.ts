@@ -1,6 +1,6 @@
 // src/options/engine-health.ts
 //
-// 状态点（§4.3）背后的记录：每个引擎/档案"最近一次测试连接"的结果。
+// 状态点（§4.3）背后的记录：每个**档案**"最近一次测试连接"的结果。
 //
 // 为什么存 `chrome.storage.session` 而不是内存里一个 Map：
 // 灰点的语义是「**从没测过**（不代表可用）」。只在内存里记的话，用户刷新一次设置页就全变回灰，
@@ -25,19 +25,17 @@ export interface EngineHealth {
 export const ENGINE_HEALTH_KEY = 'jinyi:engine-health';
 
 /**
- * 记录键的**两个键空间**：档案记录是 `p:<档案 id>`，引擎记录是 `e:<引擎名>`
- * （今天只有内置免费引擎这一格，`e:free`）。
+ * 记录键只有**一个键空间**：档案记录是 `p:<档案 id>`。
  *
- * 为什么不是"档案用裸 id、引擎用一个保留值"：那样两类键仍然共用一个字符串空间，撞车只是被
- * 缩小、没有被消除——档案 id 由存储层从任意非空字符串读回（`pickProfile` 只要求"非空字符串"，
- * 不做保留字检查），谁都能造出一个恰好等于引擎键的 id。撞上时的症状是两行共用一个槽：
- * 点免费行亮的是**用户档案行**，重绘后两行同时绿，而重开设置页只剩一条记录。
+ * 这里曾经有第二个键空间 `e:<引擎名>`（内置免费引擎那一格，`e:free`）。免费接口随单元 E
+ * 整体删除，那个键空间**随之消亡**——没有"引擎记录"这种东西了。但 `p:` 前缀**留着**：
  *
- * **前缀不同 ⇒ 两类键按构造不可能相等**（档案键恒以 `p:` 开头、引擎键恒以 `e:` 开头）：
- * 任何档案 id（`google`、`e:free`、`__new__`、脏存储里别的什么怪值）都撞不到引擎那一格。
- * 这是**消除**撞车，不是把撞车的范围缩小一格。
+ * - `profileIdFromHealthKey` 的往返、"记录键"与"档案 id"是两个概念这件事、以及
+ *   "将来可能又有第二类记录"都靠它把两者分开；
+ * - 退回裸 id 是**一次没有收益的改动**：它唯一的收益（两类键按构造不相等）今天已经不需要了，
+ *   代价却是把"键"与"id"重新合成一个概念，下一类记录出现时又要拆一次。
  *
- * 读侧**不按前缀过滤**（`pickHealth` 仍然键无关）：一是"形状不对的记录丢掉"那条规矩与键空间
+ * **读侧仍然键无关**（`pickHealth` 不解释前缀）：一是"形状不对的记录丢掉"那条规矩与键空间
  * 是两件事，混在一处会让前者的读数（`tests/options/engine-health.test.ts`「存储里是垃圾也不崩」
  * 用 `good` / `badState` 这类任意键）说不清是被谁丢的；二是过滤解决不了任何问题——没有一行会去
  * 读裸键。
@@ -51,17 +49,13 @@ export const ENGINE_HEALTH_KEY = 'jinyi:engine-health';
  * "只认本轮写的键"的过滤便宜——那种过滤既没解决任何问题，又会把键空间的知识复制到第二处。
  */
 const PROFILE_HEALTH_PREFIX = 'p:';
-const ENGINE_HEALTH_PREFIX = 'e:';
-
-/** 内置免费引擎那一格的键。它按构造不可能等于任何档案键（见上面两个键空间）。 */
-export const FREE_ENGINE_HEALTH_KEY = `${ENGINE_HEALTH_PREFIX}free`;
 
 /** 一个档案的记录键：`p:<档案 id>`。读写都必须走它，别在别处拼字面量。 */
 export function profileHealthKey(id: string): string {
   return `${PROFILE_HEALTH_PREFIX}${id}`;
 }
 
-/** 档案记录键 → 档案 id；不是档案键（引擎键、老构建的裸键…）时返回 `null`。 */
+/** 档案记录键 → 档案 id；不是档案键（老构建写下的裸键…）时返回 `null`。 */
 export function profileIdFromHealthKey(key: string): string | null {
   return key.startsWith(PROFILE_HEALTH_PREFIX) ? key.slice(PROFILE_HEALTH_PREFIX.length) : null;
 }
@@ -88,7 +82,7 @@ function sessionArea(): StorageArea {
   return area;
 }
 
-/** 逐条校形。键在这里是**记录键**（`p:<id>` / `e:<引擎名>`），本函数不解释它的前缀。 */
+/** 逐条校形。键在这里是**记录键**（`p:<档案 id>`），本函数不解释它的前缀。 */
 function pickHealth(raw: unknown): Record<string, EngineHealth> {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Record<string, EngineHealth> = {};
@@ -157,7 +151,7 @@ function queueWrite<T>(area: StorageArea, task: () => Promise<T>): Promise<T> {
 /**
  * 记录一个引擎/档案的结果（在这个存储区的队列里做整份读-改-写，只动它自己的那一条）。
  *
- * **第一个参数是记录键**（`profileHealthKey(id)` 或 `FREE_ENGINE_HEALTH_KEY`），**不是档案 id**：
+ * **第一个参数是记录键**（`profileHealthKey(id)`），**不是档案 id**：
  * 照参数名传裸 id 会写出一条谁也读不到的孤儿记录——正是这套键空间要杜绝的形状。
  */
 export async function saveEngineHealth(
@@ -202,7 +196,7 @@ export async function forgetEngineHealth(key: string, area: StorageArea = sessio
  * **长度门槛 8**：更短的"Key"（`hello`、`你好`、空串）一律原样放行。理由是精确子串替换在短串上
  * 必然误伤——实测 `apiKey='hello'` + 译文 `你好，hello world` 会被抹成 `你好，*** world`，
  * `apiKey='你好'` + 译文 `你好` 会被整句抹成 `***`；而短串本来也无法在文本里可靠地识别成凭据
- * （真凭据都够长，各家至少 `sk-` + 一串）。空 Key（免费引擎、没填 Key 的路径）因此天然落在
+ * （真凭据都够长，各家至少 `sk-` + 一串）。空 Key（没填 Key 的路径）因此天然落在
  * 门槛之外，不需要单独一支。
  *
  * **残留（如实说）**：≥8 字符的 Key 若**逐字**出现在正常译文里，一样会被抹掉——这是拿

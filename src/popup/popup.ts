@@ -1,11 +1,11 @@
 // src/popup/popup.ts
 import { LANGUAGES } from '../core/lang';
 import { isNeverTranslate, matchSiteRule } from '../core/site-rules';
-import { DEFAULT_ENGINE_ID, getEngine } from '../engines/registry';
 import { hasHostPermission, originPattern } from '../shared/host-permission';
 import { MSG, type PageState } from '../shared/messages';
 import {
   DISPLAY_MODES,
+  NO_ENGINE_PROBLEM,
   loadSettings,
   resolveEngine,
   saveSettings,
@@ -29,6 +29,19 @@ const hoverCheckbox = document.getElementById('hover-translate') as HTMLInputEle
 const selectionCheckbox = document.getElementById('selection-translate') as HTMLInputElement;
 const targetLangSelect = document.getElementById('target-lang') as HTMLSelectElement;
 const engineSelect = document.getElementById('engine') as HTMLSelectElement;
+
+/**
+ * 「翻译引擎」那一整行的容器（0 个档案时整行隐藏）。
+ *
+ * ⚠ **这一行没有自己的 id**，按结构取：`#engine` 的唯一 `.field` 祖先。
+ * 为什么不为它加一个 `id="engine-field"`：`popup.html` 是**另一个在途会话**正在改的文件
+ * （品牌改名，未提交），本单元刻意不在那里加东西；而且加一个 id 会连带改
+ * `tests/popup/popup.test.ts` 里"`popup.html` 里 id 的数量"那条守卫（今天恰好 13），
+ * 那条守卫管的是 HTML 的表面，与本单元无关。复用既有的 `.field[hidden] { display: none }`，
+ * 与 `#model-field` 同一套机制，**不新增 CSS**。
+ */
+const engineField = engineSelect.closest('.field') as HTMLLabelElement;
+
 const modelField = document.getElementById('model-field') as HTMLLabelElement;
 const modelSelect = document.getElementById('model') as HTMLSelectElement;
 const engineHint = document.getElementById('engine-hint') as HTMLParagraphElement;
@@ -61,18 +74,14 @@ function fillSelect(
 }
 
 /**
- * 「翻译引擎」下拉的选项：免费接口 + **每个档案按自己的名字**。
+ * 「翻译引擎」下拉的选项：**每个档案按自己的名字**（引擎不再有内置项）。
  *
  * 不是每个档案都显示"OpenAI 兼容 API"——那样配了 DeepSeek / 硅基流动 / Ollama 之后
  * 下拉里是三条一模一样的字，根本分不出来。选择器的 value 是档案 id（`engineId` 存的
  * 就是它），由 `resolveEngine` 在用到时解析成引擎 + 配置。
  */
 function engineOptions(next: Settings): Array<{ value: string; label: string }> {
-  const free = getEngine(DEFAULT_ENGINE_ID);
-  return [
-    { value: free.id, label: free.name },
-    ...next.profiles.map((profile) => ({ value: profile.id, label: profile.label })),
-  ];
+  return next.profiles.map((profile) => ({ value: profile.id, label: profile.label }));
 }
 
 /** 用存储里的设置填三个下拉与两个快捷开关，并把 hint 算对；保存失败回滚时也走这里。 */
@@ -87,6 +96,9 @@ function applySettings(next: Settings): void {
     settings.targetLang,
   );
   fillSelect(engineSelect, engineOptions(settings), settings.engineId);
+  // 一个档案都没有时整行隐藏：一个空下拉是"点了没得选"的死控件，那件事该由提示区说
+  // （`renderEngineHint` 的 `engine === null` 那一支）。≥1 个档案时显示。
+  engineField.hidden = settings.profiles.length === 0;
   renderModelSelect();
   renderEngineHint();
 }
@@ -284,6 +296,14 @@ let hintRevision = 0;
 function renderEngineHint(): void {
   const revision = (hintRevision += 1);
   const { engine, config, problem } = resolveEngine(settings);
+  // 「没有可用引擎」是**一等状态**：`resolveEngine` 产出那句话（唯一来源），这里只负责显示。
+  // 弹窗里没有「新增档案」按钮，只有右上角的齿轮，所以这句比设置页那句多一个"去哪做"
+  // ——两处的**核心句逐字相同**（都由 `NO_ENGINE_PROBLEM` 拼出来）。
+  if (engine === null) {
+    engineHint.classList.add('warn');
+    engineHint.textContent = `${problem ?? NO_ENGINE_PROBLEM}。点右上角齿轮打开设置页。`;
+    return;
+  }
   // 判空口径与引擎实现一致：只有空白字符也算**没填**（见 openai-compat 的构造）。
   const missingKey = engine.needsKey && (config.apiKey ?? '').trim().length === 0;
   if (missingKey) {
@@ -298,16 +318,21 @@ function renderEngineHint(): void {
     engineHint.textContent = problem;
     return;
   }
-  // 前瞻分支：现存两个引擎的 supportsGlossary 都是 true，今天恒不成立。留着是接口预留
-  // （见 engines/types.ts 的 Translator），不是死代码。
+  // **如实记账**：删掉免费接口之后唯一的适配器恒为 `true`，这一支**今天没有判别力**
+  // （弹窗里同一条分录与 `if (!engine.supportsGlossary …)` 分支同样恒不成立）。它们留着是
+  // **适配器契约**（第三种适配器可能不支持术语表/提示词，见 engines/types.ts 的 Translator），
+  // 不是死代码。**不为它编断言**（本仓既有纪律：不为读不到的东西编断言）。
   if (!engine.supportsGlossary && settings.glossary.length > 0) {
     engineHint.classList.remove('warn');
     engineHint.textContent = '当前引擎不支持术语表，术语表对其不生效。';
     return;
   }
-  const okText = engine.needsKey ? '已配置你自己的 API Key。' : '零配置可用，无需 API Key。';
+  // 唯一适配器恒 `needsKey === true`，所以这里只有这一句。旧实现的另一支
+  // 「零配置可用，无需 API Key。」是**免费接口的说法**：它随免费接口一起删掉，
+  // **不为读不到的 `needsKey === false` 分支另编一句新文案**（那会是一条没有守卫的假承诺；
+  // 将来真接入不需要 Key 的适配器时，这一支要说的话必须重新裁决）。
   engineHint.classList.remove('warn');
-  engineHint.textContent = okText;
+  engineHint.textContent = '已配置你自己的 API Key。';
 
   const baseUrl = (config.baseUrl ?? '').trim();
   const pattern = baseUrl.length > 0 ? originPattern(baseUrl) : undefined;
