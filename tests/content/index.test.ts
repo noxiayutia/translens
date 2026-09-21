@@ -1173,8 +1173,8 @@ describe('内容脚本编排：失败与边界', () => {
  */
 describe('内容脚本编排：页面级提示按错误码优先级择一', () => {
   const AUTH_MESSAGE = '尚未填写 API Key，请在设置中配置';
-  // ⚠ **只改前缀，必须留着 `socket hang up`**：下面三条用例用 `not.toContain('socket hang up')`
-  // 证明"这条 toast 没被后到的 NETWORK 顶掉"。把整句换掉会让那三条**静默变成恒真式**。
+  // ⚠ **只改前缀，必须留着 `socket hang up`**：下面四条用例（共六处断言）用 `not.toContain('socket hang up')`
+  // 证明"这条 toast 没被后到的 NETWORK 顶掉"。把整句换掉会让那四条**静默变成恒真式**。
   const NETWORK_MESSAGE = '接口请求失败：socket hang up';
   const RATE_LIMIT_MESSAGE = '请求过于频繁（429），已暂停写入';
 
