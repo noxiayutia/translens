@@ -547,22 +547,26 @@ describe('内容脚本编排：翻译整页', () => {
   });
 
   it('全部条目网络失败时，toast 要指出「接口到不了」并指向设置页', async () => {
-    // 这不是假想场景：默认的免费 Google 接口在很多网络下被完全阻断，
-    // 表现就是整批 NETWORK 失败。只说"翻译失败"会让用户以为插件坏了，
-    // 而真正该做的是去设置页换成自己能访问的接口（规格 §8「免费接口失效」）。
+    // 这不是假想场景：用户自己填的那个接口在某张网络下到不了，表现就是整批 NETWORK 失败。
+    // 只说"翻译失败"会让用户以为插件坏了，而真正该做的两句是"说清原因 + 指路设置页"。
+    // ⚠ 旧断言里那三个词换了：原文案的主语是"默认的免费 Google 接口"与"改用自定义 API"，
+    // 那两件事随免费引擎一起删掉了（今天用户配的**就是**他自己的接口）。**不许**把它们
+    // 换成"自定义接口"之类"看起来还在"的同义词——那句话描述的行为已经不是本插件的使用路径。
     mount('<p>First text</p><p>Second text</p>');
     const { worker, contentListener } = await loadContentScript();
-    worker.mockImplementation(engineErrorReply('NETWORK', '免费接口请求失败：The operation was aborted'));
+    worker.mockImplementation(engineErrorReply('NETWORK', '接口请求失败：The operation was aborted'));
 
     const state = await dispatch(contentListener, MSG.TRANSLATE_PAGE);
 
     expect(state.failed).toBe(2);
     const toastText = document.getElementById('jy-toast')?.shadowRoot?.textContent ?? '';
-    expect(toastText).toContain('免费接口请求失败');
-    // 必须给出可执行的下一步，而不是让用户对着"翻译失败"发呆。
+    // 引擎给的那半句原样带出来（它是这轮最有信息量的部分）。
+    expect(toastText).toContain('接口请求失败');
+    // 承重的两个词：说清原因（到不了）+ 指路（扩展设置）。这两件事缺一个，用户就只能干瞪眼。
     expect(toastText).toContain('到不了');
     expect(toastText).toContain('扩展设置');
-    expect(toastText).toContain('自定义 API');
+    // 反向：旧的"改用自定义 API"这条出路不再存在（它就是被删掉的那条路径）。
+    expect(toastText).not.toContain('自定义 API');
     // 网络错误是瞬时错误（RETRYABLE_CODES），逐段重试按钮要保留。
     for (const host of hosts()) expect(hasRetryButton(host)).toBe(true);
   });
@@ -1169,7 +1173,9 @@ describe('内容脚本编排：失败与边界', () => {
  */
 describe('内容脚本编排：页面级提示按错误码优先级择一', () => {
   const AUTH_MESSAGE = '尚未填写 API Key，请在设置中配置';
-  const NETWORK_MESSAGE = '免费接口请求失败：socket hang up';
+  // ⚠ **只改前缀，必须留着 `socket hang up`**：下面三条用例用 `not.toContain('socket hang up')`
+  // 证明"这条 toast 没被后到的 NETWORK 顶掉"。把整句换掉会让那三条**静默变成恒真式**。
+  const NETWORK_MESSAGE = '接口请求失败：socket hang up';
   const RATE_LIMIT_MESSAGE = '请求过于频繁（429），已暂停写入';
 
   /** 逐条失败（条目级，后台 translateBatch 的真实形状）；映射外的文本回成功。 */

@@ -29,8 +29,8 @@ export interface CacheKeyParts {
    * 源语言。`sourceLang` 是设置项，会一路传到 `TranslateRequest.from`；它不参与 key 时，
    * 用户把「自动检测」改成某个具体源语言（或反过来）之后，同一个引擎、同一段文本、同一个
    * 目标语言会命中**按另一种源语言语义**翻出来的旧译文，而且事后无法自愈。
-   * 今天两个引擎都还没真的读 `from`（Google 把 `sl=auto` 硬编码），所以这条还没有可观察
-   * 的错误；等接上就用错语义——key 必须在那之前就带上它。
+   * 今天唯一的适配器还没真的读 `from`（`openai-compat` 从没用过 `request.from`），所以这条
+   * 还没有可观察的错误；等接上就用错语义——key 必须在那之前就带上它。
    */
   sourceLang: string;
   targetLang: string;

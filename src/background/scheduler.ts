@@ -46,7 +46,7 @@ const SPLIT_MIN_LEN = 200;
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function callEngine(texts: string[], deps: BatchDeps): Promise<string[]> {
-  // signal 是 TranslateRequest 的必填字段，两个引擎都真的用了它（fetch 的 signal、
+  // signal 是 TranslateRequest 的必填字段，唯一的适配器真的用了它（fetch 的 signal、
   // 以及拿到响应后再查一次 aborted）。外部取消经 deps.signal 注入；调度器自身不设超时：
   // 设计规格把超时归给 content script（§8「content script 侧对请求加超时」），
   // 那个超时由 WU7 落地。这里给一个假超时反而会掐掉合法的大批次。
@@ -73,10 +73,10 @@ async function callEngine(texts: string[], deps: BatchDeps): Promise<string[]> {
 /**
  * 一次引擎调用加它应得的退避重试（规格 §8：网络错误 / 超时退避 500ms → 1500ms 两次）。
  *
- * 边界：批量重试是最后手段，条目级的抖动由引擎内部吸收（见 `engines/google.ts` 的
- * `translateOneWithRetry`）。调度器只看得到「整批成功 / 整批失败」，一次调用摊成的
+ * 边界：批量重试是最后手段，条目级的抖动由引擎内部吸收（**一次性发出多条文本的适配器
+ * 要自己按条目重试**）。调度器只看得到「整批成功 / 整批失败」，一次调用摊成的
  * N 个请求里任意一个抖动都会让整批失败，所以引擎必须先按条目重试；否则 12 条批次里
- * 第 11 条抖一次就会实打实发出 24 条文本，免费接口的 429 还会把「抖动 → 整批重发 →
+ * 第 11 条抖一次就会实打实发出 24 条文本，服务商的 429 还会把「抖动 → 整批重发 →
  * 限流 → 再整批重发」接成正反馈。
  *
  * 残留风险：某一条连续失败（超出引擎的条目重试预算）时，这里仍会把整批重发一次；
@@ -229,8 +229,8 @@ export async function translateBatch(items: TranslateItem[], deps: BatchDeps): P
    * 同一批里**字面完全相同**的文本只翻一次。
    *
    * 真实网页里重复文本很常见：导航、「Read more」、表头、免责声明能占 20-40% 的段落数。
-   * 而 Google 引擎不支持一次请求多条文本（一条文本一个请求），逐条发等于把免费额度
-   * 白烧在重复段上——正文反而会因 429 失败。缓存 key 是按文本算的，所以重复文本只会
+   * 把它们折叠成一次请求，省的是服务商的额度与 token（同一个文本重复出现时，逐条发出去
+   * 只会让账单变长，正文反而更容易撞上 429）。缓存 key 是按文本算的，所以重复文本只会
    * 一起命中或一起未命中，折叠不会改变任何一条的结果。
    */
   const uniqueTexts: string[] = [];

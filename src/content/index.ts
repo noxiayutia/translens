@@ -133,10 +133,24 @@ function describeTransportError(raw: unknown): string {
   return `无法连接后台：${raw instanceof Error ? raw.message : String(raw)}`;
 }
 
-/** 页面级失败的文案（`ok: false`：设置读不出来这类"连请求都没发出去"的错）。 */
+/**
+ * 页面级失败的文案（`ok: false`：设置读不出来这类"连请求都没发出去"的错）。
+ *
+ * `RATE_LIMIT` 曾经有一句罐头文案（「免费接口限流，请稍后重试或改用自定义 API」）：它**只为
+ * 免费引擎写**，而删掉引擎之后剩下的**唯一**来源是 `openai-compat`（它给的是「接口限流，请稍后重试」），
+ * 所以那句话 100% 是假的；更糟的是它**顶掉**了引擎自己更有信息量的那句——`response.message`
+ * 本来就是引擎给的话。现在原样透传。
+ *
+ * **如实记账**：这一支今天**没有任何测试钉住**（全仓只有这里与 `README.md` 出现过那句话），
+ * 改动不会有测试红。**不许**为此补一条"读起来像是守住了"的恒真断言——正确的守卫是
+ * "没有可用引擎 ⇒ 零请求"与空态那几条，它们测的是行为，不是这句话。
+ *
+ * ⚠ `noticePriority`（哪种错更该先弹）**一个字都不动**：那条判的是优先级，与文案里提不提
+ * 免费接口无关。
+ */
 function describeError(response: { code: string; message: string }): string {
   if (response.code === 'AUTH') return response.message;
-  if (response.code === 'RATE_LIMIT') return '免费接口限流，请稍后重试或改用自定义 API';
+  if (response.code === 'RATE_LIMIT') return response.message;
   return `翻译失败：${response.message}`;
 }
 
@@ -242,13 +256,13 @@ function sameCodeFailureMessage(results: TranslateItemResult[], batchSize: numbe
     return { code: first.code, message: `${message}（在扩展设置里填好 API Key 后重新翻译此页）` };
   }
   if (first.code === 'NETWORK') {
-    // 整批网络失败几乎从不是"抖了一下"，而是这个接口根本到不了：默认的免费 Google 接口
-    // 在很多网络下被完全阻断（连超时都不返回）。只说"翻译失败"会让用户以为插件坏了，
-    // 而真正该做的是去设置页换一个自己能访问的接口。规格 §8「免费接口失效」要求的
-    // 就是这条提示。
+    // 整批网络失败几乎从不是"抖了一下"，而是这个接口根本到不了（连超时都不返回）。
+    // 只说"翻译失败"会让用户以为插件坏了。保留前半句的因果链，把"换一个接口"换成
+    // "核对你自己填的地址"——今天用户配的**就是**他自己的接口，"默认的免费接口"这个主语
+    // 已经不存在了。
     return {
       code: first.code,
-      message: `${message}。如果反复出现，说明当前网络到不了这个翻译接口——默认的免费 Google 接口在很多网络下无法访问，请在扩展设置里改用你能访问的自定义 API。`,
+      message: `${message}。如果反复出现，说明当前网络到不了这个翻译接口——请检查该档案的接口地址是否可达（在扩展设置里核对地址与网络）。`,
     };
   }
   return { code: first.code, message };
