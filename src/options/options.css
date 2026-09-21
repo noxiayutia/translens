@@ -668,8 +668,11 @@ button {
     border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
 
-/* Apple 的按压反馈：轻微收缩，不动尺寸只动 transform（规格 §6：只动 transform 一类）。 */
-button:active {
+/* Apple 的按压反馈：轻微收缩，不动尺寸只动 transform（规格 §6：只动 transform 一类）。
+   `:not(:disabled)` 不是修饰——禁用按钮按下去照样收缩就是"看着还能按"，和上面
+   `.add:disabled` 「禁用必须如实画灰」的纪律相反。守卫按整条选择器点名
+   （`options-css.test.ts` 里 `button:active:not(:disabled)` 那条），写漏限定符当场红。 */
+button:active:not(:disabled) {
   transform: scale(0.975);
 }
 

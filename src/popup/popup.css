@@ -174,7 +174,10 @@ body {
   background: var(--accent-hover);
 }
 
-.primary:active {
+/* 收缩反馈只给未禁用的按钮：禁用态按下去不许动（与 options 侧 `button:active:not(:disabled)`
+   同一纪律，守卫各钉一条同名选择器）。popup 的禁用有三条变体规则兜着外观，这里再把
+   「按压反馈」这一路堵住。 */
+.primary:active:not(:disabled) {
   background: var(--accent-hover);
   filter: brightness(0.94);
   transform: scale(0.975);

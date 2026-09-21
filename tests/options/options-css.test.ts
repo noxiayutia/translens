@@ -167,6 +167,16 @@ describe('设置页样式：D2 控件层', () => {
     expect(knob['position']).toBe('absolute');
     expect(declarations(optionsCss, '.switch:checked::after')['transform']).toBe('translateX(18px)');
   });
+
+  it('按压收缩只给未禁用的按钮（P1：:not(:disabled) 钉在选择器上，禁用态不许反馈）', () => {
+    // 牙在选择器本身：解析器按**完整相等**找规则，样式若写成裸 `button:active` / `.primary:active`，
+    // 这里查 `…:not(:disabled)` 就抛「样式表里没有该选择器」= 当场红，不靠值断言兜选择器。
+    // 禁用按钮按下去照样 scale，就是"看着还能按"——与 `.add:disabled`、`.primary:disabled`
+    // 那两条"禁用必须如实画灰"的纪律正相反。popup 有 `.primary:disabled` 的三条变体，
+    // 所以两边钉同一手法（同置一条用例：popup 的断言不另占一格计数）。
+    expect(declarations(optionsCss, 'button:active:not(:disabled)')['transform']).toBe('scale(0.975)');
+    expect(declarations(popupCss, '.primary:active:not(:disabled)')['transform']).toBe('scale(0.975)');
+  });
 });
 
 describe('设置页样式：popup 镜像纪律（D1 复盘补牙②）', () => {
@@ -181,8 +191,9 @@ describe('设置页样式：popup 镜像纪律（D1 复盘补牙②）', () => {
     expect(rest.match(/(?:^|[;{\s])color:\s*var\(--danger\)/g) ?? []).toEqual([]);
     expect(rest.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
     expect(rest.match(/\b(?:rgba?|hsla?)\(/g) ?? []).toEqual([]);
-    // 刻意**不**断言 opacity：popup.css:320 的 `opacity: 0` 是 .field-toggle 隐藏 checkbox 的
-    // 无障碍通道（appearance 方案的一部分），它必须活着——options 侧的 opacity 禁令不外推。
+    // 刻意**不**断言 opacity：`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 是无障碍
+    // 隐藏通道（appearance 方案的一部分），它必须活着——options 侧的 opacity 禁令不外推。
+    // （注释里引用样式一律写选择器/符号名，**不钉行号**：行号随改动漂移，钉了就是假话源头。）
     // 同理 %23000（data-URI 转义）不含裸 #，hex 扫描对它天然免疫，与 options 守卫同一口径。
   });
 });
