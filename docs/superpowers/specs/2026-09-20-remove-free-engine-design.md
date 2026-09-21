@@ -843,7 +843,14 @@ export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页�
     **已补查**：全仓只有 `src/content/index.ts` 与 `README.md` 出现「免费接口限流」，
     **没有任何测试钉住那句罐头文案**，所以那一支改动不会有测试红（§6.2 已按此改口径）。
     但**同一条用例的 NETWORK 那半句是被钉住的**（`toContain('自定义 API')`），
-    也在同一节写明了处置。E4 落地时仍需再跑一次 `npx vitest run` 确认，别只信这份复核。
+    也在同一节写明了处置。
+    ⚠ **T2a 落地时已把这条从推断升级成实测（第十轮）**：执行者按计划做了反向变异
+    （把 `describeError` 的 `RATE_LIMIT` 支改回罐头文案），在**干净检出**上跑全量 →
+    **`54 files / 1054 passed` 全绿**，实测证实"这一支今天没有任何测试钉住"。
+    **仍然不许为它补恒真断言**；反向证据见计划 T2 Step 8 的 **M4**。
+    另：NETWORK 那半句的守卫**不是三条而是四条 `it`（共六处 `not.toContain('socket hang up')` 断言）**
+    ——计划起草时把这条计数写低报过，且执行者照字面落地成了测试文件里的一句假话，已由控制器就地改正；
+    教训见计划「T1 落地复盘」第 5 条。
 17. 「`manifest.json` 的 `description` 改动不会红任何测试」——复跑确认**没有测试引用
     description**，但 `scripts/zip-dist.test.ts` 用自带的 fixture manifest，
     与真实 manifest 无关（已读），故结论可靠度较高；仍标注为"低风险推断"。
