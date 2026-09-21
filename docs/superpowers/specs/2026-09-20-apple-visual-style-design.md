@@ -17,7 +17,7 @@
 
 ## 2. 范围与非目标
 
-**范围内**：`src/options/options.css`、`src/popup/popup.css`（**必须在范围内**：`tests/options/options-css.test.ts:20-29` 断言两份 CSS 的共用令牌**逐字一致**，只改一边守卫当场红）、`tests/options/options-css.test.ts`（按新值**同步事实**，见 §7）。
+**范围内**：`src/options/options.css`、`src/popup/popup.css`（**必须在范围内**：`options-css.test.ts` 里那条**共用令牌逐字一致**的守卫用例——它遍历 `popup.css` 的 `:root` 每条声明、要求 `options.css` 同名同值——只改一边守卫当场红）、`tests/options/options-css.test.ts`（按新值**同步事实**，见 §7）。
 
 **非目标（明确不做）**：不改 `options.html` / `popup.html` 的结构；不改 `src/options/sections/*.ts` 的任何行为；不重排弹窗布局（只同步令牌与同类控件外观）；不引入图标字体或第三方图标；不加 `backdrop-filter`；不打包字体；不动布局骨架（保持现有居中 `grid: 236px minmax(0,1fr) / max-width 1180 / margin auto`）。
 
@@ -91,26 +91,23 @@
 
 - 过渡一律 `var(--dur) var(--ease)`，只动 `background` / `color` / `border-color` / `transform`；**不动 `width`/`height`/`box-shadow` 大跨度**（绘制代价）。
 - **`@media (prefers-reduced-motion: reduce)` 对设置页是「新增」而不是「保留」**：`options.css` 现状**没有任何 `transition`、也没有这个块**（grep 核实），所以引入过渡的同时必须新建整表关断（`*, *::before, *::after`——样机里只写了裸 `*`，而裸 `*` **不命中伪元素**，本页 chevron 与开关旋钮的过渡恰好都挂在伪元素上）。`popup.css` 现状有一个 scoped 版（只关 `.toggle-track`）；D2 给它的 `.primary` 加过渡之后，**必须**一并升级为整表关断。
-- **焦点环保留且必须保持守卫要求的写法**：`*:focus-visible { outline: … var(--accent); outline-offset: … }`——样机里用 `box-shadow` 发光的那种写法**不能照搬**，会让 `options-css.test.ts:90-94` 红。可以在它旁边补 `box-shadow` 做 Apple 式光晕，但 `outline` 那两行必须原样在。
+- **焦点环保留且必须保持守卫要求的写法**：`*:focus-visible { outline: … var(--accent); outline-offset: … }`——样机里用 `box-shadow` 发光的那种写法**不能照搬**，会让 `options-css.test.ts` 里那条**焦点环守卫用例**红（它要求该规则的 `outline` 含 `var(--accent)` 且写有 `outline-offset`）。可以在它旁边补 `box-shadow` 做 Apple 式光晕，但 `outline` 那两行必须原样在。
 - 对比度：`--ok` 的 `#34c759` 只用于**非文字**元素（开关、状态点）；绿色文字一律 `--ok-text`。同理红色文字用 `--danger-text`。这是"好看"与"看得清"之间必须站住的一侧。
 
 ## 7. 守卫与测试的影响面（实现时最容易踩红的一组）
 
-1. **`options-css.test.ts:20-29`（共用令牌逐字一致）** → `popup.css` 的 `:root` 与暗色块必须同步改，且**弹窗独有的组件**（按钮、开关、下拉）要跟着换外观，否则同一个令牌在两边表现不一致。
-2. **`:31-35` 钉死了暗色具体值**（`--surface: #1c1f23`、`--text: #e8eaed`、`--danger: #f87171`）→ 这三条断言要**按新值同步**。这是"同步事实"，**不是放宽**：仍然必须是精确相等，**不许**改成 `toBeDefined()` 之类。
-3. **`:36-63` 暗色覆盖检查 + `NOT_A_COLOR` 例外清单** → 新增的颜色令牌（`--link`、`--ok-text`、`--danger-text`、`--track-off`、`--chip`、`--hover`）必须在暗色块里各有值；`--knob`（亮暗同 `#fff`）与 `--radius-card`、`--ease`、`--dur` 属"非颜色/亮暗同值"，要进 `NOT_A_COLOR`。该注释已解释过为什么选"列例外"而不是"列白名单"（白名单写不全→假绿，例外写不全→假红，只有假红是安全方向）——**沿用同一方向**。
-4. **`:77-82` 正文不许有颜色字面量** → 所有新色（含开关旋钮白、轨道灰、悬停底、光晕）一律走令牌；`color-mix(in srgb, var(--x) N%, transparent)` 不含颜色字面量，可用。
-   ⚠ **但这两条纪律（连同 `:84-86` 的 `opacity` 禁令）只扫 `options.css`**——`bodyWithoutTokens()` 与那两个正则传的都是 `optionsCss`，**`popup.css` 不在扫描范围内**。实测：守卫全绿时 `popup.css:147` 的 `color: #fff` 与 `:320` 的 `opacity: 0` 都安然无恙。所以**弹窗侧的令牌化是我们自愿遵守的纪律，不是机器把关**：执行者不要以为"popup 里写字面量会红"，也不要反过来把 popup 既存的 `opacity: 0`（无障碍隐藏通道）当成违规去删。新增到 popup 的颜色仍应走令牌。
-5. **`:84-86` 不许 `opacity`** → 次级文字继续用 `--text-2/-3`。
-6. **`:100-105` 窄窗口降级** 与 **`:107-110` `[hidden] { display: none !important }`** → 必须原样保留（后者是搜索功能的地基）。
+> **引用纪律（本单元新立）**：本节与全文引用代码位置**一律用选择器、符号名或断言措辞，不钉行号**——行号会漂（同一条 `opacity: 0` 在本单元里已经漂过两次：起草快照 → D2 → D3）。定位一律以仓库为准。**旧文档不追溯**：单元 B/C 的规格与计划里成批的「文件:行号」写法保留原样（它们此刻仍然有效），这条规矩**从本单元起**生效；写进仓库的注释与断言里引用代码位置，**永远**不许用行号。
+
+1. **共用令牌逐字一致**（守卫用例：遍历 `popup.css` 的 `:root` 每条声明、要求 `options.css` 同名同值；popup 令牌数下限 `>= 17`）→ `popup.css` 的 `:root` 与暗色块必须同步改，且**弹窗独有的组件**（按钮、开关、下拉）要跟着换外观，否则同一个令牌在两边表现不一致。
+2. **暗色三个具体值被钉死**（`--surface` / `--text` / `--danger` 各一条精确相等断言）→ 这三条断言要**按新值同步**。这是"同步事实"，**不是放宽**：仍然必须是精确相等，**不许**改成 `toBeDefined()` 之类。
+3. **暗色覆盖检查 + `NOT_A_COLOR` 例外清单**（现有 5 项：`--radius-sm`、`--radius-md`、`--radius-pill`、`--shadow-card`、`--on-accent`；检查集合是「**在 options.css 正文被 `var()` 引用** 且亮色有定义」的令牌）→ 新增的颜色令牌（`--link`、`--ok-text`、`--danger-text`、`--track-off`、`--chip`、`--hover`）必须在暗色块里各有值；`--knob`（亮暗同 `#fff`）与 `--radius-card`、`--ease`、`--dur` 属"非颜色/亮暗同值"，要进 `NOT_A_COLOR`。该注释已解释过为什么选"列例外"而不是"列白名单"（白名单写不全→假绿，例外写不全→假红，只有假红是安全方向）——**沿用同一方向**。
+4. **正文不许有颜色字面量**（守卫用例：`bodyWithoutTokens()` 去掉两个 `:root` 块后，两个正则扫 `#hex` 与 `rgb(`/`rgba(`/`hsl(`）→ 所有新色（含开关旋钮白、轨道灰、悬停底、光晕）一律走令牌；`color-mix(in srgb, var(--x) N%, transparent)` 不含颜色字面量，可用。
+   ⚠ **但这两条纪律（连同第 5 条的 `opacity` 禁令）只扫 `options.css`**——那两个正则与 `bodyWithoutTokens()` 传的都是 `optionsCss`，**`popup.css` 不在扫描范围内**。实测：守卫全绿时 `popup.css` 里 `.primary` 的 `color: #fff`（D2 已令牌化为 `var(--on-accent)`）与 `.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 都安然无恙。所以**弹窗侧的令牌化是我们自愿遵守的纪律，不是机器把关**：执行者不要以为"popup 里写字面量会红"，也不要反过来把 popup 既存的 `opacity: 0`（无障碍隐藏通道）当成违规去删。新增到 popup 的颜色仍应走令牌。
+5. **不许 `opacity`**（守卫用例：正则带 `^|[;{\s]` 边界、同样只扫 `options.css`）→ 次级文字继续用 `--text-2/-3`。
+6. **窄窗口降级**（守卫用例：`.wrap { display: block }` + `.nav { position: static }` 在 `@media (max-width: 900px)` 内）与 **`[hidden] { display: none !important }`**（守卫用例：该规则的 `display` 精确等于 `none !important`）→ 必须原样保留（后者是搜索功能的地基）。
 7. 行为面**零改动**：`options.test.ts`（31 条）、`engine-*`、`search.test.ts`、`cache-section.test.ts` 等一律不许动；若某条因外观改动而红，说明改到了 DOM/契约，**回退那处改动**而不是改断言。
-8. ⚠ **`--ok` / `--danger` 现在身兼两职**（背景与文字），而新值把它们换成了 iOS 亮绿 `#34c759` / 亮红 `#ff3b30`——**当文字用会掉到不可读**（`#34c759` 在白底上约 2.2:1）。已核实的四处文字用法必须改指 `--ok-text` / `--danger-text`：
-   - `src/options/options.css:672` `color: var(--danger)`
-   - `src/options/options.css:718` `color: var(--ok)`
-   - `src/options/options.css:722` `color: var(--danger)`
-   - `src/popup/popup.css:405` `color: var(--danger)`
-   而 `options.css:322` / `:326` 是状态点的 `background`，**保持**用 `--ok` / `--danger`。
-   **这条守卫抓不到**（CSS 断言只查"颜色是否来自令牌"，不查对比度），所以它是 §9 里点名的**肉眼验收项**：改完必须有人看状态行的绿字/红字是否还读得清。
+8. ✅ **`--ok` / `--danger` 身兼两职的问题已由 D1 落地解决**（`1167511`）：新值把它们换成了 iOS 亮绿 `#34c759` / 亮红 `#ff3b30`，**当文字用会掉到不可读**（`#34c759` 在白底上约 2.2:1），所以四处**文字**用法已改指 `--ok-text` / `--danger-text`——按选择器认，就是：`.status[data-kind="ok"]` 与 `.status[data-kind="err"]` 的 `color`（options）、`.link-danger` 的 `color`（options）、`.hint.warn` 的 `color`（popup）；而 `.dot[data-state="ok"]` / `.dot[data-state="bad"]` 的 **`background`** 与 `.switch:checked` 的 `background` **保持**用 `--ok` / `--danger`（非文字）。
+   **这条守卫抓不到**（CSS 断言只查"颜色是否来自令牌"，不查对比度），所以它仍是 §9 里点名的**肉眼验收项**：改完必须有人看状态行的绿字/红字是否还读得清。
 
 ## 8. 验收标准
 

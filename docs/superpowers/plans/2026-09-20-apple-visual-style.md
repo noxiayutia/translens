@@ -17,28 +17,29 @@
 ## 已核实的前提（不要重新发明）
 
 0. **执行前提**：实现者从「仓库 + 本 Task 的小节」出发。已有文件**直接读文件**（用 `read` 工具）。⚠ **读中文文件一律用 `read` 工具，不要用 pwsh 的 `Get-Content`**——PowerShell 5.1 按 GBK 解 UTF-8，会把中文打乱甚至吞掉换行（控制器今天刚被它骗过一次）。`edit` 的锚点从 `read` 的输出里逐字复制。**锚点纪律**：每次 edit 前先确认 old_string 在该文件恰好出现一次；凡计划给了单行锚而实际有同名行的（本文件已逐个标注 ⚠ 的除外一律按整块锚处理），**用整条规则块（含块头行）作锚**，这是这类 CSS 文件里唯一可靠的定位方式。
-1. **行号会漂，以仓库为准**：下文所有「位置：`文件:行号`」都是**起草/复盘时点的快照**（初稿按 HEAD `8979deb`，复盘注按 `1167511`/`5cc0969`），行号只作导航用；定位一律以锚点文本 + 选择器为准。D1/D2 的落地已把 popup/options 的多数行号推漂数十行——按第 0 条的硬规矩，**这些快照行号永远不许抄进仓库**。
+1. **行号会漂，以仓库为准**：下文所有「位置：`文件:行号`」都是**起草/复盘时点的快照**（初稿按 HEAD `8979deb`，复盘注按 `1167511`/`5cc0969`/`f687e6a`），行号只作导航用；定位一律以锚点文本 + 选择器为准。D1/D2/D3 的落地已把 popup/options 的多数行号推漂数十行——按第 0 条的硬规矩，**这些快照行号永远不许抄进仓库**。**同一条纪律已同步写进规格 §7 的开头**（那里原本成批地用行号，本轮已全部改成选择器/符号措辞）——**旧文档不追溯**：单元 B/C 的规格与计划保留原样（它们此刻仍然有效）。
 2. **基线（写本计划时实测/核过）**：
    - `npx vitest run` → `Test Files 55 passed (55)` / `Tests 1052 passed (1052)`，exit 0（起草者 2026-09-20 本机复跑确认）。
    - 现存 `jinyi-0.1.0.zip`：`64747` 字节，SHA256 `6D66C0FA2FBE3EB9413FA65BB7BD034A3EA3C7ACB477FA36BAE4695CEBE5BEE9`（起草者用 `Get-FileHash` 实测）。`.gitignore` 含 `*.zip` 与 `dist/`，所以 zip 与 dist 不进 `git status`。
    - `npm run typecheck` exit 0、`npm run build` exit 0 且 `verify:dist` 14 项——起草者未复跑；**已由 D1 执行者复跑确认（`1167511`：exit 0 / exit 0 / `✓ 产物校验全部通过（14 项）`）**；D4 仍按收口读数复跑为准。
    - **D1 已落地**（`1167511`，全量 1053；F1 互指自检 + 字节级比对：亮色块除注释首行逐字相同、暗色块 100% 相同）。Task D1 保留作复盘记录，不必重跑。
-   - **D2 已落地**（`5cc0969`，全量 1057、`options-css.test.ts` 13 条、typecheck/build 0；D2 复盘 5 条裁决已并入本计划——含 Step 9/10 的两次「漏写的有牙证明」补录与 D3 前置修正）。执行者从 **Task D3 的 Step 0** 继续（checkbox 不要求补打，以 commit 记录为准）。
-   - ⚠ **硬规矩（D2 复盘②，本仓第 N 次学费号漂移：规格 §11 那次、样机对照那次、这次 popup 的 `opacity: 0` 被 D2 自己从 :320 推到 :341）：写进仓库的注释与断言里引用代码位置，一律用选择器/符号名，不用行号。** 计划正文的表格行号仅作导航（第 1 条前提），**不得抄进代码注释**。
+   - **D2 已落地**（`5cc0969`，全量 1057、`options-css.test.ts` 13 条、typecheck/build 0；D2 复盘 5 条裁决已并入本计划——含 Step 9/10 的两次「漏写的有牙证明」补录与 D3 前置修正）。
+   - **D3 已落地**（**两个提交**：D2 遗留的前置修正 **`9da4c0e`**（按压反馈只给未禁用的按钮 + 注释引用改选择器措辞，全量 **1058**）、D3 主体 **`fab5e7d`**（18px 卡片 + 发丝线、状态点 `color-mix` 光环、徽章/统计数字/搜索框/排印节奏、`profile-editor` 换行修复与隐私清单并入一卡，全量 **1059**，typecheck/build 0）。`options-css.test.ts` 文件终态 **15 条**。**执行者从 Task D4 的 Step 0 继续**（Step 0 / 0b 是本轮新增的两把前置小刀，见下）。
+   - ⚠ **硬规矩（D2 复盘②，本仓第 N 次学费号漂移：规格 §11 那次、样机对照那次、popup 的 `opacity: 0` 那次、**规格 §7 自己那次**）：写进仓库的注释与断言里引用代码位置，一律用选择器/符号名，不用行号。** 计划正文的表格行号仅作导航（第 1 条前提），**不得抄进代码注释**。`opacity: 0` 那一条的漂移链如实记在这里当教材：起草快照 `:320` → D2 落地后 `:341` → D3 落地后 **`:344`**（**认它请认 `.field-toggle > input[type="checkbox"]` 规则里的那一行声明，任何数字都不要再抄**）。
    - ⚠ **改 CSS 之后 zip 的字节数与 SHA 必然变化**。不许把 64747 当成要保持的目标；D4 是「重新记录新值并验证两次一致」。
 3. **本计划只碰 5 个文件**：`src/options/options.css`、`src/popup/popup.css`、`tests/options/options-css.test.ts`、`README.md`（D4 一句）、本计划文件（收口读数回填）。**其余一律不改**——尤其：行为测试 `options.test.ts`（31 条）、`engine-*`、`search.test.ts`、`cache-section.test.ts`、`popup.test.ts` 一条都不许动；若某条因 CSS 改动而红，说明改到了契约，**回退那处 CSS** 而不是改断言。
 
 ### 守卫钉死的七处（`tests/options/options-css.test.ts`，全部走 `tests/helpers/css.ts` 真解析）
 
-| # | 位置 | 事实 | 本计划的应对 |
+| # | 守卫用例（**按断言内容认，不按行号**；括号里是起草快照，仅供导航） | 事实 | 本计划的应对 |
 | --- | --- | --- | --- |
-| 1 | `:20-29` | 遍历 `popup.css :root` 的**每一条声明**（含 `color-scheme`），要求 `options.css :root` 同名同值；options 可以有额外令牌；popup 令牌数 `>= 17` | **D1 两份 CSS 一起改**，且两边 `:root` 写成**逐字相同的块：28 个 `--*` 令牌 + `color-scheme` 声明、共 29 条参与遍历比对**（阈值 `>= 17` 仍过 ✓）。⚠ 遍历的是 popup 的**每条声明**，不只 `--*`。此方向由 **D2 补牙③（Step 10）镜像到暗色块** |
-| 2 | `:31-35` | 钉死暗色具体值 `--surface:#1c1f23`、`--text:#e8eaed`、`--danger:#f87171` | D1 Step 1 **同步成新值** `#1c1c1e` / `#f5f5f7` / `#ff453a`，**仍是精确相等断言**——不许改成 `toBeDefined()` 之类（那是放宽，D1 变异 M3 专门演示为什么） |
-| 3 | `:36-63` | 暗色覆盖检查 + `NOT_A_COLOR` 例外清单（现有 5 项：`--radius-sm`、`--radius-md`、`--radius-pill`、`--shadow-card`、`--on-accent`）；检查集合是「**在 options.css 正文被 `var()` 引用** 且亮色有定义」的令牌 | 新增**非颜色/亮暗同值**令牌 `--radius-card`、`--ease`、`--dur`、`--knob` 进清单；新增**颜色**令牌 `--link`、`--ok-text`、`--danger-text`、`--track-off`、`--chip`、`--hover` 在 options 暗色块里**各有值**。方向沿用清单注释的口径：例外写不全→假红（安全），白名单写不全→假绿（危险） |
-| 4 | `:77-82` | 正文（去掉两个 `:root` 块后）不许出现 `#hex` / `rgb(`/`rgba(`/`hsl(` 字面量 | 所有新颜色令牌化。`color-mix(in srgb, var(--x) N%, transparent)` **不含颜色字面量，合法**（光环、旋钮阴影、危险悬停底都靠它）。⚠ 扫描范围只有 options 正文——**popup 侧由 D2 补牙②（Step 9）补同款镜像断言**（规格 517ab09 已把这条作用域事实写进 §7） |
-| 5 | `:84-86` | options.css 全表不许出现 `opacity:`（正则带 `^|[;{\s]` 边界，**不查 popup.css**） | 新 CSS 零 `opacity`。样机 `.switch input { opacity: 0 }` 的写法**不迁移**（真实 `.switch` 就是 checkbox 本体，`appearance:none` 直接画皮，不需要藏自己）。**D2 补牙②有意不把这条禁令外推到 popup**——`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 是它的无障碍隐藏通道，必须活着 |
-| 6 | `:90-94` | `*:focus-visible` 必须保留 **`outline: … var(--accent)` + `outline-offset`** | 样机用的是 `box-shadow` 发光、`outline:none` 的写法——**不许照搬**。焦点环规则 D2 **一字不改**；Apple 式光晕放在 `input:focus` 的 `box-shadow: 0 0 0 3px var(--accent-weak)`（现状已有，保留） |
-| 7 | `:96-110` | `summary{cursor:pointer}`、窄窗口 `.wrap{display:block}`+`.nav{position:static}`、`[hidden]{display:none !important}` 必须原样存活（最后一条是搜索的地基） | 这三条规则本计划**不碰**（D2 给 summary 加的是 `::before` 与 display 行，`summary` 块里 `cursor: pointer;` 那行留在原地） |
+| 1 | 共用令牌逐字一致（`:20-29`） | 遍历 `popup.css :root` 的**每一条声明**（含 `color-scheme`），要求 `options.css :root` 同名同值；options 可以有额外令牌；popup 令牌数 `>= 17` | **D1 两份 CSS 一起改**，且两边 `:root` 写成**逐字相同的块：28 个 `--*` 令牌 + `color-scheme` 声明、共 29 条参与遍历比对**（阈值 `>= 17` 仍过 ✓）。⚠ 遍历的是 popup 的**每条声明**，不只 `--*`。此方向由 **D2 补牙③（Step 10）镜像到暗色块** |
+| 2 | 暗色三个具体值各一条精确相等（`:31-35`） | 钉死暗色具体值 `--surface:#1c1f23`、`--text:#e8eaed`、`--danger:#f87171` | D1 Step 1 **同步成新值** `#1c1c1e` / `#f5f5f7` / `#ff453a`，**仍是精确相等断言**——不许改成 `toBeDefined()` 之类（那是放宽，D1 变异 M3 专门演示为什么） |
+| 3 | 暗色覆盖检查 + `NOT_A_COLOR` 例外清单（`:36-63`） | 例外清单现有 5 项：`--radius-sm`、`--radius-md`、`--radius-pill`、`--shadow-card`、`--on-accent`；检查集合是「**在 options.css 正文被 `var()` 引用** 且亮色有定义」的令牌 | 新增**非颜色/亮暗同值**令牌 `--radius-card`、`--ease`、`--dur`、`--knob` 进清单；新增**颜色**令牌 `--link`、`--ok-text`、`--danger-text`、`--track-off`、`--chip`、`--hover` 在 options 暗色块里**各有值**。方向沿用清单注释的口径：例外写不全→假红（安全），白名单写不全→假绿（危险） |
+| 4 | 正文不许有颜色字面量（`bodyWithoutTokens()` + 两个正则，`:77-82`） | 正文（去掉两个 `:root` 块后）不许出现 `#hex` / `rgb(`/`rgba(`/`hsl(` 字面量 | 所有新颜色令牌化。`color-mix(in srgb, var(--x) N%, transparent)` **不含颜色字面量，合法**（光环、旋钮阴影、危险悬停底都靠它）。⚠ 扫描范围只有 options 正文——**popup 侧由 D2 补牙②（Step 9）补同款镜像断言**（规格 517ab09 已把这条作用域事实写进 §7） |
+| 5 | options 全表不许出现 `opacity:`（正则带 `^|[;{\s]` 边界，`:84-86`） | **不查 popup.css** | 新 CSS 零 `opacity`。样机 `.switch input { opacity: 0 }` 的写法**不迁移**（真实 `.switch` 就是 checkbox 本体，`appearance:none` 直接画皮，不需要藏自己）。**D2 补牙②有意不把这条禁令外推到 popup**——`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 是它的无障碍隐藏通道，必须活着 |
+| 6 | 焦点环（`*:focus-visible`，`:90-94`） | 必须保留 **`outline: … var(--accent)` + `outline-offset`** | 样机用的是 `box-shadow` 发光、`outline:none` 的写法——**不许照搬**。焦点环规则 D2 **一字不改**；Apple 式光晕放在 `input:focus` 的 `box-shadow: 0 0 0 3px var(--accent-weak)`（现状已有，保留） |
+| 7 | `summary{cursor:pointer}`、窄窗口 `.wrap{display:block}`+`.nav{position:static}`、`[hidden]{display:none !important}`（`:96-110`） | 三条规则必须原样存活（最后一条是搜索的地基） | 这三条规则本计划**不碰**（D2 给 summary 加的是 `::before` 与 display 行，`summary` 块里 `cursor: pointer;` 那行留在原地） |
 
 ### 守卫增牙账（本计划在「七处」之外追加的断言；随 Task 增长）
 
@@ -49,6 +50,7 @@
 | D2 Step 9 | **popup 镜像**：`color:` 上 --ok/--danger 禁令 + `:root` 外 hex/rgba/hsl 扫描（opacity 通道刻意豁免） | ②a（正则层）与 ②b（hex 层 `expected [ '#ffffff' ] to deeply equal []`）**两次独立运行** |
 | D2 Step 10 | **暗块跨文件**：popup 暗块声明集 ⊆ options 暗块 + `>= 20` 防空转 | ③a 漂值点名 + ③b 清空炸下限（`expected 0 to be greater than or equal to 20`），两次独立 |
 | D3 Step 0 | **按压契约**：`button:active:not(:disabled)`（options）与 `.primary:active:not(:disabled)`（popup）的 `transform` 声明 | 0d：各自漂回裸选择器 → 解析器抛错，两次独立 |
+| **D4 Step 0** | **按压/悬停反馈只给未禁用按钮（popup 的 `[data-active="true"]` 那一路）**：`declarations(popupCss, '.primary[data-active="true"]:active:not(:disabled)')['filter']` 精确 `toBe('brightness(0.92)')` | Step 0 的 `0c`：改断言先跑 → 解析器抛「样式表里没有选择器「.primary[data-active="true"]:active:not(:disabled)」」= 牙在；D4 表 **M16** 复认（把 CSS 退回合并规则 `.primary[data-active="true"]:hover, .primary[data-active="true"]:active` → 同一条断言再抛错） |
 | D3 Step 1 | 统计数字 24px/650/-0.03em/tabular + 状态点 color-mix 光环 | D3 Step 12 M1/M2 |
 
 （引用位置一律选择器/符号名——见前提 0 的硬规矩。文件终态 15 条用例。）
@@ -104,9 +106,9 @@
 
 | 文件 | 责任 | 动作 |
 | --- | --- | --- |
-| `src/options/options.css` | 设置页全部视觉（852 行；`*.html` 唯一样式来源） | D1 令牌 + 3 处对比度迁移；D2 控件；D3 版式。**除这两个 Task 外不碰** |
-| `src/popup/popup.css` | 弹窗视觉（452 行）。与 options 共用 `:root` 令牌组 | D1 同令牌块（逐字一致）+ `.hint.warn` 文字色；D2 同类控件升皮。**不重排信息层级、不动 body 宽度** |
-| `tests/options/options-css.test.ts` | 样式纪律守卫 | D1 同步 3 个钉死值 + `NOT_A_COLOR` + 新增对比度纪律用例；D2 新增 4 条（控件层 2 + popup 镜像 1 + 暗块跨文件 1）；D3 新增 2 条（Step 0 按压契约 + Step 1 版式；文件终态 **15 条**）。**只加牙，不磨牙** |
+| `src/options/options.css` | 设置页全部视觉（`*.html` 唯一样式来源） | D1 令牌 + 3 处对比度迁移；D2 控件；D3 版式；**D4 Step 0b 删 `.nav-link` 的死声明 `position: relative`（若查证确认无消费者）**。**除这四个 Task 外不碰** |
+| `src/popup/popup.css` | 弹窗视觉。与 options 共用 `:root` 令牌组 | D1 同令牌块（逐字一致）+ `.hint.warn` 文字色；D2 同类控件升皮；**D4 Step 0 把 `.primary[data-active="true"]` 的合并规则拆成 `:hover:not(:disabled)` / `:active:not(:disabled)` 两条**。**不重排信息层级、不动 body 宽度** |
+| `tests/options/options-css.test.ts` | 样式纪律守卫 | D1 同步 3 个钉死值 + `NOT_A_COLOR` + 新增对比度纪律用例；D2 新增 4 条（控件层 2 + popup 镜像 1 + 暗块跨文件 1）；D3 新增 2 条（Step 0 按压契约 + Step 1 版式）；**D4 Step 0 新增 1 条（「显示原文」态两路反馈的 `:not(:disabled)` 契约）→ 文件终态 15 + 1 = **16 条**。**只加牙，不磨牙** |
 | `README.md` | 用户文档 | 仅 D4 在「已知限制 → 设置页」加一句视觉基线说明 |
 | 本文件 | 计划与落地读数 | 执行者回填「落地读数表」 |
 
@@ -1629,6 +1631,8 @@ body {
 Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 15 passed (15)`。
 Run: `npx vitest run` → Expected: `Test Files 55 passed (55)` / `Tests 1059 passed (1059)`（1052 + D1 1 + D2 4 + D3 2）。
 
+> ⚠ **这两个读数是 D3 落地当时的历史记录**（D3 已落地：`9da4c0e` 1058 + `fab5e7d` 1059），**不必重跑**；执行者从 **D4 Step 0** 继续，那之后的全量终态是 **1060**（D4 Step 0 新增 1 条守卫用例）。
+
 - [ ] **Step 12：D3 变异核验（当场 revert）**
 
 | # | 变异 | 期望 |
@@ -1651,10 +1655,96 @@ git commit -m "style(options): 单元 D3——18px 卡片+发丝线、状态点 
 **Files:**
 - 读：全部；跑：五条命令；改：`README.md` 一句 + 本计划「落地读数表」。
 
+- [ ] **Step 0：前置修正——popup 的 `[data-active="true"]` 那一路也要"禁用零反馈"；先断言（红）后 CSS（绿）**
+
+D2 给「显示原文」态写的是**一条合并规则**：
+
+```css
+.primary[data-active="true"]:hover,
+.primary[data-active="true"]:active { background: var(--text-2); filter: brightness(0.92); }
+```
+
+D3 Step 0 只堵住了 `.primary:active`（收缩那一路），**这一路的 `filter` 没堵**。特异度账（执行者裁决 (b) 里已核）：
+
+- **背景那一路被压回**：`.primary[data-active="true"]:hover` = (0,3,0)，`.primary:disabled:hover` 也是 (0,3,0)，后者在文件里**排得更后** ⇒ 同特异度按源码顺序，禁用时背景由禁用规则接管 ✓；
+- **`filter` 那一路没有对应复位**：文件里只有 `.primary:disabled`（无 `:active` 变体），所以**理论上**按压禁用的「显示原文」按钮时 `brightness(0.92)` 仍会生效。
+
+**如实定性**：多数浏览器对 `disabled` 按钮**本就不触发 `:active`**，所以这是**防御性统一、不改变现可见行为**——但"禁用零反馈"既然立了（D3 Step 0），就该贯彻到底，且这条守卫顺手把"到底有没有人管这一路"钉成事实。
+
+0a. 在 `tests/options/options-css.test.ts` **文件末尾**追加：
+
+```ts
+describe('设置页样式：D4 前置修正（「显示原文」态的两路反馈也只给未禁用按钮）', () => {
+  it('popup 的 [data-active="true"]：hover / active 两路的 filter 都带 :not(:disabled)（后缀是契约）', () => {
+    // 解析器对查不到的选择器直接抛错：CSS 若漂回那条合并规则
+    // `.primary[data-active="true"]:hover, .primary[data-active="true"]:active`，
+    // 这两条查询就当场红（Error 形态，不是断言 diff）——这就是这条断言的牙的读法。
+    // ⚠ 两条断言写在同一个 it 里：vitest 遇首个失败即抛出，所以**一次运行只响一层**；
+    //    要分别证明两半各有牙，必须按 0d 做两次独立运行（本计划第②条硬规矩）。
+    expect(declarations(popupCss, '.primary[data-active="true"]:hover:not(:disabled)')['filter']).toBe('brightness(0.92)');
+    expect(declarations(popupCss, '.primary[data-active="true"]:active:not(:disabled)')['filter']).toBe('brightness(0.92)');
+  });
+});
+```
+
+Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 1 failed | 15 passed (16)`，红形态是抛错：`Error: 样式表里没有选择器「.primary[data-active="true"]:hover:not(:disabled)」`（此刻 CSS 里是合并规则）。
+
+0b. `src/popup/popup.css` 把那条合并规则**拆成两条**（声明行一字不动，只加限定符；顺序保持 `:hover` 在前）：
+
+```css
+/* 改前（一条合并规则）： */
+.primary[data-active="true"]:hover,
+.primary[data-active="true"]:active {
+  background: var(--text-2);
+  filter: brightness(0.92);
+}
+
+/* 改后（两条，各自带 :not(:disabled)）——与上面 `.primary:active:not(:disabled)` 同一纪律：
+   禁用态按下去不许有任何视觉反馈，这一路也不例外。 */
+.primary[data-active="true"]:hover:not(:disabled) {
+  background: var(--text-2);
+  filter: brightness(0.92);
+}
+
+.primary[data-active="true"]:active:not(:disabled) {
+  background: var(--text-2);
+  filter: brightness(0.92);
+}
+```
+
+> ⚠ **必须拆成两条，不能写成"合并规则 + 两个 `:not(:disabled)`"**：本仓解析器要求**选择器完整相等**（空白折叠后），合并规则的查询串得写整串 `.primary[data-active="true"]:hover:not(:disabled), .primary[data-active="true"]:active:not(:disabled)`——那样断言就变成"钉一整串字面量"，而拆开写让两条查询各自可读、也让 0d 的两次独立有牙证明各自点名。另外 `background` 那行与 `.primary[data-active="true"]` 单条规则重复（原先就重复），**保持原样**、不顺手删（那是另一件事）。
+
+0c. Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 16 passed (16)`；Run: `npx vitest run` → Expected: `Tests 1060 passed (1060)`。
+
+0d. **有牙证明（两次独立运行——同一 `it` 首个失败会吞掉后面的读数）**：
+- (i) 把 CSS 退回那条合并规则 → 单跑 → 红在抛错且点名 `:hover:not(:disabled)`（两条断言里的第一条）→ revert。
+- (ii) 确认 (i) 已 revert 后，**只把 `:active` 那一条漂回不带限定符**（`.primary[data-active="true"]:active { … }`，`:hover` 那条保留）→ 单跑 → 红在抛错且点名 `:active:not(:disabled)`——证明第二条查询独立有牙（若 (i) 没 revert，看到的只会是第一条的抛错）→ revert → `16 passed`。
+
+- [ ] **Step 0b：死声明查证——`.nav-link` 的 `position: relative`（先查证，再动手）**
+
+D3 的版式层删掉了导航的 `::before` 高亮条（那条绝对定位的竖条原来靠 `.nav-link { position: relative }` 当包含块），所以这条声明**疑似已无消费者**。**不许凭印象删**——按下面四步当场查证：
+
+① **查证（四条命令，原文贴进报告）**：
+
+```powershell
+git grep -n "position: absolute" -- src/options/options.css   # 有没有"绝对定位的后代"还需要它当包含块
+git grep -n "z-index" -- src/options/options.css              # z-index 也会依赖包含块
+git grep -n "nav-link" -- src/options/options.css src/options/options.html
+git grep -nE "nav-link::(before|after)|nav-link[^{]*\{" -- src/options/options.css
+```
+
+② **无消费者 → 删掉那条声明**（只删 `position: relative;` 一行，`.nav-link` 块其余声明与注释一字不动）。
+③ **有消费者 → 保留**，并在该行**就地加一行注释**写明"为谁而留"（点名那个 `position: absolute` 的后代选择器）。
+④ **两种结果都要记进报告与「落地读数表」**（"删了/留了 + 依据"）。
+
+> **为什么这一步不加断言**：这是死代码清理，不是契约。给"没有 `position: relative`"写一条断言毫无意义——CSS 里"少一个包含块"本身不可观察，而且将来真需要它时那条断言会拦住正当修改。**别为它造一条恒真式**。
+>
+> **起草者预查（以执行者当场查证为准）**：按上面的命令在当前仓库跑过一遍——options.css 里的 `position: absolute` 只出现在 `.sr-only`、`.switch::after`、`.search .mag` 三处（都不是 `.nav-link` 的后代）；全文件 `z-index` **0 命中**；`::before` 只有 `.status::before`、`summary::before`（含 `details[open]` 变体）与 reduced-motion 的 `*::before`，**没有 `.nav-link::before`**；`.nav-link` 块里也没有 `overflow`。⇒ **倾向结论 = 无消费者、可删**；仍要执行者当场复跑确认。
+
 - [ ] **Step 1：全量自动化五条（期望值都来自本计划「已核实的前提」与 D1-D3 的投影；任何一条偏离，回查而不是改期望）**
 
 ```powershell
-npx vitest run          # 期望 Test Files 55 passed (55) / Tests 1059 passed (1059)（1052 + D1 1 + D2 4 + D3 2）
+npx vitest run          # 期望 Test Files 55 passed (55) / Tests 1060 passed (1060)（1052 + D1 1 + D2 4 + D3 2 + D4 Step 0 的 1）
 npm run typecheck       # 期望 exit 0，零输出
 npm run build           # 期望 exit 0，且 verify:dist 尾行「✓ 产物校验全部通过（14 项）」
 npm run zip             # 期望「✓ …：16 个文件，N 字节——已解回临时目录逐字节比对通过」（N 是新值，不是 64747！）
@@ -1691,7 +1781,8 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 | M8 | D3 | 删 `.stat b` 的 tabular 行 | D3 用例红 | |
 | M9 | D3 | 删 `[hidden]` 块 | 守卫 7 红（行为测试不红——它才是牙） | |
 | M10 | 焦点环 | 把 `*:focus-visible` 的 `outline: 2px solid var(--accent);` 行删掉 | 守卫 6 红：`expected undefined toContain 'var(--accent)'` | |
-| M15 | D3·前置修正 | options 的 `button:active:not(:disabled)` 漂回裸 `button:active {` | 按压契约用例红在**解析器抛错**：`样式表里没有选择器「button:active:not(:disabled)」`（popup 侧同型，两次**独立运行**，见 D3 Step 0d） | |
+| M15 | D3·前置修正 | options 的 `button:active:not(:disabled)` 漂回裸 `button:active {` | 按压契约用例红在**解析器抛错**：`样式表里没有选择器「button:active:not(:disabled)」`（popup 侧同型，两次**独立运行**，见 D3 Step 0d） |
+| **M16** | **D4 Step 0** | popup 的合并规则漂回去：`.primary[data-active="true"]:hover:not(:disabled)` / `…:active:not(:disabled)` 两条合回 `.primary[data-active="true"]:hover, .primary[data-active="true"]:active { … }` | 新的守卫用例红在**解析器抛错**：`样式表里没有选择器「.primary[data-active="true"]:hover:not(:disabled)」`（同 `it` 里第一条先响）。**复认要按 Step 0d 做两次独立运行**：只把 `:active` 那条漂回不带限定符 → 抛错点名 `:active:not(:disabled)`（证明第二条独立有牙） | |
 
 - [ ] **Step 4：README 一句话（D4 唯一允许的文档改动）**
 
@@ -1716,15 +1807,21 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 1. `chrome://extensions` → 「加载已解压的扩展程序」→ 选 `dist/` → 打开设置页与弹窗；系统切明/暗各看一遍。
 2. **头号验收项（§7.8）**：状态行绿字/红字是否读得清（保存一次设置出绿字、删一个不存在的东西/断网测连接出红字）。
 3. 清单：档案行「编辑/取消/测试连接/+ 添加」是不是蓝链接药丸、「删除」是不是红字药丸、保存是药丸主按钮；开关是不是 iOS 绿轨白钮；输入框灰底、悬停显边、聚焦蓝边；下拉 chevron 在位；折叠区 `▾` 是 CSS 画的旋转边、展开动画在 reduced-motion 下关闭；统计数字刷新不跳位；搜索框行为（输入/清空/`hidden` 兜底）与改前一致；窄窗口（拖窄到 <900px）导航退顶部一行、`.wrap` 不成 grid；**展开档案行时编辑器横贯整行**（D3 修复项：改前它会被挤成第三列）；**行级小按钮的高度与对齐是否舒服**（D2 复盘④：`.tiny` 从固定 28px 高改为 padding 撑高，行内「编辑/收起/删除」比改前矮约 2–3px——非契约、无断言，只能肉眼看；不顺眼就调 `.tiny` 的 padding，别动行为测试）。
+   **本轮补强的三处细节（都是"没有测试兜"的地方，看的时候盯着它们）**：
+   - **① 编辑器有没有被卡片的 `overflow: hidden` 裁掉**：D3 Step 8 那套 `flex-wrap: wrap` + 编辑器 `flex: 1 0 100%` + **负 margin 出血到卡缘**，唯一没有断言兜的就是这一处——负 margin 与 `overflow: hidden` 是天生一对冤家。盯：展开任意一个档案行，编辑器**横贯到卡片左右边缘、四角不缺、底部不被切**；内容长到需要滚动时也不该出现"最后一排被切掉半行"。
+   - **② 窄窗口下导航"还能用"且不吸顶吃屏**：拖到 <900px，导航应退成**顶部一行可横滚的胶囊链接**、**不再吸顶**（`position: static`），正文不该被它挤掉半屏；横滚能滚到最后一个链接（「隐私」）；同时 `.wrap` 不再是两列 grid。
+   - **③ 行级小按钮高度**：见上一条括注（D2 复盘④已登记，本轮复看一遍即可，不重复记账）。
 
 - [ ] **Step 6：回填本计划「落地读数表」+ 全绿复跑 + Commit**
 
 ```powershell
-npx vitest run   # 最后一次，期望 1059
+npx vitest run   # 最后一次，期望 1060
 git add -- README.md docs/superpowers/plans/2026-09-20-apple-visual-style.md
 git commit -m "docs: 单元 D4 收口——README 视觉基线一句 + 落地读数回填（zip 新值、变异汇总、肉眼验收交用户）" -- README.md docs/superpowers/plans/2026-09-20-apple-visual-style.md
 git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.zip / dist/ 盖住）
 ```
+
+> ⚠ **本 Task 的提交不止这一条**：Step 0（popup 的两条 `:not(:disabled)` + 守卫用例）与 Step 0b（`.nav-link` 死声明）**都是改源码/测试的步骤**，按仓库的 TDD 纪律应当**先各自提交**（或与 D4 收口合并成一条，但要在提交信息里说清包含哪些文件）；Step 6 这条只提交"README + 本计划"两个文档路径。**提交前按硬规矩核 `git status --porcelain`：路径清单要覆盖本 Task 改过的每个文件**（`src/popup/popup.css`、可能还有 `src/options/options.css` 与 `tests/options/options-css.test.ts`）。
 
 ---
 
@@ -1732,9 +1829,9 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 
 | 规格 §8 | 落点 |
 | --- | --- |
-| 1. 全绿（基线 55/1052 → 计划投影 55/1059）；行为断言一条未改 | D1 Step 8（已落地 `1167511`，1053）/ D2 Step 11（已落地 `5cc0969`，1057）/ D3 Steps 0c & 11（1058 → 1059）/ D4 Steps 1、6 + `git show` 复查各轮 diff 只含 5 个文件（「文件结构」表） |
+| 1. 全绿（基线 55/1052 → 计划投影 55/1060）；行为断言一条未改 | **按提交号读，不按 Step 号找中间态**：D1 = `1167511`（1053）/ D2 = `5cc0969`（1057）/ **D3 的两个提交 = `9da4c0e`（前置修正，1058）+ `fab5e7d`（主体，1059）** / **D4 = Step 0（+1 条守卫用例）+ Steps 1、6**（终态 **55 files / 1060**）。另加 `git show` 复查各轮 diff 只含「文件结构」表里那 5 个文件 |
 | 2. typecheck 0 / build 0 且 verify:dist 14 项 / zip 可复现（连跑两次一致） | D4 Step 1（重记录新字节与新 SHA） |
-| 3. options-css 全绿，且「逐字一致」「暗色覆盖」**仍在真实把关** | D1 Step 9 的 M2 + **D2 Steps 9/10 的四处「有牙证明」（②a/②b/③a/③b，各自独立运行）** + D3 Step 0d 两次 + D4 Step 3 汇总表（M1-M2、M11-M15 必做；M2b 有⑥的时序前置） |
+| 3. options-css 全绿，且「逐字一致」「暗色覆盖」**仍在真实把关** | D1 Step 9 的 M2 + **D2 Steps 9/10 的四处「有牙证明」（②a/②b/③a/③b，各自独立运行）** + D3 Step 0d 两次 + **D4 Step 0d 两次（新守卫的两半各一次）** + D4 Step 3 汇总表（M1-M2、M11-**M16** 必做；M2b 有⑥的时序前置） |
 | 4. 明暗两套用户肉眼验收，不声称"已验证观感" | D4 Step 5（头号项 = §7.8 绿字/红字） |
 | 5. 零 `backdrop-filter`、零外链资源 | D4 Step 2 grep + build 内 verify:dist 的资源检查 |
 
@@ -1746,14 +1843,17 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 
 | 读数 | 来源命令 | 记录值 |
 | --- | --- | --- |
-| 全量 vitest（终态） | `npx vitest run` 的 `Test Files` 与 `Tests` 两行原文 | |
+| **计数链（按提交号读）** | 各轮 `npx vitest run` 的 `Tests` 行 | 基线 **1052**（55 files）→ D1 `1167511` = **1053** → D2 `5cc0969` = **1057** → **D3 前置修正 `9da4c0e` = 1058** → **D3 主体 `fab5e7d` = 1059** → **D4 Step 0 = 1060**（+1 条守卫用例）。⚠ 中间态只按**提交号**找，不存在"D3 Step 0c"那种独立提交 |
+| **`options-css.test.ts` 文件用例数** | `npx vitest run tests/options/options-css.test.ts` | D2 后 13 → D3 后 **15** → **D4 Step 0 后 16** |
+| 全量 vitest（终态） | `npx vitest run` 的 `Test Files` 与 `Tests` 两行原文 | 期望 `55 files / 1060 passed`（以输出为准） |
 | typecheck | `npm run typecheck` 的 exit code | |
-| build + verify | `npm run build` 尾行 `✓ 产物校验全部通过（N 项）` 的 N | |
-| zip 文件数与字节（新值） | `npm run zip` 输出的「… 个文件，… 字节」原文 | |
+| build + verify | `npm run build` 尾行 `✓ 产物校验全部通过（N 项）` 的 N | 期望 14 |
+| zip 文件数与字节（新值） | `npm run zip` 输出的「… 个文件，… 字节」原文 | （改 CSS 后**必然变化**；旧值 16 文件 / 64747 字节只作对照，不许试图调回去） |
 | zip SHA256 第 1 次 | `npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash` | |
 | zip SHA256 第 2 次（同上重跑） | 同左，重跑 | （两次必须逐字相同；不同则排查 zip-dist 固定时间戳前提） |
-| D4 Step 3 变异汇总 | 每行「结果」列 | |
-| 肉眼验收（明 / 暗 / 状态行绿红字 / 开关与下拉与搜索 / 窄窗口 / 展开编辑器） | Chrome 加载 `dist/`，D4 Step 5 清单 | （每条填「可读/不对味+哪一处」；不对味回 Task，不改行为测试） |
+| **D4 Step 0b 的查证结论** | 那四条 `git grep` 的输出原文 | 填「**删了** / **留了（为谁而留）**」+ 依据；起草者预查倾向"无消费者、可删"，以执行者当场查证为准 |
+| D4 Step 3 变异汇总 | 每行「结果」列（含 **M16**） | |
+| 肉眼验收（明 / 暗 / 状态行绿红字 / 开关与下拉与搜索 / **窄窗口导航不吸顶** / **展开编辑器的负 margin 出血有没有被 `overflow: hidden` 裁** / 行级小按钮高度） | Chrome 加载 `dist/`，D4 Step 5 清单 | （每条填「可读/不对味+哪一处」；不对味回 Task，不改行为测试） |
 
 ## 自审记录（起草者完稿后按 writing-plans 三查）
 
@@ -1781,3 +1881,13 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 - **⑤Step 4 措辞**：改为「三块替换为四块——原三块改写 + **新增** `select{}` chevron 块」，与落地实况一致。
 - **计数链再迁移**：D3 新增 Step 0 的 1 条用例 → D3 终态文件 **15** 条、全量 **1059**（1052 + D1 1 + D2 4 + D3 2）；D3 Step 1 期望红形态改「1 failed | 14 passed (15)」；D4 Steps 1/6、验收对照表同步。
 - 同步的执行事实（非契约读数）：D2 落地后 popup `transition:` 4 处、options 6 处；`[hidden]`/焦点环/`summary`/窄窗口的引用一律选择器措辞，行号快照不再单点信任。
+
+**7. D3 复盘修订（执行者落地于 `9da4c0e` 前置修正 + `fab5e7d` 主体，2026-09-21）**：
+- **落地是两个提交，不是"一个 Task 一个提交"**：D2 遗留的按压契约修复（`button:active:not(:disabled)` 双端 + 注释引用改选择器措辞）**独立成 `9da4c0e`（全量 1058）**，D3 主体 `fab5e7d`（**1059**）。验收对照表与落地读数表**一律按提交号读**——不写「D3 Steps 0c & 11」这种让人去找一个不存在中间态的措辞。
+- **D3 的终态与投影**：`options-css.test.ts` 文件 **15 条**、全量 **1059**、typecheck/build 0；`profile-editor` 换行修复（`flex-wrap: wrap` + 编辑器 `flex: 1 0 100%` + **负 margin 出血到卡缘**）与隐私清单并入一卡是本轮**唯一没有断言兜**的外观改动 → 已由 D4 Step 5 的肉眼清单①点名（负 margin 与卡片 `overflow: hidden` 是天生一对冤家）。
+- **本轮（D4）新增两把前置小刀**（一把"先断言后改 CSS"，一把"先查证再动手"）：
+  - **Step 0（裁决 b）**：popup 的 `.primary[data-active="true"]:hover, …:active` 合并规则里，`filter: brightness(0.92)` 在 `:active` 那一路**没有被禁用态复位**（背景那一路被同特异度、排得更后的 `.primary:disabled:hover` 压回）。**如实定性 = 防御性统一、不改变现可见行为**（多数浏览器对 disabled 按钮不触发 `:active`），但"禁用零反馈"要贯彻 ⇒ 拆成两条带 `:not(:disabled)` 的规则 + **1 条守卫用例**（→ 文件 **16 条**、全量 **1060**），并登记「守卫增牙账」与 D4 表 **M16**（含两次独立有牙证明）。
+  - **Step 0b（裁决 c）**：`.nav-link { position: relative }` 在导航 `::before` 高亮条被删后疑似无消费者——**先查证再动手**（四条 `git grep`）：无消费者→删、有→保留并注明"为谁而留"；两种结果都进报告与落地表。**不加断言**（死代码清理，钉它没有意义、还会拦住将来正当的使用）。起草者预查倾向"可删"（唯一的三个 `position: absolute` 分属 `.sr-only` / `.switch::after` / `.search .mag`，`z-index` **0 命中**，无 `.nav-link::before`），但**以执行者当场查证为准**。
+- **规格侧同轮修正（裁决 d）**：规格 §7 原写成批「文件:行号」（焦点环守卫、`opacity: 0` 的出处等），其中 popup 的 `opacity: 0` 已被前置修正推到 `:344` ⇒ **规格从那一刻起在教假话**。本轮把规格 §2/§6/§7 的行号引用**全部改成选择器/符号措辞**（并把 §7.8 的"四处待迁移"改写为"**已由 D1 落地**，按选择器认"），同时把「**代码位置引用一律不钉行号**」这条硬规矩**写进规格 §7 的开头**；**旧文档不追溯**（单元 B/C 的规格与计划保留原样）。
+- **计数链的读法**（写在这里，免得下一个人再去推）：基线 1052 → D1 `1167511` 1053 → D2 `5cc0969` 1057 → D3 `9da4c0e` 1058 → D3 `fab5e7d` 1059 → **D4 Step 0 后 1060**；`options-css.test.ts`：13 → 15 → **16**。
+- 未独立复验项（如实）：D1/D2/D3 的执行者读数（1053/1057/1059、13/15 条、typecheck/build 0）转引自控制器与提交信息，起草者未重跑；本轮只独立做了静态查证（死声明预查的三条 `git grep`）与规格/计划的计数一致性核对。
