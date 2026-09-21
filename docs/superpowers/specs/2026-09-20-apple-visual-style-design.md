@@ -72,7 +72,7 @@
 
 - **按钮**：主按钮 = 药丸（`--radius-pill`）+ `--accent` 底 + `--on-accent` 字，`padding: 7px 17px`，悬停 `--accent-hover`，`:active` 轻微 `scale(.975)`。次级动作（`编辑`/`取消`/`测试连接`/`+ 添加`）= **蓝链接**（`--link`，透明底，悬停 `--accent-weak` 药丸底）。危险动作（`删除`）= `--danger-text` 链接，悬停 `color-mix(in srgb, var(--danger) 12%, transparent)`。
 - **iOS 开关**：`<input type="checkbox">` + `appearance: none`，轨道 44×26（`--track-off`），选中 `--ok`，旋钮 20px `--knob` + 阴影，`translateX(18px)`，过渡用 `--dur var(--ease)`。**不新增 DOM**（现有 checkbox 直接套样式）。
-- **输入框 / 下拉 / 文本域**：底 `--surface-3`、边框透明、圆角 `--radius-md`；悬停显出 `--border` 边框并把底提到 `--surface`；聚焦边框 `--accent` + 底 `--surface`。下拉的 chevron 继续用现有 `linear-gradient` 画法（**不许**引入图标字体），颜色走 `--text-3`。
+- **输入框 / 下拉 / 文本域**：底 `--surface-3`、边框透明、圆角 `--radius-md`；悬停显出 `--border` 边框并把底提到 `--surface`；聚焦边框 `--accent` + 底 `--surface`。下拉的 chevron 用 `linear-gradient` 自绘（**这是新引入的画法**——`options.css` 现状是**原生箭头**，全文没有一处 `linear-gradient`；`popup.css` 用的是另一套 `mask` + data-URI，不动它）。**不许**引入图标字体或外链资源，颜色走 `--text-3`。
 - **卡片与分组**：`.group` / `.item` / `.profile-row` / `.stat` 用 `--radius-card` + `--border` 发丝 + `--shadow-card`；行与行之间用**发丝分隔线**（`border-top: 1px solid var(--border)`）而不是各自一个盒子；行最小高 44–46px，左右内边距 16px。
 - **状态点 `.dot`**：8px 圆 + `box-shadow: 0 0 0 3px color-mix(in srgb, var(--X) 22%, transparent)` 的光环；三态分别 `--ok` / `--text-3` / `--danger`。
 - **徽章**：药丸 + `--chip` 底 + `--text-2` 字（`.badge-muted`）；「使用中」「当前」用 `--accent-weak` 底 + `--accent` 字。
@@ -90,7 +90,7 @@
 ## 6. 动效与可达性
 
 - 过渡一律 `var(--dur) var(--ease)`，只动 `background` / `color` / `border-color` / `transform`；**不动 `width`/`height`/`box-shadow` 大跨度**（绘制代价）。
-- 必须保留 `@media (prefers-reduced-motion: reduce)` 下关掉过渡。
+- **`@media (prefers-reduced-motion: reduce)` 对设置页是「新增」而不是「保留」**：`options.css` 现状**没有任何 `transition`、也没有这个块**（grep 核实），所以引入过渡的同时必须新建整表关断（`*, *::before, *::after`——样机里只写了裸 `*`，而裸 `*` **不命中伪元素**，本页 chevron 与开关旋钮的过渡恰好都挂在伪元素上）。`popup.css` 现状有一个 scoped 版（只关 `.toggle-track`）；D2 给它的 `.primary` 加过渡之后，**必须**一并升级为整表关断。
 - **焦点环保留且必须保持守卫要求的写法**：`*:focus-visible { outline: … var(--accent); outline-offset: … }`——样机里用 `box-shadow` 发光的那种写法**不能照搬**，会让 `options-css.test.ts:90-94` 红。可以在它旁边补 `box-shadow` 做 Apple 式光晕，但 `outline` 那两行必须原样在。
 - 对比度：`--ok` 的 `#34c759` 只用于**非文字**元素（开关、状态点）；绿色文字一律 `--ok-text`。同理红色文字用 `--danger-text`。这是"好看"与"看得清"之间必须站住的一侧。
 
@@ -100,6 +100,7 @@
 2. **`:31-35` 钉死了暗色具体值**（`--surface: #1c1f23`、`--text: #e8eaed`、`--danger: #f87171`）→ 这三条断言要**按新值同步**。这是"同步事实"，**不是放宽**：仍然必须是精确相等，**不许**改成 `toBeDefined()` 之类。
 3. **`:36-63` 暗色覆盖检查 + `NOT_A_COLOR` 例外清单** → 新增的颜色令牌（`--link`、`--ok-text`、`--danger-text`、`--track-off`、`--chip`、`--hover`）必须在暗色块里各有值；`--knob`（亮暗同 `#fff`）与 `--radius-card`、`--ease`、`--dur` 属"非颜色/亮暗同值"，要进 `NOT_A_COLOR`。该注释已解释过为什么选"列例外"而不是"列白名单"（白名单写不全→假绿，例外写不全→假红，只有假红是安全方向）——**沿用同一方向**。
 4. **`:77-82` 正文不许有颜色字面量** → 所有新色（含开关旋钮白、轨道灰、悬停底、光晕）一律走令牌；`color-mix(in srgb, var(--x) N%, transparent)` 不含颜色字面量，可用。
+   ⚠ **但这两条纪律（连同 `:84-86` 的 `opacity` 禁令）只扫 `options.css`**——`bodyWithoutTokens()` 与那两个正则传的都是 `optionsCss`，**`popup.css` 不在扫描范围内**。实测：守卫全绿时 `popup.css:147` 的 `color: #fff` 与 `:320` 的 `opacity: 0` 都安然无恙。所以**弹窗侧的令牌化是我们自愿遵守的纪律，不是机器把关**：执行者不要以为"popup 里写字面量会红"，也不要反过来把 popup 既存的 `opacity: 0`（无障碍隐藏通道）当成违规去删。新增到 popup 的颜色仍应走令牌。
 5. **`:84-86` 不许 `opacity`** → 次级文字继续用 `--text-2/-3`。
 6. **`:100-105` 窄窗口降级** 与 **`:107-110` `[hidden] { display: none !important }`** → 必须原样保留（后者是搜索功能的地基）。
 7. 行为面**零改动**：`options.test.ts`（31 条）、`engine-*`、`search.test.ts`、`cache-section.test.ts` 等一律不许动；若某条因外观改动而红，说明改到了 DOM/契约，**回退那处改动**而不是改断言。
