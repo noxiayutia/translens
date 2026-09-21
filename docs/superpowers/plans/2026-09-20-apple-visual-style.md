@@ -17,12 +17,14 @@
 ## 已核实的前提（不要重新发明）
 
 0. **执行前提**：实现者从「仓库 + 本 Task 的小节」出发。已有文件**直接读文件**（用 `read` 工具）。⚠ **读中文文件一律用 `read` 工具，不要用 pwsh 的 `Get-Content`**——PowerShell 5.1 按 GBK 解 UTF-8，会把中文打乱甚至吞掉换行（控制器今天刚被它骗过一次）。`edit` 的锚点从 `read` 的输出里逐字复制。**锚点纪律**：每次 edit 前先确认 old_string 在该文件恰好出现一次；凡计划给了单行锚而实际有同名行的（本文件已逐个标注 ⚠ 的除外一律按整块锚处理），**用整条规则块（含块头行）作锚**，这是这类 CSS 文件里唯一可靠的定位方式。
-1. **行号会漂，以仓库为准**：下文所有「位置：`文件:行号`」都按 HEAD `8979deb` 的当前内容标注，行号只作导航用；定位一律以锚点文本 + 选择器为准。
+1. **行号会漂，以仓库为准**：下文所有「位置：`文件:行号`」都是**起草/复盘时点的快照**（初稿按 HEAD `8979deb`，复盘注按 `1167511`/`5cc0969`），行号只作导航用；定位一律以锚点文本 + 选择器为准。D1/D2 的落地已把 popup/options 的多数行号推漂数十行——按第 0 条的硬规矩，**这些快照行号永远不许抄进仓库**。
 2. **基线（写本计划时实测/核过）**：
    - `npx vitest run` → `Test Files 55 passed (55)` / `Tests 1052 passed (1052)`，exit 0（起草者 2026-09-20 本机复跑确认）。
    - 现存 `jinyi-0.1.0.zip`：`64747` 字节，SHA256 `6D66C0FA2FBE3EB9413FA65BB7BD034A3EA3C7ACB477FA36BAE4695CEBE5BEE9`（起草者用 `Get-FileHash` 实测）。`.gitignore` 含 `*.zip` 与 `dist/`，所以 zip 与 dist 不进 `git status`。
    - `npm run typecheck` exit 0、`npm run build` exit 0 且 `verify:dist` 14 项——起草者未复跑；**已由 D1 执行者复跑确认（`1167511`：exit 0 / exit 0 / `✓ 产物校验全部通过（14 项）`）**；D4 仍按收口读数复跑为准。
-   - **D1 已落地**（`1167511`，全量 1053；F1 互指自检 + 字节级比对：亮色块除注释首行逐字相同、暗色块 100% 相同）。下文 Task D1 保留作复盘记录，不必重跑；执行者从 **Task D2 的 Step 0** 继续（checkbox 不要求补打，以 commit 记录为准）。
+   - **D1 已落地**（`1167511`，全量 1053；F1 互指自检 + 字节级比对：亮色块除注释首行逐字相同、暗色块 100% 相同）。Task D1 保留作复盘记录，不必重跑。
+   - **D2 已落地**（`5cc0969`，全量 1057、`options-css.test.ts` 13 条、typecheck/build 0；D2 复盘 5 条裁决已并入本计划——含 Step 9/10 的两次「漏写的有牙证明」补录与 D3 前置修正）。执行者从 **Task D3 的 Step 0** 继续（checkbox 不要求补打，以 commit 记录为准）。
+   - ⚠ **硬规矩（D2 复盘②，本仓第 N 次学费号漂移：规格 §11 那次、样机对照那次、这次 popup 的 `opacity: 0` 被 D2 自己从 :320 推到 :341）：写进仓库的注释与断言里引用代码位置，一律用选择器/符号名，不用行号。** 计划正文的表格行号仅作导航（第 1 条前提），**不得抄进代码注释**。
    - ⚠ **改 CSS 之后 zip 的字节数与 SHA 必然变化**。不许把 64747 当成要保持的目标；D4 是「重新记录新值并验证两次一致」。
 3. **本计划只碰 5 个文件**：`src/options/options.css`、`src/popup/popup.css`、`tests/options/options-css.test.ts`、`README.md`（D4 一句）、本计划文件（收口读数回填）。**其余一律不改**——尤其：行为测试 `options.test.ts`（31 条）、`engine-*`、`search.test.ts`、`cache-section.test.ts`、`popup.test.ts` 一条都不许动；若某条因 CSS 改动而红，说明改到了契约，**回退那处 CSS** 而不是改断言。
 
@@ -34,9 +36,22 @@
 | 2 | `:31-35` | 钉死暗色具体值 `--surface:#1c1f23`、`--text:#e8eaed`、`--danger:#f87171` | D1 Step 1 **同步成新值** `#1c1c1e` / `#f5f5f7` / `#ff453a`，**仍是精确相等断言**——不许改成 `toBeDefined()` 之类（那是放宽，D1 变异 M3 专门演示为什么） |
 | 3 | `:36-63` | 暗色覆盖检查 + `NOT_A_COLOR` 例外清单（现有 5 项：`--radius-sm`、`--radius-md`、`--radius-pill`、`--shadow-card`、`--on-accent`）；检查集合是「**在 options.css 正文被 `var()` 引用** 且亮色有定义」的令牌 | 新增**非颜色/亮暗同值**令牌 `--radius-card`、`--ease`、`--dur`、`--knob` 进清单；新增**颜色**令牌 `--link`、`--ok-text`、`--danger-text`、`--track-off`、`--chip`、`--hover` 在 options 暗色块里**各有值**。方向沿用清单注释的口径：例外写不全→假红（安全），白名单写不全→假绿（危险） |
 | 4 | `:77-82` | 正文（去掉两个 `:root` 块后）不许出现 `#hex` / `rgb(`/`rgba(`/`hsl(` 字面量 | 所有新颜色令牌化。`color-mix(in srgb, var(--x) N%, transparent)` **不含颜色字面量，合法**（光环、旋钮阴影、危险悬停底都靠它）。⚠ 扫描范围只有 options 正文——**popup 侧由 D2 补牙②（Step 9）补同款镜像断言**（规格 517ab09 已把这条作用域事实写进 §7） |
-| 5 | `:84-86` | options.css 全表不许出现 `opacity:`（正则带 `^|[;{\s]` 边界，**不查 popup.css**） | 新 CSS 零 `opacity`。样机 `.switch input { opacity: 0 }` 的写法**不迁移**（真实 `.switch` 就是 checkbox 本体，`appearance:none` 直接画皮，不需要藏自己）。**D2 补牙②有意不把这条禁令外推到 popup**——popup:320 的 `opacity: 0` 是它的无障碍隐藏通道，必须活着 |
+| 5 | `:84-86` | options.css 全表不许出现 `opacity:`（正则带 `^|[;{\s]` 边界，**不查 popup.css**） | 新 CSS 零 `opacity`。样机 `.switch input { opacity: 0 }` 的写法**不迁移**（真实 `.switch` 就是 checkbox 本体，`appearance:none` 直接画皮，不需要藏自己）。**D2 补牙②有意不把这条禁令外推到 popup**——`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 是它的无障碍隐藏通道，必须活着 |
 | 6 | `:90-94` | `*:focus-visible` 必须保留 **`outline: … var(--accent)` + `outline-offset`** | 样机用的是 `box-shadow` 发光、`outline:none` 的写法——**不许照搬**。焦点环规则 D2 **一字不改**；Apple 式光晕放在 `input:focus` 的 `box-shadow: 0 0 0 3px var(--accent-weak)`（现状已有，保留） |
 | 7 | `:96-110` | `summary{cursor:pointer}`、窄窗口 `.wrap{display:block}`+`.nav{position:static}`、`[hidden]{display:none !important}` 必须原样存活（最后一条是搜索的地基） | 这三条规则本计划**不碰**（D2 给 summary 加的是 `::before` 与 display 行，`summary` 块里 `cursor: pointer;` 那行留在原地） |
+
+### 守卫增牙账（本计划在「七处」之外追加的断言；随 Task 增长）
+
+| 追加于 | 断言 | 牙的实证 |
+| --- | --- | --- |
+| D1 Step 1 | 对比度纪律（options 正则×2 + 四处声明 toBe + 两处背景反向钉） | Step 9 M2/M4；第二层由 **M4b**（删正则复跑）实证 |
+| D2 Step 1 | 按钮体系（合并壳/药丸/--link/color-mix 悬停）+ iOS 开关（appearance/--track-off/--ok/--knob/translateX） | D2 Step 12 M1-M4（各自独立运行） |
+| D2 Step 9 | **popup 镜像**：`color:` 上 --ok/--danger 禁令 + `:root` 外 hex/rgba/hsl 扫描（opacity 通道刻意豁免） | ②a（正则层）与 ②b（hex 层 `expected [ '#ffffff' ] to deeply equal []`）**两次独立运行** |
+| D2 Step 10 | **暗块跨文件**：popup 暗块声明集 ⊆ options 暗块 + `>= 20` 防空转 | ③a 漂值点名 + ③b 清空炸下限（`expected 0 to be greater than or equal to 20`），两次独立 |
+| D3 Step 0 | **按压契约**：`button:active:not(:disabled)`（options）与 `.primary:active:not(:disabled)`（popup）的 `transform` 声明 | 0d：各自漂回裸选择器 → 解析器抛错，两次独立 |
+| D3 Step 1 | 统计数字 24px/650/-0.03em/tabular + 状态点 color-mix 光环 | D3 Step 12 M1/M2 |
+
+（引用位置一律选择器/符号名——见前提 0 的硬规矩。文件终态 15 条用例。）
 
 ### 解析器语义（`tests/helpers/css.ts`——写期望与断言前必须按这个来）
 
@@ -91,7 +106,7 @@
 | --- | --- | --- |
 | `src/options/options.css` | 设置页全部视觉（852 行；`*.html` 唯一样式来源） | D1 令牌 + 3 处对比度迁移；D2 控件；D3 版式。**除这两个 Task 外不碰** |
 | `src/popup/popup.css` | 弹窗视觉（452 行）。与 options 共用 `:root` 令牌组 | D1 同令牌块（逐字一致）+ `.hint.warn` 文字色；D2 同类控件升皮。**不重排信息层级、不动 body 宽度** |
-| `tests/options/options-css.test.ts` | 样式纪律守卫 | D1 同步 3 个钉死值 + `NOT_A_COLOR` + 新增对比度纪律用例；D2 新增 4 条（控件层 2 + popup 镜像 1 + 暗块跨文件 1）；D3 新增 1 条（文件终态 **14 条**）。**只加牙，不磨牙** |
+| `tests/options/options-css.test.ts` | 样式纪律守卫 | D1 同步 3 个钉死值 + `NOT_A_COLOR` + 新增对比度纪律用例；D2 新增 4 条（控件层 2 + popup 镜像 1 + 暗块跨文件 1）；D3 新增 2 条（Step 0 按压契约 + Step 1 版式；文件终态 **15 条**）。**只加牙，不磨牙** |
 | `README.md` | 用户文档 | 仅 D4 在「已知限制 → 设置页」加一句视觉基线说明 |
 | 本文件 | 计划与落地读数 | 执行者回填「落地读数表」 |
 
@@ -422,8 +437,11 @@ button {
     border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
 
-/* Apple 的按压反馈：轻微收缩，不动尺寸只动 transform（规格 §6：只动 transform 一类）。 */
-button:active {
+/* Apple 的按压反馈：轻微收缩，不动尺寸只动 transform（规格 §6：只动 transform 一类）。
+   ⚠ :not(:disabled)——禁用态按下仍收缩等于"看着还能按"，与单元 B 给 .add:disabled 画灰
+   的同一条纪律相反。D2 落地（5cc0969）按本节初稿写的是裸 `button:active`，这条归一
+   （两份 CSS + 新守卫断言）已并入 **D3 Step 0（前置修正）**，见该步。 */
+button:active:not(:disabled) {
   transform: scale(0.975);
 }
 
@@ -530,7 +548,7 @@ button:active {
 
 - [ ] **Step 4：options.css——输入框 / 下拉（chevron 用样机的 linear-gradient 画法）**
 
-把「表单控件」小节开头的三段（`input[type="text"], … textarea { … }`、`input:hover, … { … }`、`input:focus, … { … }`）替换为：
+把「表单控件」小节开头的**三块**（`input[type="text"], … textarea { … }`、`input:hover, … { … }`、`input:focus, … { … }`）替换为**四块**——原三块改写 + **新增**一个 `select { … }` chevron 块（D2 落地实况与此一致；按"三块换三块"数会漏掉新块）：
 
 ```css
 input[type="text"],
@@ -741,13 +759,13 @@ details[open] summary::before {
 ```
 改为
 ```css
-.primary:active {
+.primary:active:not(:disabled) {
   background: var(--accent-hover);
   filter: brightness(0.94);
   transform: scale(0.975);
 }
 ```
-（`filter` 留着：禁用态靠 `filter: none` 复位，三条 disabled 规则不动。⚠ 本弹窗的 reduced-motion 块现状只关 `.toggle-track` 两处——`.primary` 加了过渡后它不再够用，由 8g 统一升级。）
+（`filter` 留着：禁用态靠 `filter: none` 复位，三条 disabled 规则不动；`:not(:disabled)` 与 options 的 `button:active:not(:disabled)` 同一条理由——三条 disabled 规则治的正是「禁用看着可点」，禁用态再按压收缩是反向补漏。**修订注（D2 复盘 ③）**：落地块初稿写的是裸 `.primary:active`，选择器补正并入 **D3 Step 0（前置修正）**。⚠ 本弹窗的 reduced-motion 块现状只关 `.toggle-track` 两处——`.primary` 加了过渡后它不再够用，由 8g 统一升级。）
 
 8b. 开关轨道（样机 iOS 规格落在这份文件自己的 DOM 上——隐藏 checkbox + `.toggle-track`）：把 `.toggle-track { … }`、`.toggle-track::after { … }`、`:checked + .toggle-track { … }`、`:checked + .toggle-track::after { … }` 四块替换为：
 
@@ -863,8 +881,10 @@ describe('设置页样式：popup 镜像纪律（D1 复盘补牙②）', () => {
     expect(rest.match(/(?:^|[;{\s])color:\s*var\(--danger\)/g) ?? []).toEqual([]);
     expect(rest.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
     expect(rest.match(/\b(?:rgba?|hsla?)\(/g) ?? []).toEqual([]);
-    // 刻意**不**断言 opacity：popup.css:320 的 `opacity: 0` 是 .field-toggle 隐藏 checkbox 的
-    // 无障碍通道（appearance 方案的一部分），它必须活着——options 侧的 opacity 禁令不外推。
+    // 刻意**不**断言 opacity：`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 是
+    // popup 隐藏 checkbox 的无障碍通道（appearance 方案的一部分），它必须活着——
+    // options 侧的 opacity 禁令不外推。（⚠ 引用代码位置用选择器，不钉行号：这条声明被
+    // D2 自己的改动从起草快照推走了几十行——行号是易碎品，选择器才是。）
     // 同理 %23000（data-URI 转义）不含裸 #，hex 扫描对它天然免疫，与 options 守卫同一口径。
   });
 });
@@ -872,7 +892,9 @@ describe('设置页样式：popup 镜像纪律（D1 复盘补牙②）', () => {
 
 Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 12 passed (12)`（生而绿——若此刻有红，说明 Step 8 漏做了 popup 的字面量清理，回补 Step 8 而不是改断言）。
 
-**有牙证明 ②（当场变异 + revert）**：在 popup.css 的 `.status` 块尾部临时加一行 `  color: var(--ok);` → Run 同上 → Expected: 该 it 红，第一条数组断言非空（命中含 `color: var(--ok)` 的串）；**删掉那行** → 复跑 `12 passed`。
+**有牙证明 ②a（正则层，当场变异 + revert）**：在 popup.css 的 `.status` 块尾部临时加一行 `  color: var(--ok);` → Run 同上 → Expected: 该 it 红，命中 `expected [ ' color: var(--ok)' ] to deeply equal []`；**删掉那行** → 复跑 `12 passed`。
+
+**有牙证明 ②b（hex 层——必须独立一次运行，D2 复盘补录）**：确认 ②a 已 revert 后，在 popup.css 的 `.status` 块尾部加 `  color: #ffffff;` → Run 同上 → Expected: 红在 hex 层断言，执行者实测消息：`expected [ '#ffffff' ] to deeply equal []`；删掉 → `12 passed`。⚠ 这一层**不与 ②a 同批跑**：同一 `it` 里首个失败断言会吞掉后面的读数——对比度正则排在 hex 之前，若 ②a 的变异还没 revert 就跑 ②b，只会看到正则层的红，误判「hex 层没牙」。
 
 - [ ] **Step 10：补牙③——暗色块跨文件逐字一致（守卫①只比亮色的盲区）**
 
@@ -900,7 +922,9 @@ describe('设置页样式：暗色块跨文件一致（D1 复盘补牙③）', (
 
 Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 13 passed (13)`（D1 落地时两块暗色已逐字一致，生而绿）。
 
-**有牙证明 ③（当场变异 + revert）**：把 popup.css 暗色块的 `--text: #f5f5f7;` 临时改成 `--text: #e8eaed;` → Run 同上 → Expected: 该 it 红且**点名** `--text`：`expected '--text: #f5f5f7' to be '--text: #e8eaed'`；**改回** → 复跑 `13 passed`。
+**有牙证明 ③a（漂值，当场变异 + revert）**：把 popup.css 暗色块的 `--text: #f5f5f7;` 临时改成 `--text: #e8eaed;` → Run 同上 → Expected: 该 it 红且**点名** `--text`：`expected '--text: #f5f5f7' to be '--text: #e8eaed'`；**改回** → 复跑 `13 passed`。
+
+**有牙证明 ③b（清空——必须独立一次运行，D2 复盘补录）**：确认 ③a 已 revert 后，把 popup.css 暗色块 `@media (prefers-color-scheme: dark) { :root { … } }` 里的 **20 条声明全部删空**（留空 `:root {}`）→ Run 同上 → Expected: 执行者实测 `expected 0 to be greater than or equal to 20`——漂值proof 只证明逐条比对有牙，**这条证明防空转的下限断言本身也有牙**（清空后 for 循环零次迭代、逐条比对全部"通过"，唯一响的就是 `>= 20`）。恢复全部声明 → `13 passed`。⚠ 同样不许与 ③a 同批跑。
 
 - [ ] **Step 11：跑测试**
 
@@ -928,10 +952,42 @@ git commit -m "style(options): 单元 D2——药丸主按钮/蓝链接次级/�
 ## Task D3：版式层（卡片与分组 / 发丝线 / 状态点光环 / 徽章 / 统计数字 / 搜索框 / 排印节奏 + 编辑器换行修复）
 
 **Files:**
-- Modify: `tests/options/options-css.test.ts`（追加 1 个用例）
-- Modify: `src/options/options.css`（下列 Step 2-10 共 30 来处小改；窄窗口与 `[hidden]` 两块**不碰**）
+- Modify: `tests/options/options-css.test.ts`（追加 2 条用例：Step 0 按压契约 1 条 + Step 1 版式 1 条）
+- Modify: `src/options/options.css`（Step 0 前置修正 + 下列 Step 1-10 共 30 来处小改；窄窗口与 `[hidden]` 两块**不碰**）
+- Modify: `src/popup/popup.css`（仅 Step 0 的一个块头：`.primary:active` → `.primary:active:not(:disabled)`）
 
-**如实声明**：D3 的外观改动里，被断言钉住的只有统计数字与状态点光环（Step 1 的一条用例）；其余（发丝线、圆角、编辑器换行、排印）没有断言兜着，靠 D4 的肉眼验收。不为其造恒真式。
+**如实声明**：D3 的外观改动里，被断言钉住的只有统计数字、状态点光环与前置修正的按压契约（Step 0/1 的两条用例）；其余（发丝线、圆角、编辑器换行、排印）没有断言兜着，靠 D4 的肉眼验收。不为其造恒真式。
+
+- [ ] **Step 0：前置修正（D2 复盘③）——`:disabled` 不该有按压反馈；先断言（红）后两份 CSS（绿）**
+
+D2 落地的全局 `button:active { transform: scale(0.975) }`（及 popup 的 `.primary:active`）会作用到**禁用按钮**：按下去仍收缩 = "看着还能按"，与单元 B 专门给 `.add:disabled` 画灰的纪律相反。本步把它归一为 `:not(:disabled)` 并加一条守卫断言。
+
+0a. 在 `tests/options/options-css.test.ts` **文件末尾**追加：
+
+```ts
+describe('设置页样式：D3 前置修正（禁用态按压契约，D2 复盘③）', () => {
+  it('两份 CSS 的按压反馈都只作用于非 disabled 按钮（:not(:disabled) 后缀是契约）', () => {
+    // 解析器对查不到的选择器直接抛错：哪份文件的这个选择器漂回裸 `...:active`，
+    // 对应的查询就当场红（Error 形态，不是断言 diff）——这就是这条断言的牙的读法。
+    expect(declarations(optionsCss, 'button:active:not(:disabled)')['transform']).toBe('scale(0.975)');
+    expect(declarations(popupCss, '.primary:active:not(:disabled)')['transform']).toBe('scale(0.975)');
+  });
+});
+```
+
+Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 1 failed | 13 passed (14)`，红形态是抛错：`Error: 样式表里没有选择器「button:active:not(:disabled)」`（D2 落地时是裸 `button:active`）。
+
+0b. 两份 CSS 各改一个块头（声明行一字不动）：
+- `src/options/options.css`：`button:active {` → `button:active:not(:disabled) {`（块上方注释按 D2 Step 2 的修订版补 `:not(:disabled)` 理由一句）。
+- `src/popup/popup.css`：`.primary:active {` → `.primary:active:not(:disabled) {`。
+
+0c. Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 14 passed (14)`。Run: `npx vitest run` → Expected: `Tests 1058 passed (1058)`。
+
+> **落地注（起草者在场观察）**：执行时这条用例被并进了既有的 `describe('设置页样式：D2 控件层')`（标题「按压收缩只给未禁用的按钮（P1…）」，两文件断言同置一条 `it`、popup 不另占计数）——与上面给的独立 describe 是**同一条断言、同一处牙**，describe 归属差异不追改；本步的期望计数按 14 条成立。
+
+0d. **有牙证明（两次独立运行——同一 `it` 首个失败会吞掉后面的读数，这是本计划第②条硬规矩的又一次应用）**：
+- (i) options 的选择器漂回裸 `button:active {` → 单跑 → 红在**抛错**（点名 `button:active:not(:disabled)`）→ revert。
+- (ii) 确认 (i) 已 revert 后，popup 漂回裸 `.primary:active {` → 单跑 → 红在抛错且点名的是 `.primary:active:not(:disabled)`——证明第二处查询独立有牙（若 (i) 没 revert，看到的只会是第一处的抛错）→ revert → `14 passed`。
 
 - [ ] **Step 1：先加一条有牙的用例**
 
@@ -955,7 +1011,7 @@ describe('设置页样式：D3 版式层（只钉两条，其余肉眼验收—�
 });
 ```
 
-Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 1 failed | 13 passed (14)`（红在统计数字第一条：`AssertionError: expected '20px' to be '24px'`——现状 `.stat b` 是 20px）。
+Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 1 failed | 14 passed (15)`（红在统计数字第一条：`AssertionError: expected '20px' to be '24px'`——现状 `.stat b` 是 20px）。
 
 - [ ] **Step 2：排印节奏（规格 §5）——body 与标题**
 
@@ -1570,8 +1626,8 @@ body {
 
 - [ ] **Step 11：跑测试**
 
-Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 14 passed (14)`。
-Run: `npx vitest run` → Expected: `Test Files 55 passed (55)` / `Tests 1058 passed (1058)`（1052 + 1 + 4 + 1）。
+Run: `npx vitest run tests/options/options-css.test.ts` → Expected: `Tests 15 passed (15)`。
+Run: `npx vitest run` → Expected: `Test Files 55 passed (55)` / `Tests 1059 passed (1059)`（1052 + D1 1 + D2 4 + D3 2）。
 
 - [ ] **Step 12：D3 变异核验（当场 revert）**
 
@@ -1598,7 +1654,7 @@ git commit -m "style(options): 单元 D3——18px 卡片+发丝线、状态点 
 - [ ] **Step 1：全量自动化五条（期望值都来自本计划「已核实的前提」与 D1-D3 的投影；任何一条偏离，回查而不是改期望）**
 
 ```powershell
-npx vitest run          # 期望 Test Files 55 passed (55) / Tests 1058 passed (1058)（1052 + D1 1 + D2 4 + D3 1）
+npx vitest run          # 期望 Test Files 55 passed (55) / Tests 1059 passed (1059)（1052 + D1 1 + D2 4 + D3 2）
 npm run typecheck       # 期望 exit 0，零输出
 npm run build           # 期望 exit 0，且 verify:dist 尾行「✓ 产物校验全部通过（14 项）」
 npm run zip             # 期望「✓ …：16 个文件，N 字节——已解回临时目录逐字节比对通过」（N 是新值，不是 64747！）
@@ -1613,7 +1669,7 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 
 - `src/options/options.css` 里搜 `backdrop-filter`、`@import`、`url(` → 三处都期望 0 命中；
 - `src/popup/popup.css` 里搜 `backdrop-filter`、`@import` → 期望 0；搜 `url(` → **只允许**既存的 `--chevron` data-URI 一处（`%23000` 转义，无裸 `#`，D 轮不新增第二条）；
-- options.css 搜 `opacity` → 期望 0（守卫同款口径；popup.css 里 grep 单词 `opacity` 有两处命中——文件头纪律注释一处 + **声明只有一处**：`:320` 隐藏 checkbox 的 `opacity: 0`，那是无障碍通道，**保持原样**）；
+- options.css 搜 `opacity` → 期望 0（守卫同款口径；popup.css 里 grep 单词 `opacity` 有两处命中——文件头纪律注释一处 + 声明只有一处：**`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0`**，那是无障碍隐藏通道，**保持原样**；按前提 0 的硬规矩，此处及一切注释/断言都不钉它的行号——它在 D2 里已从起草快照的位置漂移过几十行）；
 - 两文件搜 `#[0-9a-fA-F]{3,8}\b` 于 `:root` 块之外 → options 期望 0，popup 也应为 0（D2 已把 `#fff` 清掉）。
 
 - [ ] **Step 3：变异验证汇总（规格 §8.3——「守卫仍在把关」要一次点齐；每条当场 revert 并复跑全绿）**
@@ -1635,6 +1691,7 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 | M8 | D3 | 删 `.stat b` 的 tabular 行 | D3 用例红 | |
 | M9 | D3 | 删 `[hidden]` 块 | 守卫 7 红（行为测试不红——它才是牙） | |
 | M10 | 焦点环 | 把 `*:focus-visible` 的 `outline: 2px solid var(--accent);` 行删掉 | 守卫 6 红：`expected undefined toContain 'var(--accent)'` | |
+| M15 | D3·前置修正 | options 的 `button:active:not(:disabled)` 漂回裸 `button:active {` | 按压契约用例红在**解析器抛错**：`样式表里没有选择器「button:active:not(:disabled)」`（popup 侧同型，两次**独立运行**，见 D3 Step 0d） | |
 
 - [ ] **Step 4：README 一句话（D4 唯一允许的文档改动）**
 
@@ -1658,12 +1715,12 @@ npm run zip; (Get-FileHash -Algorithm SHA256 .\jinyi-0.1.0.zip).Hash   # 期望�
 
 1. `chrome://extensions` → 「加载已解压的扩展程序」→ 选 `dist/` → 打开设置页与弹窗；系统切明/暗各看一遍。
 2. **头号验收项（§7.8）**：状态行绿字/红字是否读得清（保存一次设置出绿字、删一个不存在的东西/断网测连接出红字）。
-3. 清单：档案行「编辑/取消/测试连接/+ 添加」是不是蓝链接药丸、「删除」是不是红字药丸、保存是药丸主按钮；开关是不是 iOS 绿轨白钮；输入框灰底、悬停显边、聚焦蓝边；下拉 chevron 在位；折叠区 `▾` 是 CSS 画的旋转边、展开动画在 reduced-motion 下关闭；统计数字刷新不跳位；搜索框行为（输入/清空/`hidden` 兜底）与改前一致；窄窗口（拖窄到 <900px）导航退顶部一行、`.wrap` 不成 grid；**展开档案行时编辑器横贯整行**（D3 修复项：改前它会被挤成第三列）。
+3. 清单：档案行「编辑/取消/测试连接/+ 添加」是不是蓝链接药丸、「删除」是不是红字药丸、保存是药丸主按钮；开关是不是 iOS 绿轨白钮；输入框灰底、悬停显边、聚焦蓝边；下拉 chevron 在位；折叠区 `▾` 是 CSS 画的旋转边、展开动画在 reduced-motion 下关闭；统计数字刷新不跳位；搜索框行为（输入/清空/`hidden` 兜底）与改前一致；窄窗口（拖窄到 <900px）导航退顶部一行、`.wrap` 不成 grid；**展开档案行时编辑器横贯整行**（D3 修复项：改前它会被挤成第三列）；**行级小按钮的高度与对齐是否舒服**（D2 复盘④：`.tiny` 从固定 28px 高改为 padding 撑高，行内「编辑/收起/删除」比改前矮约 2–3px——非契约、无断言，只能肉眼看；不顺眼就调 `.tiny` 的 padding，别动行为测试）。
 
 - [ ] **Step 6：回填本计划「落地读数表」+ 全绿复跑 + Commit**
 
 ```powershell
-npx vitest run   # 最后一次，期望 1058
+npx vitest run   # 最后一次，期望 1059
 git add -- README.md docs/superpowers/plans/2026-09-20-apple-visual-style.md
 git commit -m "docs: 单元 D4 收口——README 视觉基线一句 + 落地读数回填（zip 新值、变异汇总、肉眼验收交用户）" -- README.md docs/superpowers/plans/2026-09-20-apple-visual-style.md
 git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.zip / dist/ 盖住）
@@ -1675,9 +1732,9 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 
 | 规格 §8 | 落点 |
 | --- | --- |
-| 1. 全绿（基线 55/1052 → 计划投影 55/1058）；行为断言一条未改 | D1 Step 8（已落地 `1167511`，1053）/ D2 Step 11（1057）/ D3 Step 11（1058）/ D4 Step 1、6 + `git show` 复查 diff 只含 5 个文件（「文件结构」表） |
+| 1. 全绿（基线 55/1052 → 计划投影 55/1059）；行为断言一条未改 | D1 Step 8（已落地 `1167511`，1053）/ D2 Step 11（已落地 `5cc0969`，1057）/ D3 Steps 0c & 11（1058 → 1059）/ D4 Steps 1、6 + `git show` 复查各轮 diff 只含 5 个文件（「文件结构」表） |
 | 2. typecheck 0 / build 0 且 verify:dist 14 项 / zip 可复现（连跑两次一致） | D4 Step 1（重记录新字节与新 SHA） |
-| 3. options-css 全绿，且「逐字一致」「暗色覆盖」**仍在真实把关** | D1 Step 9 的 M2 + **D2 Step 9/10 的两处「有牙证明」（补牙②③）** + D4 Step 3 汇总表（M1-M2、M11-M14 必做；M2b 有⑥的时序前置） |
+| 3. options-css 全绿，且「逐字一致」「暗色覆盖」**仍在真实把关** | D1 Step 9 的 M2 + **D2 Steps 9/10 的四处「有牙证明」（②a/②b/③a/③b，各自独立运行）** + D3 Step 0d 两次 + D4 Step 3 汇总表（M1-M2、M11-M15 必做；M2b 有⑥的时序前置） |
 | 4. 明暗两套用户肉眼验收，不声称"已验证观感" | D4 Step 5（头号项 = §7.8 绿字/红字） |
 | 5. 零 `backdrop-filter`、零外链资源 | D4 Step 2 grep + build 内 verify:dist 的资源检查 |
 
@@ -1707,11 +1764,20 @@ git status --porcelain -uall   # 期望空（zip 与 dist 被 .gitignore 的 *.z
 
 **5. D1 复盘修订（执行者落地于 `1167511`，控制器裁决 7 条，2026-09-21）**：
 - **①「双保险」→ 顺序两层**：vitest 在同一个 `it` 里遇首个失败断言即抛出，一次运行只响一层。已改 D1 Step 9 M4、D2 Step 12 M3（拆成两次**独立**变异）、D4 表 M4 三处措辞：正则先响；声明级 `toBe` 只有正则被删/放宽后才轮到——第二层的牙由执行者以 **M4b**（临时删正则复跑）实证过，不许再把两层断言写成同批双红。
-- **②补牙② = D2 Step 9**：popup 侧镜像断言（`color:` 上对比度正则 + `:root` 外的 hex/rgba/hsl 扫描）。顺序写死在 Step 里：8a 先把 `#fff` 令牌化、Step 9 才加断言（生而绿，无中间态假红）；**刻意不断言 opacity**——popup:320 的 `opacity: 0` 是无障碍通道，禁令不外推、也不许顺手删；当场做「popup 加 `color: var(--ok)` → 红 → revert」的有牙证明。
+- **②补牙② = D2 Step 9**：popup 侧镜像断言（`color:` 上对比度正则 + `:root` 外的 hex/rgba/hsl 扫描）。顺序写死在 Step 里：8a 先把 `#fff` 令牌化、Step 9 才加断言（生而绿，无中间态假红）；**刻意不断言 opacity**——`.field-toggle > input[type="checkbox"]` 上的 `opacity: 0` 是无障碍通道，禁令不外推、也不许顺手删；当场做「popup 加 `color: var(--ok)` → 红 → revert」的有牙证明。
 - **③补牙③ = D2 Step 10**：暗色块跨文件逐字一致（守卫①方向镜像到暗块）。**按「popup 暗块声明集 ⊆ options 暗块、同名同值」写，不写成对称相等**——对称会因 options 的额外项假红、因方向漏写假绿；亮暗同值令牌（如 `--knob`）可合法地不出现在暗块，子集方向天然容纳这点。带 `>= 20` 防空转下限；漂值、清空两次有牙证明都做在 Step 里。
 - **④ `--ease` 字面统一**：Step 3 改为规格的 `cubic-bezier(.32,.72,0,1)` 形态 + 修订注；新增 **D2 Step 0** 把两份 CSS 归一（守卫比的是两份 CSS 互等，比不出「CSS vs 规格」的字面差——字面统一靠文档同形 + Step 0）。
 - **⑤ 计数表述**：守卫①行改为「28 个 `--*` 令牌 + `color-scheme`，共 **29** 条参与遍历比对（阈值 `>= 17` 仍过）」。
 - **⑥ M2b 时序前置**：D4 表标注「必须等 D2/D3 落地后跑」——覆盖断言只看正文 `var()` 引用，`--link`/`--ease`/`--knob`/`--radius-card` 在 D1 结束时的正文里还没有引用，提前跑的「不红」是时序盲区、不是漏牙。
 - **⑦ 基线格更新**：typecheck/build/verify:dist 14 项从「控制器给的、未复跑」改为「已由 D1 执行者复跑确认（`1167511`）」。
-- **计数链迁移**：D2 文件终态 13 条用例、全量 **1057**（D2 Step 11）；D3 文件终态 14 条、全量 **1058**（D3 Step 11 / D4）；D2 原 Step 9/10/11 相应改号 11/12/13；验收对照表与 D4 期望值同步。
+- **计数链迁移**：D2 文件终态 13 条用例、全量 **1057**（D2 Step 11，已按 `5cc0969` 兑现）；D3 见第 6 项终态（Step 0 加入后为 15 条 / 1059）；D2 原 Step 9/10/11 相应改号 11/12/13；验收对照表与 D4 期望值同步。
 - 未独立复验项（如实）：核查者副本的逐步执行结论（锚点唯一命中、1053 兑现、AssertionError 逐字命中）转引自控制器，起草者未重跑。
+
+**6. D2 复盘修订（执行者落地于 `5cc0969`，控制器裁决 5 条 + 事实同步，2026-09-21）**：
+- **①两次「漏写的有牙证明」补进 Step 正文**：D2 Step 9 增 **②b**（hex 层独立变异，实测 `expected [ '#ffffff' ] to deeply equal []`）、Step 10 增 **③b**（清空 popup 暗块 20 条声明 → 实测 `expected 0 to be greater than or equal to 20`）；两处都写明「**必须独立一次运行**——同一 `it` 里首个失败会吞掉后面的读数」。
+- **②「注释不钉行号」立成硬规矩**：写进前提 0；Step 9 的测试注释与全文引用改为选择器/符号措辞（`opacity: 0` 一例已从 :320 漂到 :341，行号快照禁止抄进仓库）。全文扫描确认：代码块注释内不再有「文件:行号」写法（popup `#fff`/`opacity:0` 的出处均改选择器措辞；前提表/守卫表的行号明确标注为导航快照）。
+- **③全局 `button:active` 波及 disabled → D3 Step 0 前置修正**：options `button:active:not(:disabled)`、popup `.primary:active:not(:disabled)`（各有理由与修订注，指回 D3 Step 0）；新守卫断言 `declarations(optionsCss/'popupCss', '…:not(:disabled)')['transform']` 记入「守卫增牙账」与 D4 汇总表 M15；0d 两次独立有牙证明（漂回裸选择器 → 解析器抛错）。
+- **④`.tiny` 失去固定 28px 高**：非契约，已加进 D4 Step 5 肉眼清单（行级小按钮高度与对齐；不顺眼调 padding，不动行为测试）。
+- **⑤Step 4 措辞**：改为「三块替换为四块——原三块改写 + **新增** `select{}` chevron 块」，与落地实况一致。
+- **计数链再迁移**：D3 新增 Step 0 的 1 条用例 → D3 终态文件 **15** 条、全量 **1059**（1052 + D1 1 + D2 4 + D3 2）；D3 Step 1 期望红形态改「1 failed | 14 passed (15)」；D4 Steps 1/6、验收对照表同步。
+- 同步的执行事实（非契约读数）：D2 落地后 popup `transition:` 4 处、options 6 处；`[hidden]`/焦点环/`summary`/窄窗口的引用一律选择器措辞，行号快照不再单点信任。
