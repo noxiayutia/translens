@@ -47,7 +47,8 @@ describe('buildCacheKey', () => {
 
   /**
    * 源语言是设置项、会一路传到 `TranslateRequest.from`，不参与 key 就会命中按另一种
-   * 源语言语义翻出来的旧译文（今天两个引擎都还没读 `from`，所以这条是防御性的：
+   * 源语言语义翻出来的旧译文（今天唯一的适配器还没读 `from`——`openai-compat` 从没用过
+   * `request.from`，所以这条是防御性的：
    * 等接上就用错语义，而且事后无法自愈）。
    */
   it('源语言变化会改变 key', () => {

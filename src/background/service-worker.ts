@@ -131,6 +131,11 @@ async function handleTranslateTexts(
       sourceLang: settings.sourceLang,
       targetLang,
       // 不支持 system prompt 的引擎传了也没用，反而会污染缓存 key。
+      //
+      // **如实记账**：删掉免费接口之后唯一的适配器恒 `supportsGlossary === true`，这两行
+      // 今天**没有判别力**（弹窗里同一条分录与 `if (!engine.supportsGlossary …)` 分支同样
+      // 恒不成立）。留着它们是**适配器契约**（第三种适配器可能不支持术语表/提示词，见
+      // engines/types.ts 的 Translator），不是死代码。**不为它编断言**。
       glossary: engine.supportsGlossary ? settings.glossary : undefined,
       systemPrompt: engine.supportsGlossary ? settings.systemPrompt : undefined,
       cache,
