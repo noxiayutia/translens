@@ -2909,19 +2909,68 @@ git show --stat HEAD
 
 ## 落地读数表（**每格注明取数命令**；执行者回填）
 
-| 读数 | 取数命令 | 起草时基线 | T1 后（实测） | T2 后（**T2a 已落地 = `f723ed6`；T2b 待做**） | T3 收口后 |
+| 读数 | 取数命令 | 起草时基线 | T1 后（实测） | T2 后（**T2a = `f723ed6`；T2b 已落地 = `0b6f792` + `3dda5c1`**） | T3 收口后（**干净检出 `320ab84` 实测**） |
 | --- | --- | --- | --- | --- | --- |
-| 测试文件数 / 用例数 | `npx vitest run` | 55 / 1061 | **54 / 1054，exit 0**（删掉 `tests/engines/google.test.ts` ⇒ 文件 55→54；用例 1061→1054） | **T2a 后 = 54 / 1054，exit 0**（两条假话与**六处**注释不改计数：scheduler ×4 + scheduler.test ×1 + hash ×1；在**干净检出**上取数）。⚠ T2b 会给 `tests/manifest.test.ts` 加 2 条守卫，**之后必须重取一次** | 待填 |
-| 类型检查 | `npm run typecheck` | exit 0 | exit 0 | **T2a 后 = exit 0** | 待填 |
-| 构建 + 产物校验 | `npm run build` | exit 0，`✓ 产物校验全部通过（14 项）` | exit 0，`✓ 产物校验全部通过（14 项）` | **T2a 后 = exit 0 + 14 项**（T2a 不动 manifest，产物内容与 T1 同） | 待填 |
-| 产物清单 | `npm run build` 尾部清单 | 16 个文件，167.66 KB | 16 个文件，164.66 KB ⚠ **这个字节数的来源必须注明**（T1 独立验证发现）：它取自**工作树里混着改名会话在途改动**时的一次构建——工作树遗留的 `dist/` 合计正好 164.66，且它的 `dist/manifest.json` 写着 `"name": "TransLens"`、两个 HTML 与 CSS 的字节数都与干净构建不同；**干净检出 `git archive 4e58561` 上是 164.46 KB**。功能读数（exit 0 / 14 项）两边都成立，但**字节数不许说成"提交的读数"** | 未单独取（T2a 不动 manifest）；**T2b 会改 `description` 与 `host_permissions`，字节数要重取** | 待填 |
-| zip 字节 / SHA256 | `Get-ChildItem *.zip` + `Get-FileHash -Algorithm SHA256` | 65643 / `048567C7AA429E78E394727A5BC278EBD22E9F921764F3371D7299253AA015B2` | 未取（T1 不打 zip；T3 收口时打一次） | 未取（同上） | 待填 |
-| 产物 `host_permissions` | `node -e "console.log(JSON.stringify(require('./dist/manifest.json').host_permissions))"` | `["https://translate.googleapis.com/*"]` | 未取；**预期仍是旧值**（`src/manifest.json` 属 T2，T1 不许动） | **T2a 后仍是旧值**（manifest 归 **T2b**） | 待填（= `[]`） |
-| 七类符号残留（`src` + `tests`） | `git grep -n -e googleapis -e googleEngine -e DEFAULT_ENGINE_ID -e FREE_ENGINE_HEALTH_KEY -e ENGINE_HEALTH_PREFIX -e test-free -e data-engine-free -- src tests` | 命中（多处） | **作为行为 / 实现残留 = 0**。逐符号（T1 落地 + 独立验证复核）：`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；`FREE_ENGINE_HEALTH_KEY` = 1（注释）；`test-free` = 1（显式 `toBeNull` 断言）；`data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` 的 `host_permissions` = T2 的活 + 1 测试注释）。两条空态断言**非恒真**已实测（各追加一个探针 → 各 1 红；两条都在 `tests/options/options.test.ts`）。⚠ **别拿命中数当读数**，见规格 §8.7 的口径段 | **T2a 后 `googleapis` 仍是 2**（manifest 那处等 T2b 清）；其余同 T1 | 待填 |
-| 作为**当前引擎选择**的 `engineId: 'google'` | `git grep -n "engineId: 'google'" -- tests` 然后**逐条判读** | 22 处（起草时全部算作"当前引擎选择"） | **0 处**当当前引擎用。⚠ 字面量**仍有 12 处**：**7 处活的**是 v2/v4 迁移的**输入数据**（必须留，它们就是"老数据"本身）+ **5 处**注释/说明。**这一格不能拿 `git grep` 的命中数当读数** | 同 T1（T2a 不动 `engineId`） | 待填 |
-| 变异汇总 | 见各 Task 的变异表 | — | **M1–M11 全部跑完**（读数见提交说明）：含 M2 / M4b / M6b 三处"计划预测不成立"、M9"以为有牙、实测全绿"、M6c 补做的可达反例 | **T2a 的 M4 已实测**（干净检出上跑全量 → 54/1054 全绿，证明 `RATE_LIMIT` 那一支今天没有测试钉住）；⚠ **M1/M2/M3（manifest 侧）一次都还没跑**，T2b 必须跑完再提交 | 待填 |
+| 测试文件数 / 用例数 | `npx vitest run` | 55 / 1061 | **54 / 1054，exit 0**（删掉 `tests/engines/google.test.ts` ⇒ 文件 55→54；用例 1061→1054） | **T2a 后 = 54 / 1054，exit 0**（两条假话与**六处**注释不改计数：scheduler ×4 + scheduler.test ×1 + hash ×1；在**干净检出**上取数）。⚠ T2b 会给 `tests/manifest.test.ts` 加 2 条守卫，**之后必须重取一次**——**T2b 后 = 54 / 1056，exit 0**（`0b6f792` 说明记录） | **54 / 1056，exit 0**——`git archive HEAD(=320ab84)` 解到 %TEMP% 干净副本 + junction 主仓 node_modules，`npx vitest run`（Duration 35.89s；README 与注释改动不动计数） |
+| 类型检查 | `npm run typecheck` | exit 0 | exit 0 | **T2a 后 = exit 0**；T2b 后 = exit 0（0b6f792 说明记录） | **exit 0**（同一干净副本，`tsc --noEmit -p tsconfig.json && -p tsconfig.node.json`） |
+| 构建 + 产物校验 | `npm run build` | exit 0，`✓ 产物校验全部通过（14 项）` | exit 0，`✓ 产物校验全部通过（14 项）` | **T2a 后 = exit 0 + 14 项**（T2a 不动 manifest，产物内容与 T1 同）；**T2b 后 = exit 0 + 14 项**（0b6f792 说明记录） | **exit 0 + `✓ 产物校验全部通过（14 项）`**（干净副本；`npm run verify:dist` 独立复跑 exit 0、14 项全 ✓，`manifest.name="TransLens"`、description 为 T2b 新文案的 UTF-8 校验均通过） |
+| 产物清单 | `npm run build` 尾部清单 | 16 个文件，167.66 KB | 16 个文件，164.66 KB ⚠ **这个字节数的来源必须注明**（T1 独立验证发现）：它取自**工作树里混着改名会话在途改动**时的一次构建——工作树遗留的 `dist/` 合计正好 164.66，且它的 `dist/manifest.json` 写着 `"name": "TransLens"`、两个 HTML 与 CSS 的字节数都与干净构建不同；**干净检出 `git archive 4e58561` 上是 164.46 KB**。功能读数（exit 0 / 14 项）两边都成立，但**字节数不许说成"提交的读数"** | 未单独取（T2a 不动 manifest）；**T2b 会改 `description` 与 `host_permissions`，字节数要重取** | **16 个文件，164.63 KB**（干净副本 320ab84 的 build 尾部清单——manifest 新形状 + 内容脚本 T2a 文案都在产物里；对比：T1 干净检出 164.46 KB） |
+| zip 字节 / SHA256 | `Get-ChildItem *.zip` + `Get-FileHash -Algorithm SHA256` | 65643 / `048567C7AA429E78E394727A5BC278EBD22E9F921764F3371D7299253AA015B2` | 未取（T1 不打 zip；T3 收口时打一次） | 未取（同上） | **新值：16 个文件 / 64742 字节 / SHA256 `B4ABC4C1F7864FF89938236BEA1329559C3DB89F9B1D53D165026F8D86E4AEAE`**；**连跑两次逐字节相同**（run1/run2 同 SHA → zip 可复现，`npm run zip` ×2 + `Get-FileHash -Algorithm SHA256`，干净副本）。旧基线只当历史：manifest（name/description/host 清空）与内容脚本文案的改动使它**必然失效** |
+| 产物 `host_permissions` | `node -e "console.log(JSON.stringify(require('./dist/manifest.json').host_permissions))"` | `["https://translate.googleapis.com/*"]` | 未取；**预期仍是旧值**（`src/manifest.json` 属 T2，T1 不许动） | **T2a 后仍是旧值**（manifest 归 **T2b**）；T2b 后源 = `[]`（显式空数组，0b6f792） | **产物 = `[]`**——干净副本 `node -e` require `dist/manifest.json`：`{"name":"TransLens","host":[],"optional":["http://*/*","https://*/*"]}`（规格 §8.4 源+产物两侧齐） |
+| 七类符号残留（`src` + `tests`） | `git grep -n -e googleapis -e googleEngine -e DEFAULT_ENGINE_ID -e FREE_ENGINE_HEALTH_KEY -e ENGINE_HEALTH_PREFIX -e test-free -e data-engine-free -- src tests` | 命中（多处） | **作为行为 / 实现残留 = 0**。逐符号（T1 落地 + 独立验证复核）：`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；`FREE_ENGINE_HEALTH_KEY` = 1（注释）；`test-free` = 1（显式 `toBeNull` 断言）；`data-engine-free` = 2（1 注释 + 1 显式 `toBeNull` 断言）；`googleapis` = 2（`manifest.json` 的 `host_permissions` = T2 的活 + 1 测试注释）。两条空态断言**非恒真**已实测（各追加一个探针 → 各 1 红；两条都在 `tests/options/options.test.ts`）。⚠ **别拿命中数当读数**，见规格 §8.7 的口径段 | **T2a 后 `googleapis` 仍是 2**（manifest 那处等 T2b 清）；其余同 T1 | **行为 / 实现残留 = 0**（干净副本 320ab84 重测）。逐符号：`googleapis` = **2**（都在 tests 注释：`service-worker.test.ts:338` 说历史 + `manifest.test.ts:70`「谁把域名加回来就红」说守卫——**源与产物 manifest 里的域名已没**）；`googleEngine` / `DEFAULT_ENGINE_ID` / `ENGINE_HEALTH_PREFIX` = **0**；`FREE_ENGINE_HEALTH_KEY` = 1（`engine.ts:766` 注释说历史）；`test-free` = 1、`data-engine-free` = 2（`engine-expansion.test.ts:140` 注释 + `options.test.ts:621/622` 两条显式 `toBeNull` 守卫） |
+| 作为**当前引擎选择**的 `engineId: 'google'` | `git grep -n "engineId: 'google'" -- tests` 然后**逐条判读** | 22 处（起草时全部算作"当前引擎选择"） | **0 处**当当前引擎用。⚠ 字面量**仍有 12 处**：**7 处活的**是 v2/v4 迁移的**输入数据**（必须留，它们就是"老数据"本身）+ **5 处**注释/说明。**这一格不能拿 `git grep` 的命中数当读数** | 同 T1（T2a 不动 `engineId`）；T2b 亦不动 | **0 处**当当前引擎用；字面重测 **10 处** = 7 个 v4 迁移夹具（`settings.test.ts:563/800/811/813/817/829/844`，"老数据"本身）+ 3 处注释（`settings.test.ts:814`、`options.test.ts:833/836`）。⚠ 比 T1 格的"字面 12 处"少 2——差值未逐处追溯（T2a/T2b 批次重写过这几处文件里的注释措辞），本格只报 T3 时点的实测清单 |
+| 变异汇总 | 见各 Task 的变异表 | — | **M1–M11 全部跑完**（读数见提交说明）：含 M2 / M4b / M6b 三处"计划预测不成立"、M9"以为有牙、实测全绿"、M6c 补做的可达反例 | **T2a 的 M4 已实测**（干净检出上跑全量 → 54/1054 全绿，证明 `RATE_LIMIT` 那一支今天没有测试钉住）；⚠ **M1/M2/M3（manifest 侧）一次都还没跑**，T2b 必须跑完再提交——**T2b 执行者已跑完三个**（T3 回填时把读数从 `0b6f792` 提交说明搬进下一列） | **M1/M2/M3 实测**（来源：`0b6f792` 提交说明，T2b 执行者逐条独立运行，各自当场还原并以 Get-FileHash 回基线 `74A146E36973BF00F0CE9210470CC39314F858EC42144A02C389906460F5C88E`，读数 M1-REVERT-OK / M2-REVERT-OK / M3-REVERT-OK）：M1 把 googleapis 域名加回 `host_permissions` →「默认不声明任何主机权限」**红**；M2 删 `optional_host_permissions` 整行 →「可选主机权限原样保留」**红**（expected 两条通配、received undefined——不写这条守卫该变异**全绿**，反向约束存在的全部理由）；M3 description 换纯英文 → **build 非零退出**，verify-dist 点名「manifest.description 含中文」未满足（脚本守卫，非 vitest）。T3 本体（纯文档 + 1 条注释）无新增行为变异 |
 
 ⚠ 收口那一列的读数是在"工作树已含改名会话成果（或已提交）"之上取的，记录时注明。
+——**T3 的实际做法比这句更严**：全部读数（vitest / typecheck / build / verify:dist / zip ×2 + SHA）
+取自 `git archive HEAD(=320ab84，含 T3 提交 1)` 解到 %TEMP% 的**干净副本**（junction 主仓
+node_modules 只为跑工具，产物字节与工作树零耦合）；取数前工作树除两条**与构建无关的未跟踪
+`logo/dsh-image-*.png`**（生图插件产物，不入库不删除）外干净。
+
+**T3 收口补记（本单元最后一轮，执行者 = T3；README 改写与 Step 0b 落在提交 1 = `320ab84`，本补记落在提交 2）**：
+
+- **F1 两层判据——T3 后终读数**：
+  - **(a) 点名式 grep**（`-- src tests`）：`translateOneWithRetry` = 0；`Google 引擎`（含
+    「Google 引擎不支持批量」）= 0；`免费额度` = 0；`google\.ts` = 3 处——`src/engines/registry.ts:9`
+    与 `tests/engines/registry.test.ts:24`（**说守卫**：谁把文件加回来就红）、
+    `tests/background/service-worker.test.ts:50`（**说历史**：旧假响应形状随文件一起删）——
+    **与判据表"留"的三处严丝合缝，不多一处**；`translate.googleapis` = 2 处
+    （`service-worker.test.ts:338` 说历史 + `manifest.test.ts:70` 说守卫），manifest 域名已没。
+  - **(b) 三词逐处判读**（src + tests，逐词单独跑——多模式合并 grep 曾静默丢行，见自审 E1）：
+    `两个引擎` = 0；`Google` = 4 处全说历史（registry.ts:6、settings.ts:150、service-worker.test.ts:49、
+    content/index.test.ts:552）；`免费` = 35 行（src 16 + tests 19），逐处判读后**每一处都是**
+    "说历史（`曾经`/`旧版是`/`随单元 E 删掉`句式）/ 说守卫 / 显式空态断言 / v4 老数据迁移叙述"，
+    **除两处新发现的 tests 漏网**：
+    ① `tests/options/engine-health.test.ts:6` 文件头仍以**现在时**写着
+    「另一半：内置免费引擎那一行（§3.1 的"不可删"）」——那一行已随 T1 删掉，这半句在声称今天的
+    实现，**该改**；② `tests/content/observer.test.ts:899` 的合成 fixture
+    `message: '免费接口请求失败：socket hang up'`——纯测试数据，两条断言只看
+    `'尚未填写 API Key'` 与 `not.toContain('socket hang up')` 两端、不依赖"免费接口"主语，
+    **不是假话但是过时的字符串**。**T3 硬规矩不许碰任何测试文件**，两处只登记判读结论不改：
+    建议后续批次顺手把 ① 改过去时或删半行、② 前缀改「接口请求失败」（与 index.test.ts:1178
+    的 `NETWORK_MESSAGE` 同字面）。⇒ **"清单已穷尽"这句话第三次被 (b) 复跑推翻**（前两次：
+    scheduler.test.ts 起草漏、hash.test.ts 第十轮补）——复跑判据的成本是一行命令，漏检的成本是假绿。
+- **Step 0b 判据修正（计划缺陷）**：「全仓再 grep 那句罐头文案应当一处不剩」按字面**不可能成立**——
+  本计划 T2a Step 4 的文本（本文件 `:2344`）自己指定注释里**逐字保留**那句，用来解释"曾经的话为什么
+  是假的"（`src/content/index.ts:139`）。实际落地判据改为「历史引用注释之外一处不剩」：README = 0、
+  tests = 0、src = 1（即该注释，且 Step 0b 自己的替换文案也把它称作"出现过那句罐头文案"的历史现场）。
+- **README 改写清单**：14 个锚点全部落地。**改名会话（`df17668`）没有弄丢任何一个锚点的 quoted
+  文本**（它动的是标题、图标段、`npm run logo` 行、目录树；14 处原文逐字仍在，只是行号整体漂移，
+  按语义定位不受影响）；唯一字面差：锚点 10 计划引"默认只声明免费引擎域名"与实际一致（起草时担心的
+  漂移未发生）。按实现改写的计划措辞共 4 处：① 锚点 7 引文「**现在**没有可用的翻译引擎」是规格
+  §5.3 被 §6.1 取代的口径，代码常量 NO_ENGINE_PROBLEM 是「**还没有**可用的翻译引擎，去设置页添加
+  一个服务商档案」——README 取常量实句（`engine.ts:941` 拼接后可逐字对上）；② 锚点 12 计划写
+  "档案 id"，实际记录键是 `p:` + 档案 id（`engine-health.ts:51-56`，`engine.ts:871` 明写"不是裸 id"）
+  ——README 写「各档案的记录键（`p:` + 档案 id）」；③ 锚点 10 计划括注「`chrome://extensions` 里
+  「网站访问权限」是零项」是**本机无法验证的 Chrome UI 观察**（无浏览器）——不写入，保留可验证的
+  前半句「不声明任何默认主机权限（`host_permissions` 是空的 `[]`）」；④「快速开始」一节按实现改三处
+  （模板 label 实名 OpenAI / DeepSeek / Ollama（本机）；**API Key 扩展侧强制非空**，`openai-compat.ts:65`
+  空值直接抛 AUTH——计划稿"Ollama 不需要 Key"会教出首装即撞墙的操作路径，改为"填占位值"；空态提示
+  弹窗整句含「点右上角齿轮打开设置页」尾、设置页只有核心句——计划稿"同一句话"不精确）。品牌核对：
+  新增文字无一处旧品牌「浸译/JinYi」；zip 文件名 `jinyi-<version>.zip` 是 `zip-dist.mjs:359` 的**现状
+  事实**（脚本未改名），README 写它不是假话，改前缀属脚本侧、不在 T3 权限内。
+- **手动验收清单第 14 步与规格 §9 的边界不变**：README 全部新增句里唯一未真机验证的是 Chrome UI
+  路径类描述（「扩展程序选项」菜单字面），其余每条字面都用 `git grep` 对过实现。
 
 ⚠ **取数纪律（T1 独立验证的一条实测教训，写给 T2/T3 与后面的人）**：**产物字节数 / zip 字节 / SHA256
 这类读数必须在干净检出上取**——工作树里只要混着别人的在途改动，构建出来的字节数与产物内容就会
@@ -3101,9 +3150,34 @@ git show --stat HEAD
      一次请求带多条文本"；`stubGoogleFetch` → `stubEngineFetch`（注释里说明旧形状为什么随引擎一起删）；
    - `tests/options/engine-health.test.ts`：`describe('内置免费引擎那一行')` →
      `describe('档案记录键的形状（`p:` 前缀与档案 id 是两个概念）')`——**标题里点名的那一行已经不存在了。**
+     ⚠ **T3 收口复扫发现这一条只改了一半**：`describe` 标题改对了，但**文件头注释的姊妹行**
+     `:6`「另一半：内置免费引擎那一行（§3.1 的"不可删"）」仍以现在时指向那一行——
+     "改了被点名的地方"不等于"改了说谎的地方"，判据必须落在文字扫描上（见 T3 补记的 (b) 层）。
 3. **提交纪律**：`4e58561` 只带了 **18 个路径**，`git status --porcelain -uall` 里改名会话的在途文件
    一个都没碰。**在途改动与自己改动同时在工作树里时，路径限定的 `git commit -- <显式路径>` 还不够**：
    先看一遍 `git status --porcelain`，再逐路径核 `git diff -- <路径>`。
+
+### E. T3 落地记账（本单元收尾，实测）
+
+1. **多模式合并 grep 会静默丢行**：`git grep -n -e A -e B -e C -- README.md` 实测**少报了 4 行**
+   （`:404/:433` 等命中直接消失，退出码仍是 0）。⇒ 判据命令**逐模式单独跑、逐次看退出码**；
+   否则"扫过了"本身就是假绿。本次差点因此漏掉隐私节 `translate.googleapis` 那一处。
+2. **Step 0b 的"一处不剩"与 T2a 自己的文本矛盾**（见读数表下方 T3 补记）：判据落地为
+   "历史引用注释之外一处不剩"，并把这半句写回了 Step 0b 的精神里——跨文件指路的收口判据
+   必须声明它豁免谁。
+3. **锚点 7 引文带着规格 §5.3/§6.1 的已废口径**（「**现在**没有可用的翻译引擎」，代码常量是
+   「**还没有**可用的…」）——计划文本抄了规格没抄代码。README 里"给用户看的那句话"一律以
+   `NO_ENGINE_PROBLEM` 常量实句为准。
+4. **快速开始草稿会教出"首装即撞墙"的路径**：计划稿写"Ollama 这类本机服务不需要 Key"，而
+   `openai-compat.ts:65` 对空 Key 一律抛 AUTH——照抄会让新用户第一次翻译就失败且不知道为什么。
+   凡**写给新装用户的操作步骤**，每一步都要在"零配置起点"上走一遍代码路径（已改：非空要求 +
+   占位值；模板 label 实名；弹窗空态整句含齿轮尾）。
+5. **"清单已穷尽"第三次被 (b) 复跑推翻**（scheduler.test 起草漏 → hash.test 第十轮补 →
+   T3 收口又扫出 `engine-health.test.ts:6` 现在时半句与 `observer.test.ts:899` 过时 fixture）。
+   两处都**登记而不改**（T3 不许碰 tests），给了后续批次的整句替换建议。
+   教训不变：**每轮收口都重跑逐词扫，别信上一轮清单**。
+6. **zip 可复现性有了正面读数**：同一干净副本连跑 `npm run zip` 两次，字节数与 SHA256 逐字节
+   相同（64742 / `B4ABC4C1…86E4AEAE`）——"打包脚本是否确定"这条之前只有脚本注释背书，现在有跨运行读数。
 
 ---
 
