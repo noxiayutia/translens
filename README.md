@@ -386,7 +386,7 @@ npm install
 npm test              # 单元测试（vitest，数百个用例；精确数字随迭代浮动，以运行输出为准）
 npm run typecheck     # 类型检查（tsc --noEmit）
 npm run build         # 类型检查 → 打包 → verify:dist
-npm run zip           # 把 dist/ 打成 jinyi-<version>.zip（需先 build）
+npm run zip           # 把 dist/ 打成 translens-<version>.zip（需先 build）
 npm run icons         # 重新生成 src/icons/ 下四个尺寸的图标（改了图标设计才需要跑）
 npm run logo          # 重新生成 docs/brand/translens-logo.png（改了品牌 logo 才需要跑）
 
@@ -413,7 +413,7 @@ JY_SCALE_MS=1 npx vitest run tests/content/extractor-scale.test.ts
 不开这个变量时，元素数、段数与样式查询复杂度三条断言照跑，只是不做绝对耗时判断。
 
 发布打包：`npm run zip`（`scripts/zip-dist.mjs`，只用 Node 标准库、零依赖）读取
-`dist/manifest.json` 的 version 产出仓库根目录的 `jinyi-<version>.zip`（Chrome 商店/侧载
+`dist/manifest.json` 的 version 产出仓库根目录的 `translens-<version>.zip`（Chrome 商店/侧载
 上传用的就是它）。它**有意不接进 `npm run build`**（构建保持纯净，想发才打）。打完立即
 自检：用自带读取器解回临时目录，比对文件数、逐文件字节内容、每条目 CRC-32 与中央目录布局，
 条目名一律 `/` 分隔（Windows 反斜杠会让 Chrome 加载失败）；自检不过会删掉产物并以非零退出——

@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.zip
 .DS_Store
+# 用户在仓库目录里生成的图片产物（品牌探索用），不是源码、不进版本库
+logo/

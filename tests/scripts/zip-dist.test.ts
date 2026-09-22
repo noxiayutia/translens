@@ -23,7 +23,7 @@ function runScript(args: string[], cwd: string) {
 
 /** 含嵌套目录、非 ASCII、随机二进制（deflate 只会变大，逼出 store 回退）与空文件。 */
 function makeFixture(): { dir: string; files: Map<string, Uint8Array> } {
-  const dir = mkdtempSync(join(tmpdir(), 'jinyi-zip-fixture-'));
+  const dir = mkdtempSync(join(tmpdir(), 'translens-zip-fixture-'));
   const encoder = new TextEncoder();
   const pseudoRandom = Uint8Array.from({ length: 512 }, (_unused, i) => (i * 167 + 13) % 256);
   const files = new Map<string, Uint8Array>([
@@ -118,7 +118,7 @@ describe('scripts/zip-dist.mjs：dist 打包', () => {
 
   it('fixture 打包：退出码 0、逐文件字节一致、条目名用 / 分隔、CRC 与大小对得上', () => {
     const fixture = makeFixture();
-    const outDir = mkdtempSync(join(tmpdir(), 'jinyi-zip-out-'));
+    const outDir = mkdtempSync(join(tmpdir(), 'translens-zip-out-'));
     const zipPath = join(outDir, 'fixture.zip');
 
     const packed = runScript(['--dist', fixture.dir, '--out', zipPath], REPO_ROOT);
@@ -146,7 +146,7 @@ describe('scripts/zip-dist.mjs：dist 打包', () => {
 
   it('自检是承重的：翻掉某条目数据的一个字节后，--check 必须非零退出', () => {
     const fixture = makeFixture();
-    const outDir = mkdtempSync(join(tmpdir(), 'jinyi-zip-out-'));
+    const outDir = mkdtempSync(join(tmpdir(), 'translens-zip-out-'));
     const zipPath = join(outDir, 'fixture.zip');
     expect(runScript(['--dist', fixture.dir, '--out', zipPath], REPO_ROOT).status).toBe(0);
 
@@ -162,7 +162,7 @@ describe('scripts/zip-dist.mjs：dist 打包', () => {
   });
 
   it('dist 不存在：非零退出并提示先运行 build，不落任何包', () => {
-    const outDir = mkdtempSync(join(tmpdir(), 'jinyi-zip-out-'));
+    const outDir = mkdtempSync(join(tmpdir(), 'translens-zip-out-'));
     const zipPath = join(outDir, 'never.zip');
 
     const run = runScript(['--dist', join(outDir, 'nope-dist'), '--out', zipPath], REPO_ROOT);
@@ -172,13 +172,13 @@ describe('scripts/zip-dist.mjs：dist 打包', () => {
     expect(existsSync(zipPath)).toBe(false);
   });
 
-  it('默认包名是 jinyi-<dist/manifest.json 的 version>.zip', () => {
+  it('默认包名是 translens-<dist/manifest.json 的 version>.zip', () => {
     const fixture = makeFixture(); // manifest.version = 9.8.7
-    const cwd = mkdtempSync(join(tmpdir(), 'jinyi-zip-cwd-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'translens-zip-cwd-'));
 
     const run = runScript(['--dist', fixture.dir], cwd);
 
     expect(run.status, `stdout=${run.stdout}\nstderr=${run.stderr}`).toBe(0);
-    expect(existsSync(join(cwd, 'jinyi-9.8.7.zip'))).toBe(true);
+    expect(existsSync(join(cwd, 'translens-9.8.7.zip'))).toBe(true);
   });
 });

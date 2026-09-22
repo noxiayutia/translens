@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 把 `dist/` 打成可发布的 `jinyi-<version>.zip`（version 读自 `dist/manifest.json`）。
+ * 把 `dist/` 打成可发布的 `translens-<version>.zip`（version 读自 `dist/manifest.json`）。
  *
  * 只用 Node 标准库（node:fs / node:zlib / node:path / node:os），不引入任何依赖。
  * 实现是一个**最小 ZIP writer**：本地文件头 + deflateRaw（压不动就退回 store）+
@@ -20,7 +20,7 @@
  * 把同一套验证单独暴露出来，让测试能证明它真的会拒绝坏包（见 tests/scripts/zip-dist.test.ts）。
  *
  * 用法：
- *   npm run zip                                  # 打仓库根的 dist → ./jinyi-<version>.zip
+ *   npm run zip                                  # 打仓库根的 dist → ./translens-<version>.zip
  *   node scripts/zip-dist.mjs --dist <dir>       # 打包指定目录
  *   node scripts/zip-dist.mjs --out <file.zip>   # 指定输出路径
  *   node scripts/zip-dist.mjs --check <zip> --dist <dir>   # 只做校验不打包
@@ -241,7 +241,7 @@ export function assertZipMatchesDir(zipPath, distDir) {
   if (entries.size !== expected.length) {
     problems.push(`文件数不一致：包里 ${entries.size} 个条目，${distDir} 里 ${expected.length} 个文件`);
   }
-  const tempDir = mkdtempSync(join(tmpdir(), 'jinyi-zip-verify-'));
+  const tempDir = mkdtempSync(join(tmpdir(), 'translens-zip-verify-'));
   try {
     for (const rel of expected) {
       const packed = entries.get(rel);
@@ -356,7 +356,7 @@ function main() {
     return;
   }
 
-  const outPath = args.out ?? join(process.cwd(), `jinyi-${version}.zip`);
+  const outPath = args.out ?? join(process.cwd(), `translens-${version}.zip`);
   const buffer = buildZip(relFiles.map((rel) => ({ name: rel, data: readFileSync(join(args.dist, ...rel.split('/'))) })));
   writeFileSync(outPath, buffer);
 
