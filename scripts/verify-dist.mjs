@@ -571,39 +571,50 @@ function checkHtmlPage(distDir, relPath, label) {
 }
 
 /* ------------------------------------------------------------------ *
- * 6. manifest 的 name / description 是合法 UTF-8 中文
+ * 6. manifest 的 name / description 是合法 UTF-8（description 还要求是中文）
  * ------------------------------------------------------------------ */
 
 const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const REPLACEMENT = '\ufffd';
 
 /**
- * 从字节层面确认文本是合法 UTF-8 中文。
+ * 从字节层面确认文本是合法 UTF-8。
  * Node 的 `toString('utf8')` 会把非法字节替换成 U+FFFD 而不抛错，所以必须显式检查
  * 替换字符——否则一份被 PowerShell 5.1 的 `Set-Content` 写成 GBK 的 manifest
  * 会"读得出来"却全是乱码，而扩展在 Chrome 里显示的名字同样是乱码。
+ *
+ * 这里**只**管编码与空值，不管语种：`name` 是品牌名（TransLens 这类拉丁字是正常的），
+ * 语种要求只对 `description` 提，见 `checkChineseDescription`。
  */
-function checkChineseField(manifest, field) {
+function checkUtf8Field(manifest, field) {
   const value = manifest[field];
   if (typeof value !== 'string' || value.trim() === '') {
-    fail(`manifest.${field} 是非空中文字符串`, `实际是 ${JSON.stringify(value)}`);
-    return;
+    fail(`manifest.${field} 是非空字符串`, `实际是 ${JSON.stringify(value)}`);
+    return false;
   }
   if (value.includes(REPLACEMENT)) {
     fail(
       `manifest.${field} 是合法 UTF-8`,
       `含 U+FFFD 替换字符，文件很可能不是 UTF-8 编码：${JSON.stringify(value)}`,
     );
-    return;
+    return false;
   }
-  if (!CJK.test(value)) {
+  ok(`manifest.${field} 是合法 UTF-8`, `"${value}"`);
+  return true;
+}
+
+/**
+ * `description` 额外要求是中文：扩展详情页上给中文用户看的简介。
+ * `name` 不提这条——品牌名就该是品牌名，硬要求中文等于逼着改品牌。
+ */
+function checkChineseDescription(manifest, field) {
+  if (!checkUtf8Field(manifest, field)) return;
+  if (!CJK.test(manifest[field])) {
     fail(
       `manifest.${field} 含中文`,
-      `未发现 CJK 字符（本扩展面向中文用户，name/description 应为中文）：${JSON.stringify(value)}`,
+      `未发现 CJK 字符（详情页简介面向中文用户，应写中文）：${JSON.stringify(manifest[field])}`,
     );
-    return;
   }
-  ok(`manifest.${field} 是合法 UTF-8 中文`, `"${value}"`);
 }
 
 /* ------------------------------------------------------------------ *
@@ -662,8 +673,8 @@ function main() {
   if (manifest !== null) {
     checkManifestRefs(manifest, distDir);
     checkBackground(manifest, distDir);
-    checkChineseField(manifest, 'name');
-    checkChineseField(manifest, 'description');
+    checkUtf8Field(manifest, 'name');
+    checkChineseDescription(manifest, 'description');
   }
 
   checkContentScript(distDir);

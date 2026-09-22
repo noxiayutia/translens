@@ -155,8 +155,10 @@ body {
   flex: none;
   width: 24px;
   height: 24px;
-  font-size: 12px;
+  /* 拉丁字母的首字母（TransLens 的 T）：比原来的汉字小一号、去掉字距，方块里才不会顶格。 */
+  font-size: 13px;
   font-weight: 700;
+  letter-spacing: -0.02em;
   color: var(--on-accent);
   background: var(--accent);
   border-radius: var(--radius-sm);

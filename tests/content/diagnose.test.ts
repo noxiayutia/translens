@@ -399,7 +399,7 @@ describe('诊断输出：页面内两行 / 剪贴板全文', () => {
     const lines = text.split('\n');
 
     expect(lines).toHaveLength(4);
-    expect(text).toContain('【浸译诊断】');
+    expect(text).toContain('【TransLens 诊断】');
     expect(text).toContain('p#p');
     // 采集上下文带上目标语言：目标语言判错是"这一段为什么没翻"的一个真实原因。
     expect(text).toContain('zh-Hans');

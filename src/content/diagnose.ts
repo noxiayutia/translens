@@ -627,7 +627,7 @@ export function formatClipboard(diagnosis: Diagnosis, now = Date.now()): string 
       ? '采集上下文：无（页面未处于已翻译状态）'
       : `采集上下文：目标语言 ${options.targetLang}${options.pageHasKana === true ? ' · 页面含假名' : ''}`;
   return [
-    `【浸译诊断】${diagnosis.finding.text}`,
+    `【TransLens 诊断】${diagnosis.finding.text}`,
     `元素：${diagnosis.level === null ? '（未定位）' : describePath(diagnosis)}`,
     context,
     observerLine(diagnosis.stats, now),

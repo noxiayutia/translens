@@ -485,7 +485,7 @@ describe('诊断模式：观察者状态', () => {
     click(translated);
 
     const text = clipboardWrites[0] ?? '';
-    expect(text).toContain('【浸译诊断】');
+    expect(text).toContain('【TransLens 诊断】');
     expect(text).toContain('已翻译');
     expect(text).toContain('p#first');
     expect(text).toContain('目标语言');

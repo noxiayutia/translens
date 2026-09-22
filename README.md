@@ -1,4 +1,4 @@
-# 浸译（JinYi）
+# TransLens
 
 沉浸式网页翻译扩展：**默认只显示译文**——页面上看不到原文，也就不会有两种语言互相挤占版面。
 原文并没有被删掉，它只是被藏了起来（同样在 DOM 里），随时可以一键还原，也可以在弹窗里切回双语对照。
@@ -24,11 +24,17 @@ npm run build
 3. 点 **加载已解压的扩展程序**
 4. 选择本仓库的 **`dist` 目录**（注意是 `dist`，不是仓库根目录）
 
-加载成功后扩展会出现在扩展管理列表与工具栏的拼图菜单里，名字是「浸译」，图标是一个蓝色圆角
-方形、里面两个白色的双向箭头（左右各一个、上下错开，表示"互换"）。图标是 `src/icons/` 下
-入库的四个 PNG（16/32/48/128），由 `scripts/make-icons.mjs` 从零生成（只用 Node 标准库，
-不依赖任何图形库），改了设计就跑 `npm run icons` 重新生成（脚本会自检：读回、尺寸、CRC、
-四角与箭头像素，不对就非零退出）。
+加载成功后扩展会出现在扩展管理列表与工具栏的拼图菜单里，名字是 **TransLens**，图标是一个蓝色
+圆角方形、里面两个薄荷青的双向箭头（左右各一个、上下错开，表示"两种语言互换"）。图标是
+`src/icons/` 下入库的四个 PNG（16/32/48/128），由 `scripts/make-icons.mjs` 从零生成（只用 Node
+标准库，不依赖任何图形库），改了设计就跑 `npm run icons` 重新生成（脚本会自检：读回、尺寸、
+CRC、四角、底色与两支箭头，不对就非零退出）。
+
+品牌 logo（两个相交的透镜圆 + 中间的白箭头，给扩展详情页/官网用）是**另一张图**，体积更大、
+细节更多，由 `npm run logo` 生成到 `docs/brand/translens-logo.png`。两者不共用一张图是有原因的：
+**16px 只承载得下"一个形状 + 一个方向"**，两个圆加一个箭头在工具栏尺寸下必然糊成一团
+（圆环会被笔画填实、白箭头压在白圆上会消失），所以小图标退回"双向箭头"这个在四个尺寸下都
+验证过的符号。`scripts/make-icons.mjs` 顶部记了这三种失败走法的具体数字。
 `dist/` 只在 `npm run build` 之后才存在，且已被 `.gitignore` 忽略。
 
 > `npm run build` 的最后一步会自动运行 `npm run verify:dist`（见下文「验证」），
@@ -53,8 +59,8 @@ npm run build
 > 高亮用 `outline`（不占空间、不影响布局）。弹窗里的「悬停翻译」「划词翻译」开关控制它俩是否启用，
 > 改动即时写入设置，并推给当前页面当场重新挂/摘监听器（详见下）。
 
-工具栏上的图标就是上面那个「蓝色圆角方块 + 白色双向箭头」。**如果没看到它**，点拼图按钮把
-「浸译」固定到工具栏即可（新装的扩展默认收在拼图菜单里，这是 Chrome 的行为，与有没有图标无关）。
+工具栏上的图标就是上面那个「蓝色圆角方块 + 薄荷青双向箭头」。**如果没看到它**，点拼图按钮把
+「TransLens」固定到工具栏即可（新装的扩展默认收在拼图菜单里，这是 Chrome 的行为，与有没有图标无关）。
 
 ### 显示模式
 
@@ -351,6 +357,7 @@ npm run typecheck     # 类型检查（tsc --noEmit）
 npm run build         # 类型检查 → 打包 → verify:dist
 npm run zip           # 把 dist/ 打成 jinyi-<version>.zip（需先 build）
 npm run icons         # 重新生成 src/icons/ 下四个尺寸的图标（改了图标设计才需要跑）
+npm run logo          # 重新生成 docs/brand/translens-logo.png（改了品牌 logo 才需要跑）
 
 npm run dev:main      # 监听重建 background / popup / options（另开一个终端）
 npm run dev:content   # 监听重建内容脚本（另开一个终端）
@@ -398,8 +405,11 @@ src/
   popup/                 工具栏弹窗
   options/               设置页：左导航三段 + 8 个区块（翻译引擎 / 语言与显示 / 快捷翻译 / 术语表 / 站点规则 / 提示词 / 缓存与请求 / 隐私）
   shared/                设置读写、消息协议、可选宿主权限
+docs/
+  brand/                 品牌 logo（translens-logo.png，`npm run logo` 生成后入库）
 scripts/
   make-icons.mjs         从零生成 PNG 扩展图标 + 自检（npm run icons，只用 Node 标准库）
+  make-brand-logo.mjs    从零生成品牌 logo，几何常量复用 make-icons.mjs（npm run logo）
   verify-dist.mjs        产物可用性校验（npm run verify:dist）
   zip-dist.mjs           dist 打包 + 解回临时目录自检（npm run zip）
 tests/                   vitest 用例
