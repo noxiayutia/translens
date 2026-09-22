@@ -3,7 +3,8 @@
  * @vitest-environment jsdom
  *
  * §4.3 状态点三态 + 它背后的记录（`chrome.storage.session` 的 `jinyi:engine-health`）。
- * 另一半：内置免费引擎那一行（§3.1 的"不可删"）。
+ * 另一半**曾是**「内置免费引擎那一行」（§3.1 的"不可删"）——那一行随单元 E 删掉免费接口一起
+ * 消失了，现在这一半是**档案记录键的形状**（`p:` 前缀与档案 id 是两个概念，见下面那个 describe）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
