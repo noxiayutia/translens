@@ -32,6 +32,10 @@ const MANIFEST_PATH = join(import.meta.dirname, '..', 'src', 'manifest.json');
 
 interface Manifest {
   permissions?: unknown;
+  /** 默认主机权限：单元 E 起是**显式空数组**（`[]`），不是"这个键没了"。 */
+  host_permissions?: unknown;
+  /** 可选主机权限：自定义端点按需申请用，**一个字都不许动**。 */
+  optional_host_permissions?: unknown;
   action?: { default_popup?: unknown };
 }
 
@@ -58,5 +62,31 @@ describe('manifest 权限：弹窗要能读到当前标签页的 url', () => {
     // activeTab 权限 → 弹窗里的 `chrome.tabs.query` 才带着 url。少了 default_popup，
     // 上面那条 activeTab 断言就只是一句没有来路的声明。
     expect(manifest().action?.default_popup).toBe('popup/popup.html');
+  });
+
+  /**
+   * **安装/更新不请求任何站点访问权**这句用户可见承诺的**唯一**机器守卫。
+   *
+   * 牙在哪：谁把 `https://translate.googleapis.com/*`（或别的域名）加回默认主机权限，这条当场红。
+   * 为什么断言 `[]` 而不是"键不存在"：显式空数组表达"我们查过这件事、结论是零权限"，
+   * `toEqual([])` 同时把"不小心把键删了"钉在"这是一次遗漏"而不是"这是一次决定"上
+   * （两者行为等价，但 diff 里看得见区别）。
+   */
+  it('默认不声明任何主机权限：安装与更新都不请求站点访问权', () => {
+    expect(manifest().host_permissions).toEqual([]);
+  });
+
+  /**
+   * 这条是**反向**约束（与上面「不许有 `tabs`」那条同一性质，理由也同一性质：
+   * **改了也不会红**）。
+   *
+   * 清空 `host_permissions` 的人很容易顺手把 `optional_host_permissions` 也"一起清理干净"
+   * ——那样自定义端点会**永远申请不到授权**（`shared/host-permission.ts` 申请的 origin
+   * 不在可选清单里，Chrome 直接拒绝），而所有测试都是替身、**一条都不会红**：
+   * 弹窗与设置页的授权断言在 `tests/helpers/chrome-stub.ts` 的 `grantedOrigins` 上，
+   * 那个替身**不看 manifest**。真机上用户会看到设置页说"已授权访问"，而请求被浏览器拦下。
+   */
+  it('可选主机权限原样保留：自定义端点的授权链路一个字都不许动', () => {
+    expect(manifest().optional_host_permissions).toEqual(['http://*/*', 'https://*/*']);
   });
 });

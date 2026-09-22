@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "TransLens",
   "version": "0.1.0",
-  "description": "沉浸式网页翻译：默认只显示译文（可切换双语对照），支持免费引擎与自定义 OpenAI 兼容 API。",
+  "description": "沉浸式网页翻译：默认只显示译文（可切换双语对照），支持自建 OpenAI 兼容 API（DeepSeek / OpenAI / Ollama 等）。",
   "permissions": ["storage", "contextMenus", "activeTab"],
-  "host_permissions": ["https://translate.googleapis.com/*"],
+  "host_permissions": [],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "icons": {
