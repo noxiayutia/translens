@@ -180,12 +180,30 @@ describe('设置页：缓存与请求', () => {
     await loadOptions();
 
     expect(pick<HTMLDetailsElement>('cache-advanced').open).toBe(false);
-    expect(inputOf('concurrency').value).toBe('3');
+    // 字面值是**故意**钉的：这三行读的是"新装扩展的设置页显示什么默认值"，跟着常量走就永远绿，
+    // 默认值变更（P3 把并发 3 → 6）必须是有人显式改过这一行。
+    expect(inputOf('concurrency').value).toBe('6');
     expect(inputOf('max-batch-chars').value).toBe('1000');
     expect(inputOf('max-segments-per-batch').value).toBe('12');
 
     commitNumber(inputOf('max-segments-per-batch'), '20');
     await waitFor(async () => (await storedSettings()).maxSegmentsPerBatch === 20);
+  });
+
+  /**
+   * 并发那一行的提示是对**运行时行为**的承诺（P3 放行默认值 3→6 时附的条件）：这个框填的是
+   * 上限，不是"设了就一直这么宽"——阀从 2 路起步、撞限流自动降档、轮末还会补译一次。
+   * 三件事任何一件被改掉，这句话就成了假话，所以钉在界面上而不是只写在 README 里。
+   */
+  it('并发提示说清"这是上限，阀会自己调节"（三件事缺一不可）', async () => {
+    mountOptionsHtml();
+    const hint = document.querySelector('label[for="concurrency"] small')?.textContent ?? '';
+    expect(hint).toContain('上限');
+    expect(hint).toContain('2 路起步');
+    expect(hint).toContain('降档');
+    expect(hint).toContain('补译');
+    // 旧那句"接口限流严就调低"必须消失：它把上限说成了恒定宽度，也把责任推给了用户。
+    expect(hint).not.toContain('限流严就调低');
   });
 
   it('数不出缓存条数时显示占位符并报错，绝不显示成 0（「读不出来」不是「缓存是空的」）', async () => {

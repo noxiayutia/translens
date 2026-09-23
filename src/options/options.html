@@ -220,7 +220,7 @@
             <summary>高级：批量与并发</summary>
             <div class="group">
               <div class="field">
-                <label class="lab" for="concurrency">并发请求数<small>1–8，接口限流严就调低</small></label>
+                <label class="lab" for="concurrency">并发请求数<small>1–8 · 这是<b>上限</b>：实际从 2 路起步，撞限流自动降档，一轮跑完还会补译一次</small></label>
                 <input id="concurrency" type="number" min="1" max="8" step="1" />
               </div>
               <div class="field">

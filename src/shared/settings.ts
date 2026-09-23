@@ -132,6 +132,11 @@ export interface Settings {
    * 接功能时记得同时补界面（README 已按"无界面、无行为"如实描述）。
    */
   autoTranslateDelay: number;
+  /**
+   * 并发请求数的**上限**。它不是"一轮翻译始终铺这么宽"：阀从 `min(2, 本值)` 起步（slow start），
+   * 撞 429 降一档、连撞两次砸到 1，之后攒够干净批次再逐档爬回本值封顶（见 `content/throttle.ts`）。
+   * 所以默认值取高的那一头是安全的——窗口窄时它自己会收下去，代价只是几次被拒的重发。
+   */
   concurrency: number;
   maxBatchChars: number;
   maxSegmentsPerBatch: number;
@@ -175,7 +180,8 @@ export const DEFAULT_SETTINGS: Settings = {
   hoverTranslate: true,
   selectionTranslate: true,
   autoTranslateDelay: 0,
-  concurrency: 3,
+  // P3：3 → 6。依据与判据见 `tests/shared/settings.test.ts` 里「默认并发是 6」那条用例的注释。
+  concurrency: 6,
   maxBatchChars: 1000,
   maxSegmentsPerBatch: 12,
   cacheMaxEntries: 5000,

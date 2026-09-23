@@ -42,6 +42,19 @@ describe('mergeSettings', () => {
     expect(CURRENT_VERSION).toBe(5);
   });
 
+  /**
+   * P3：默认并发 3 → 6。三条真机依据（台账 `.qa/限流与并发实测报告.md`）：
+   * - 宽窗口（服务商同时允许 8 路）时并发 6 是并发 3 的 **1.65 倍**（601 段页面 12.9 秒 → 7.8 秒）；
+   * - 窄窗口（只允许 1 路）时并发 6 只比并发 3 慢约 5%（17.3 秒 vs 16.5 秒），**两边失败段都是 0**
+   *   ——提并发不再以丢段落地为代价（那是 P2 那版的行为）；
+   * - 这个值是**上限**而不是恒定的宽度：阀从 2 路起步（slow start）、撞 429 自动降一档、
+   *   轮末还会补译一遍。既然它自己会往下收，默认就该取高的那一头。
+   */
+  it('默认并发是 6（它是上限，阀会自己降下来）', () => {
+    expect(DEFAULT_SETTINGS.concurrency).toBe(6);
+    expect(mergeSettings({}).concurrency).toBe(6);
+  });
+
   it('保留用户已设置的值', () => {
     const merged = mergeSettings({ targetLang: 'ja', engineId: 'openai-compat' });
     expect(merged.targetLang).toBe('ja');
