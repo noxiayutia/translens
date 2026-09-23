@@ -232,8 +232,13 @@ export function detectHiddenKind(element: Element, styleOf: StyleLookup): string
  * 盒被压到 1×1 及以下（`clip: rect(0,0,0,0)` 与 `clip-path: inset(50%)` 两种写法都落在这里）。
  *
  * 只在调用方已经确认 `position:absolute` 之后才问——这条读的是布局而非样式，不能白拿。
- * 宿主没实现布局（jsdom 里所有盒都是 0×0）时，绝对定位的元素会被判成视觉隐藏；
- * 本仓库的夹具里没有"绝对定位 + 有文本 + 期望被采集"的元素，所以这个方向是安全的。
+ *
+ * **两侧的环境分歧都记在这里**（单测钉不住它：jsdom 里断言必然通过，没有牙）：
+ * - jsdom 不排版，所有盒都是 0×0 ⇒ 绝对定位元素会被判成视觉隐藏。本仓库的夹具里没有
+ *   "绝对定位 + 有文本 + 期望被采集"的元素，所以测试侧不会因此出错；
+ * - 真 Chrome 里这条不误杀：实测一个 `position:absolute` 的 220×44 可见徽章
+ *   （`.qa/fixture/sr-only.html#visible-badge`）**仍被正常采集**，同页四种 sr-only
+ *   写法全部被挡。也就是说这一臂的真伪只在真浏览器里可证，改动它必须回真机复验。
  */
 function isZeroAreaBox(element: Element): boolean {
   const box = element.getBoundingClientRect();
