@@ -1147,6 +1147,41 @@ describe('内容脚本编排：失败与边界', () => {
     chromeStub.runtime.sendMessage = originalSendMessage;
   });
 
+  /**
+   * 排队态与请求态在 DOM 上必须分得开。40 段 / 每批 12 段 = 4 批，并发 3 ⇒
+   * 三批在飞、一批还在排队；两批混在一起显示同一句占位文本时，用户无法判断
+   * "是没在动，还是动得慢"——这正是真机上被当成卡死的那个体感。
+   */
+  it('整页翻译中：在飞的批显示「翻译中…」、还在排队的批显示「排队中…」', async () => {
+    mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
+    const { contentListener } = await loadContentScript();
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const delivered: unknown[] = [];
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      delivered.push(message);
+      return new Promise<never>(() => {});
+    };
+    vi.useFakeTimers();
+    void dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+
+    const texts = hosts().map((h) => bodyTextOf(h));
+    const fetching = texts.filter((t) => t === '翻译中…').length;
+    const queued = texts.filter((t) => t === '排队中…').length;
+    expect(texts).toHaveLength(40);
+    expect(fetching).toBeGreaterThan(0);
+    expect(queued).toBeGreaterThan(0);
+    expect(fetching + queued).toBe(40);
+    // 在飞的数量应与"并发 × 每批段数"对上（3 批 × 12 段），排队的是剩下那一批。
+    expect(fetching).toBe(36);
+    expect(queued).toBe(4);
+    expect(delivered).toHaveLength(3);
+
+    chromeStub.runtime.sendMessage = originalSendMessage;
+    // 这一轮故意不收尾（所有请求都不兑现）：`pending` 不 await，用例只验 DOM 两态。
+  });
+
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();

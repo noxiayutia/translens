@@ -157,6 +157,49 @@ describe('DomRenderer 状态与还原', () => {
     expect(bodyTextOf(document.querySelector('jy-translation') as Element)).toBe('翻译中…');
   });
 
+  /**
+   * 排队 ≠ 请求：整页几百段并发 3 时，绝大多数宿主其实还没发出去，但它们和正在飞的
+   * 长得一模一样，用户只能猜。真机读数（.qa/p0-probe.mjs）还证明了另一件事——
+   * 标签页被节流到每分钟醒一次时，"在推进"与"卡住了"在页面上完全无法分辨。
+   */
+  it('queued 状态显示「排队中…」并带可辨别的类', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'queued');
+    const host = document.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toBe('排队中…');
+    expect(host.shadowRoot?.querySelector('.jy-body')?.classList.contains('jy-queued')).toBe(true);
+  });
+
+  it('startFetching 把排队中的段升级成「翻译中…」', () => {
+    const segment = paragraph('Hello world');
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(segment, 'queued');
+    const host = document.querySelector('jy-translation') as Element;
+    expect(bodyTextOf(host)).toBe('排队中…');
+
+    renderer.startFetching([segment.id]);
+    expect(bodyTextOf(host)).toBe('翻译中…');
+    expect(host.shadowRoot?.querySelector('.jy-body')?.classList.contains('jy-queued')).toBe(false);
+  });
+
+  /** 已经出结果的段不能被一次迟到的"开始请求"倒回去盖掉。 */
+  it('startFetching 不动已经译好或已失败的段', () => {
+    // `paragraph()` 恒返回同一个 id，两段必须各自改名，否则第二次 mount 会盖掉第一次。
+    const done = { ...paragraph('First paragraph'), id: 'jy-a' };
+    const failed = { ...paragraph('Second paragraph'), id: 'jy-b' };
+    const renderer = new DomRenderer(document, 'bilingual');
+    renderer.mount(done, 'queued');
+    renderer.mount(failed, 'queued');
+    renderer.startFetching([done.id, failed.id]);
+    renderer.update(done.id, '译文甲');
+    renderer.fail(failed.id, '限流', true);
+
+    renderer.startFetching([done.id, failed.id]);
+    expect(bodyTextOf(document.querySelector(`jy-translation[data-jy-for="${done.id}"]`) as Element)).toBe('译文甲');
+    expect(bodyTextOf(document.querySelector(`jy-translation[data-jy-for="${failed.id}"]`) as Element)).toContain('限流');
+  });
+
   it('fail 状态显示错误文案与重试按钮', () => {
     const segment = paragraph('Hello world');
     const renderer = new DomRenderer(document, 'bilingual');

@@ -494,7 +494,10 @@ async function translatePage(): Promise<void> {
   // 本轮的页面级提示账本：批次只往里 record，收尾统一弹**优先级最高**的一条。
   const pageErrors = createNoticeTracker();
 
-  for (const segment of segments) renderer.mount(segment, 'pending');
+  // 一轮开始先把所有段标成**排队中**：并发只有 3，绝大多数段此刻确实还没发出去。
+  // 等它们的批次进池时再由 `startFetching` 升级成「翻译中…」——"在推进"与"在排队"
+  // 必须在页面上看得出区别（真机读数：被节流的后台标签页里两者长得一模一样）。
+  for (const segment of segments) renderer.mount(segment, 'queued');
   // 宿主挂完才 enable：首轮挂载不是"页面变动"；种子把首轮已翻译的段落（含不打标记的
   // 松散文本段）交给增量的「已处理」账本，重扫混合容器时才不会二次插宿主。
   incremental.enable(segments);
@@ -590,6 +593,8 @@ async function translatePage(): Promise<void> {
 
         const runOnce = async (): Promise<void> => {
           const mine2 = ++attempt;
+          // 请求要出去了：这一段从"排队中"升级为"翻译中"。
+          renderer?.startFetching(fullBatch.map((segment) => segment.id));
           let response: TranslateTextsResponse;
           try {
             response = await sendToBackground({
@@ -759,8 +764,9 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
 
   // 状态面板把新段落纳入总量：retrySegment 也靠这一步查得到它们（重试按钮沿用）。
   for (const segment of newSegments) segments.push(segment);
-  // —— 同步写入区（observer 的 disconnect 窗口）：挂 pending 宿主。
-  for (const segment of newSegments) current.mount(segment, 'pending');
+  // —— 同步写入区（observer 的 disconnect 窗口）：挂排队中的宿主（与整页同一套两态口径，
+  //    批次进池时由 `startFetching` 升级）。
+  for (const segment of newSegments) current.mount(segment, 'queued');
 
   const batches = planBatches(
     newSegments.map((segment) => ({ id: segment.id, text: segment.text, order: segment.order })),
@@ -772,6 +778,8 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
   await runPool(
     batches.map((batch) => async () => {
       try {
+        // 与整页同一套两态口径：进池了才从「排队中…」升级成「翻译中…」。
+        current.startFetching(batch.map((segment) => segment.id));
         let response: TranslateTextsResponse;
         try {
           response = await sendToBackground({

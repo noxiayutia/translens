@@ -6,10 +6,12 @@ import { TRANSLATION_CSS, TRANSLATION_INLINE_CSS } from './styles';
 
 export type { DisplayMode };
 
-export type RenderState = 'pending' | 'done' | 'error';
+export type RenderState = 'queued' | 'pending' | 'done' | 'error';
 
 const HOST_TAG = 'jy-translation';
 const PENDING_TEXT = '翻译中…';
+/** 排队中：宿主已经挂上，但这一段的请求还没进池。与「翻译中…」分开是为了让人眼能分辨"在推进"与"在排队"。 */
+const QUEUED_TEXT = '排队中…';
 
 /**
  * 「这段文本几乎全部来自同一个链接」的占比阈值：链接可见文本长度 / 段文本长度。
@@ -176,6 +178,21 @@ export class DomRenderer {
       return;
     }
     this.setContent(this.ensureHost(segment), state, text);
+  }
+
+  /**
+   * 把"排队中"的段升级成"翻译中"——请求真的进池了才升级。
+   *
+   * 只动当前处于排队态的宿主：已经出译文或已失败的段不能被一次迟到的"开始请求"
+   * 倒回成占位文本（那会把用户正在读的内容抹掉，比不升级糟得多）。
+   */
+  startFetching(segmentIds: string[]): void {
+    for (const id of segmentIds) {
+      const host = this.hosts.get(id);
+      if (host === undefined) continue;
+      if (!host.shadowRoot?.querySelector('.jy-body')?.classList.contains('jy-queued')) continue;
+      this.setContent(host, 'pending');
+    }
   }
 
   update(segmentId: string, text: string): void {
@@ -492,6 +509,12 @@ export class DomRenderer {
 
     body.textContent = '';
     body.className = 'jy-body';
+    if (state === 'queued') {
+      // 与 pending 同一套样式（只是占位文本不同），额外带一个类让人眼与测试都能分辨。
+      body.classList.add('jy-pending', 'jy-queued');
+      body.textContent = QUEUED_TEXT;
+      return;
+    }
     if (state === 'pending') {
       body.classList.add('jy-pending');
       body.textContent = PENDING_TEXT;
