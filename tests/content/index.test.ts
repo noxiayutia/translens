@@ -243,6 +243,27 @@ async function settle(rounds = 3): Promise<void> {
 }
 
 /**
+ * 把已经排队的微任务链跑到底。并发、阀、轮末补译这套编排全是 promise，中间没有真定时器，
+ * 所以"再等一会儿"就是要再转几轮——轮数给足，否则负向断言（"没有放出第三个请求"）会因为
+ * 转得不够而假绿。
+ */
+async function flush(rounds = 30): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) await Promise.resolve();
+}
+
+/**
+ * 等到第 `n` 个请求真的发出去（并发/阀/补译这些改的都是"什么时候发下一个请求"，
+ * 用例只能以请求数为同步点）。转不到就带着当前读数失败——不要写成恒真的等待。
+ */
+async function waitForRequests(resolvers: unknown[], n: number): Promise<void> {
+  for (let i = 0; i < 40; i += 1) {
+    await flush(3);
+    if (resolvers.length >= n) return;
+  }
+  throw new Error(`只发出 ${String(resolvers.length)} 个请求，等不到第 ${String(n)} 个`);
+}
+
+/**
  * 参照实现：与 `core/lang.ts` 的 `isTranslatableText` 无关地算一遍"这段文字值不值得翻"，
  * 用来在用例里独立算出期望的段落集合（含 `\p{N}`，见那边 2 个字母/数字的门槛）。
  */
@@ -1148,9 +1169,9 @@ describe('内容脚本编排：失败与边界', () => {
   });
 
   /**
-   * 排队态与请求态在 DOM 上必须分得开。40 段 / 每批 12 段 = 4 批，并发 3 ⇒
-   * 三批在飞、一批还在排队；两批混在一起显示同一句占位文本时，用户无法判断
-   * "是没在动，还是动得慢"——这正是真机上被当成卡死的那个体感。
+   * 排队态与请求态在 DOM 上必须分得开。40 段 / 每批 12 段 = 4 批，并发设定 3 但
+   * **slow start 从 2 档起步** ⇒ 两批在飞、两批还在排队；两批混在一起显示同一句占位文本时，
+   * 用户无法判断"是没在动，还是动得慢"——这正是真机上被当成卡死的那个体感。
    */
   it('整页翻译中：在飞的批显示「翻译中…」、还在排队的批显示「排队中…」', async () => {
     mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
@@ -1173,10 +1194,10 @@ describe('内容脚本编排：失败与边界', () => {
     expect(fetching).toBeGreaterThan(0);
     expect(queued).toBeGreaterThan(0);
     expect(fetching + queued).toBe(40);
-    // 在飞的数量应与"并发 × 每批段数"对上（3 批 × 12 段），排队的是剩下那一批。
-    expect(fetching).toBe(36);
-    expect(queued).toBe(4);
-    expect(delivered).toHaveLength(3);
+    // 在飞的数量应与"起步档 × 每批段数"对上（2 批 × 12 段），排队的是剩下两批。
+    expect(fetching).toBe(24);
+    expect(queued).toBe(16);
+    expect(delivered).toHaveLength(2);
 
     chromeStub.runtime.sendMessage = originalSendMessage;
     // 这一轮故意不收尾（所有请求都不兑现）：`pending` 不 await，用例只验 DOM 两态。
@@ -1186,6 +1207,9 @@ describe('内容脚本编排：失败与边界', () => {
    * 进度条按批推进，且**每步都不超过总数**（`finished + failedIds ≤ segments` 这条不变量
    * 在挂起重发路径下同样成立——重发前会先收回失败标记，见 `freezeWatch.add` 那段）。
    * 一轮结束、以及还原之后，进度条必须消失：留着它就是一句过期的话。
+   *
+   * 顺带钉住轮末补译的**记账**：那 12 段补译成功之后要从「失败」挪回「已译」，
+   * 不能同一段既算已译又算失败。
    */
   it('页面级进度按批推进，收尾与还原时撤掉', async () => {
     mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
@@ -1210,9 +1234,9 @@ describe('内容脚本编排：失败与边界', () => {
     };
 
     const state = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
-    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    await flush();
 
-    expect(resolvers).toHaveLength(3);
+    expect(resolvers).toHaveLength(2);
     expect(progressText()).toBe('已译 0/40 段');
 
     const reply = (n: number) =>
@@ -1225,23 +1249,30 @@ describe('内容脚本编排：失败与边界', () => {
       });
 
     reply(0);
-    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    await flush();
     expect(assertInvariant()).toBe(12);
-    // 第一批落地后排队的那一批进池。
-    expect(resolvers).toHaveLength(4);
+    // 第一批落地后排队的那一批进池（slow start 的 2 档里空出一个位子）。
+    expect(resolvers).toHaveLength(3);
 
     // 失败的一批**不进「已译」**，而是单独露出来：标签说的是"已译"。
     failAll(1);
-    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    await flush();
     expect(progressText()).toBe('已译 12/40 段 · 失败 12');
     expect(assertInvariant()).toBe(12);
+    // 这一批的 429 同时把阀降到 1：在飞的那一批之外不再放新的。
+    expect(resolvers).toHaveLength(3);
 
     reply(2);
-    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    await flush();
     expect(progressText()).toBe('已译 24/40 段 · 失败 12');
 
     reply(3);
-    await state;
+    await waitForRequests(resolvers, 5);
+    // 第四批只有 4 段（40 = 12 + 12 + 12 + 4）。
+    expect(progressText()).toBe('已译 28/40 段 · 失败 12');
+    // 轮末补译：那 12 段这一遍译出来了，「失败」跟着清零。
+    reply(4);
+    expect(await state).toMatchObject({ done: 40, failed: 0 });
     expect(progressText()).toBeNull();
 
     chromeStub.runtime.sendMessage = originalSendMessage;
@@ -1264,7 +1295,7 @@ describe('内容脚本编排：失败与边界', () => {
     vi.useFakeTimers();
     void dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
     for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
-    expect(sentItems).toHaveLength(3);
+    expect(sentItems).toHaveLength(2); // slow start 的起步档
 
     const firstBatchIds = sentItems[0].map((item) => item.id);
     // 这是一条"推"消息：内容脚本处理完**不回应也不保持通道**（后台发它只是为了改文案）。
@@ -1274,7 +1305,7 @@ describe('内容脚本编排：失败与边界', () => {
     const textFor = (id: string) =>
       bodyTextOf(document.querySelector(`jy-translation[data-jy-for="${id}"]`) as Element);
     expect(textFor(firstBatchIds[0])).toBe('重试中(第 2 次)');
-    // 没被点名的段：另两批在飞（翻译中…）、最后一批排队（排队中…），都不该被改。
+    // 没被点名的段：另一批在飞（翻译中…）、剩下两批排队（排队中…），都不该被改。
     const others = hosts().filter((h) => !firstBatchIds.includes(h.getAttribute('data-jy-for') ?? ''));
     expect(others.map(bodyTextOf).every((t) => t === '翻译中…' || t === '排队中…')).toBe(true);
 
@@ -1282,11 +1313,15 @@ describe('内容脚本编排：失败与边界', () => {
   });
 
   /**
-   * 阀真的接在池上：一批回报 429 之后，腾出来的那个位子**不该**立刻被下一批占走。
-   * 只测 throttle 自己的升降档不算数——那三档并发是 `runPool` 读的，接线断了单元全绿
+   * 阀与 slow start 真的接在池上：开局只有 2 路在飞（不是用户设定的 3 路），一批回报
+   * 429 之后腾出来的那个位子**不该**立刻被下一批占走，回升要攒够连续干净批次。
+   * 只测 throttle 自己的升降档不算数——那几档并发是 `runPool` 读的，接线断了单元全绿
    * 页面照样满并发。
+   *
+   * 顺带走完补译的**成功**分支：第一遍只丢回 10 段，补译那一遍就该把它们译出来
+   * （`done` 40 / `failed` 0 钉住"失败标记被收回、没被双计"）。
    */
-  it('一批里出现 429 时本轮并发立刻降到 1：后续批次不再并行发出', async () => {
+  it('一批里出现 429 时本轮并发立刻降一档：后续批次不再并行发出', async () => {
     mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
     const { contentListener } = await loadContentScript();
 
@@ -1299,27 +1334,105 @@ describe('内容脚本编排：失败与边界', () => {
         resolvers.push(resolve);
       });
     };
-    void dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
-    expect(resolvers).toHaveLength(3); // 并发 3，第 4 批还在排队
+    const rateLimited = async (n: number) => {
+      resolvers[n]?.({
+        ok: true,
+        results: items[n].map((item) => ({ id: item.id, text: null, code: 'RATE_LIMIT', message: '接口限流，请稍后重试' })),
+      });
+      await flush();
+    };
+    const replied = async (n: number) => {
+      resolvers[n]?.({ ok: true, results: items[n].map((item) => ({ id: item.id, text: translate(item.text) })) });
+      await flush();
+    };
 
-    // 第一批整批 429 → 阀降到 1：这一批腾出来的位子不该被下一批占走。
-    resolvers[0]?.({
-      ok: true,
-      results: items[0].map((item) => ({ id: item.id, text: null, code: 'RATE_LIMIT', message: '接口限流，请稍后重试' })),
-    });
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    const state = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    await waitForRequests(resolvers, 2);
+    expect(resolvers).toHaveLength(2); // slow start：2 路起步，不是满宽的 3
+
+    // 第一批整批 429 → 阀降一档到 1：它腾出来的位子不该被下一批占走（没有阀就会放出第 3 路）。
+    await rateLimited(0);
+    expect(resolvers).toHaveLength(2);
+
+    // 第二批干净落地 → 在飞的归零，池这时只放出**一个**（不是两个）。
+    await replied(1);
     expect(resolvers).toHaveLength(3);
 
-    // 再完成两批（都干净）→ 在飞的降到 0，池才放出**一个**（不是三个）。
-    resolvers[1]?.({ ok: true, results: items[1].map((item) => ({ id: item.id, text: translate(item.text) })) });
-    resolvers[2]?.({ ok: true, results: items[2].map((item) => ({ id: item.id, text: translate(item.text) })) });
-    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    await replied(2);
     expect(resolvers).toHaveLength(4);
 
-    const state = await dispatchWithoutFallbackTimer(contentListener, MSG.RESTORE_PAGE);
-    expect(state.translated).toBe(false);
+    // 四批都有结论 → 轮末补译那一遍开始，且**只带第一批那几段**（其余 30 段已经译好了）。
+    await replied(3);
+    await waitForRequests(resolvers, 5);
+    expect(items[4].map((item) => item.id)).toEqual(items[0].map((item) => item.id));
+
+    await replied(4);
+    expect(await state).toMatchObject({ done: 40, failed: 0 });
+    // 补译译出来的那 10 段落在页面上就是译文，不留红字。
+    expect(hosts().filter((host) => bodyTextOf(host).includes('重试')).length).toBe(0);
+
     chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
+  /**
+   * 轮末补译**只跑一遍**：供应商持续限流时，"补译完还是失败"就该停在失败态给用户
+   * 「重试」按钮，而不是在轮末无限补译。
+   * 同时钉住进度条的撤除时机——它必须等补译那遍也结束才消失，否则用户先看到 100%、
+   * 再看着红字一批批冒出来。
+   */
+  it('轮末补译只跑一遍，进度条等补译结束才撤掉', async () => {
+    mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
+    const { contentListener } = await loadContentScript();
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const resolvers: Array<(value: unknown) => void> = [];
+    const items: Array<Array<{ id: string; text: string }>> = [];
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      items.push((message as { payload: { items: Array<{ id: string; text: string }> } }).payload.items);
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    };
+    const rateLimited = (n: number) => {
+      resolvers[n]?.({
+        ok: true,
+        results: items[n].map((item) => ({ id: item.id, text: null, code: 'RATE_LIMIT', message: '接口限流，请稍后重试' })),
+      });
+    };
+    const progressText = () => document.getElementById('jy-progress')?.textContent ?? null;
+
+    const state = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    // 40 段 → 4 批，每一批都整批 429。
+    for (let n = 0; n < 4; n += 1) {
+      await waitForRequests(resolvers, n + 1);
+      rateLimited(n);
+    }
+
+    // 补译那一遍开始了：进度条还在，且仍然如实报着失败（它不能先宣布"全译完了"）。
+    await waitForRequests(resolvers, 5);
+    expect(progressText()).toContain('失败');
+    // 四批全部 429 → 补译那一遍同样是 4 批，一共 8 个请求，不会有第三遍。
+    for (let n = 4; n < 8; n += 1) {
+      await waitForRequests(resolvers, n + 1);
+      rateLimited(n);
+    }
+    expect(await state).toMatchObject({ done: 0, failed: 40 });
+
+    expect(resolvers).toHaveLength(8);
+    expect(progressText()).toBeNull();
+    expect(hosts().every((host) => bodyTextOf(host).includes('重试'))).toBe(true);
+
+    chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
+  /** 退避表与页面超时的对账：延长退避不能延长成"必定超时"。 */
+  it('429 的退避总时长必须小于页面超时的下限', async () => {
+    const { BACKOFF_TABLES } = await import('../../src/background/scheduler');
+    const longest = Math.max(
+      BACKOFF_TABLES.default.reduce((a, b) => a + b, 0),
+      BACKOFF_TABLES.rateLimit.reduce((a, b) => a + b, 0),
+    );
+    expect(longest).toBeLessThan(BACKGROUND_TIMEOUT_MS);
   });
 
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {

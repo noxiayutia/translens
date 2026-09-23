@@ -383,6 +383,10 @@ function applyResults(batch: TextSegment[], results: unknown): PageNotice | null
   for (const item of batch) {
     const result = byId.get(item.id);
     if (result !== undefined && result.text !== null) {
+      // 译出来了就不该再算失败：轮末补译那条路径重发的是**先标过失败**的段，
+      // 不回删就会同一段既进 `finished` 又留在 `failedIds`，进度条上 `done + failed`
+      // 会超过段落数（`retrySegment` 早就在删了，这里补上同一个动作）。
+      failedIds.delete(item.id);
       finished.add(item.id);
       renderer?.update(item.id, result.text);
       continue;
@@ -593,123 +597,174 @@ async function translatePage(): Promise<void> {
    */
   const throttle = createThrottle(settings.concurrency);
 
-  try {
-    await runPool(
-      batches.map((batch) => async () => {
-        // 被接管的那一轮不再动页面：此时 renderer / finished / failedIds 都已经属于
-        // 下一代，落笔只会把新的一轮搅乱（比如把新宿主标成失败）。
-        if (mine !== generation) return;
+  /**
+   * 轮末补译的名单（限流失败的代表段）与收集开关。
+   *
+   * 限流是**时间**问题不是内容问题：撞 429 的那几段过一会儿再发照样翻得出来。可第一遍
+   * 跑完就没人再管它们了——它们在后台只拿到退避预算内的那几次尝试（读数是 500ms/1500ms
+   * 那一版给的两次），预算烧完就永久停在红字上（真机读数：窄窗口下 96 段永久失败，而
+   * 窗口通常在几秒内就空了出来）。
+   * 所以一轮结束时把限流失败的那几段重排一遍、再走同一个池和同一个阀。
+   *
+   * **最多补一遍**（开关在补译之前关掉）：供应商持续限流时，"补完还是 429"就该停在失败态
+   * 给用户「重试」按钮——否则轮末会无限补译，页面永远收不了尾。
+   * 增量轮**故意不走这条路**：它每轮只有页面新长出来的那几段，用户随时能自己点「重试」，
+   * 再叠一层自动补译就成了"没人要求时反复重发同一批文本"。
+   */
+  const rateLimitedReps: TextSegment[] = [];
+  let collectingRateLimited = true;
+  const collectRateLimited = (batch: TextSegment[], response: TranslateTextsResponse): void => {
+    if (!response.ok) {
+      rateLimitedReps.push(...batch);
+      return;
+    }
+    const limited = new Set<string>();
+    if (Array.isArray(response.results)) {
+      for (const result of response.results) {
+        if (isResultItem(result) && result.code === 'RATE_LIMIT') limited.add(result.id);
+      }
+    }
+    for (const representative of batch) if (limited.has(representative.id)) rateLimitedReps.push(representative);
+  };
 
-        // 整个任务体都在 try/catch 里（不只是 sendMessage）：`core/pool.ts` 的契约是
-        // "调用方负责在任务内部捕获"——任何意外异常逃出去都会 reject 掉 runPool，
-        // 于是收尾那句 toast 被跳过、
-        // running 也在 finally 里被收走，页面就永久留在"翻译中…"（renderer 守卫还在，
-        // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
-        // 本批的代表段摊回的全集：请求只发 `batch`（去重后的代表段），**落地**按全集逐段算。
-        const fullBatch = expandBatch(batch);
-        /**
-         * 第几次尝试。标签页被冻结时看门狗会重发这一批，于是**两次尝试可能都会回来**；
-         * 只有最后一次被承认，先前那次的响应直接丢弃（否则同一段会被渲染两次，
-         * 而"已冻结重发"的标注也可能被一次迟到的旧响应盖掉）。
-         */
-        let attempt = 0;
-        /**
-         * 这一批"有结论了"的信号。任务体等的是它、不是某一次尝试：被冻结那一次的 promise
-         * 是永远不会兑现的僵尸，等它就等于让整轮 `runPool` 被一批死请求拖住
-         * （表现正是"译文都出来了，但弹窗的进度永远不到 100%"）。
-         */
-        let settleBatch: () => void = () => {};
-        const batchSettled = new Promise<void>((resolve) => {
-          settleBatch = resolve;
+  /** 一批的翻译任务；第一遍与轮末补译那一遍共用同一份实现（含看门狗、超时、去重摊回）。 */
+  const batchTask = (batch: TextSegment[]): (() => Promise<void>) => async () => {
+    // 被接管的那一轮不再动页面：此时 renderer / finished / failedIds 都已经属于
+    // 下一代，落笔只会把新的一轮搅乱（比如把新宿主标成失败）。
+    if (mine !== generation) return;
+
+    // 整个任务体都在 try/catch 里（不只是 sendMessage）：`core/pool.ts` 的契约是
+    // "调用方负责在任务内部捕获"——任何意外异常逃出去都会 reject 掉 runPool，
+    // 于是收尾那句 toast 被跳过、
+    // running 也在 finally 里被收走，页面就永久留在"翻译中…"（renderer 守卫还在，
+    // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
+    // 本批的代表段摊回的全集：请求只发 `batch`（去重后的代表段），**落地**按全集逐段算。
+    const fullBatch = expandBatch(batch);
+    /**
+     * 第几次尝试。标签页被冻结时看门狗会重发这一批，于是**两次尝试可能都会回来**；
+     * 只有最后一次被承认，先前那次的响应直接丢弃（否则同一段会被渲染两次，
+     * 而"已冻结重发"的标注也可能被一次迟到的旧响应盖掉）。
+     */
+    let attempt = 0;
+    /**
+     * 这一批"有结论了"的信号。任务体等的是它、不是某一次尝试：被冻结那一次的 promise
+     * 是永远不会兑现的僵尸，等它就等于让整轮 `runPool` 被一批死请求拖住
+     * （表现正是"译文都出来了，但弹窗的进度永远不到 100%"）。
+     */
+    let settleBatch: () => void = () => {};
+    const batchSettled = new Promise<void>((resolve) => {
+      settleBatch = resolve;
+    });
+
+    const runOnce = async (): Promise<void> => {
+      const mine2 = ++attempt;
+      // 请求要出去了：这一段从"排队中"升级为"翻译中"。
+      renderer?.startFetching(fullBatch.map((segment) => segment.id));
+      let response: TranslateTextsResponse;
+      try {
+        response = await sendToBackground({
+          type: MSG.TRANSLATE_TEXTS,
+          payload: {
+            items: batch.map((segment) => ({ id: segment.id, text: segment.text })),
+            targetLang: settings.targetLang,
+          },
         });
-
-        const runOnce = async (): Promise<void> => {
-          const mine2 = ++attempt;
-          // 请求要出去了：这一段从"排队中"升级为"翻译中"。
-          renderer?.startFetching(fullBatch.map((segment) => segment.id));
-          let response: TranslateTextsResponse;
-          try {
-            response = await sendToBackground({
-              type: MSG.TRANSLATE_TEXTS,
-              payload: {
-                items: batch.map((segment) => ({ id: segment.id, text: segment.text })),
-                targetLang: settings.targetLang,
-              },
-            });
-          } catch (raw) {
-            // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
-            // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
-            // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
-            // `fullBatch` 含同文本的全部段：一个代表段炸了，摊到的每一段都进失败态。
-            // 这一轮已经被接管：没人再关心这一批的结论，但**必须**给个收尾，
-            // 否则任务体永远等在 `batchSettled` 上，那一轮的 `runPool` 与
-            // `finally` 里的守卫收回都会被一批死请求拖住。
-            if (mine !== generation) {
-              settleBatch();
-              return;
-            }
-            // 已经有更新的尝试在飞：收尾交给它。这里抢着 settle 会把这一批提前摘掉。
-            if (attempt !== mine2) return;
-            failBatch(fullBatch, describeTransportError(raw));
-            settleBatch();
-            return;
-          }
-
-          // 响应回来后这一轮可能已经被还原/被接管，也可能已经被看门狗重发过：都丢掉。
-          if (mine !== generation) {
-            settleBatch();
-            return;
-          }
-          if (attempt !== mine2) return;
+      } catch (raw) {
+        // SW 被回收、扩展刚更新过时 sendMessage 会抛（"Receiving end does not exist"）；
+        // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
+        // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
+        // `fullBatch` 含同文本的全部段：一个代表段炸了，摊到的每一段都进失败态。
+        // 这一轮已经被接管：没人再关心这一批的结论，但**必须**给个收尾，
+        // 否则任务体永远等在 `batchSettled` 上，那一轮的 `runPool` 与
+        // `finally` 里的守卫收回都会被一批死请求拖住。
+        if (mine !== generation) {
           settleBatch();
-          /**
-           * 限流信号有两个形状：整条失败（`ok:false` + code）与条目级失败
-           * （`ok:true` + 某条 `code:'RATE_LIMIT'`），两个都要认，否则最常见的那一种
-           * ——后台按条目上报——会漏掉，阀就永远不触发。
-           */
-          if (isRateLimited(response)) throttle.penalize();
-          else throttle.succeeded();
-
-          // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
-          // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
-          if (!response.ok) {
-            pageErrors.record({ code: response.code, message: describeError(response) });
-            failBatch(fullBatch, response.message);
-            return;
-          }
-          // `applyResults` 自己校验响应形状：形状不符时整批进失败态，不抛异常。
-          // 响应按代表段的 id 回来，先摊回全集再落地（逐段渲染/计数，见上方去重注释）。
-          const notice = applyResults(fullBatch, expandResults(response.results));
-          if (notice !== null) pageErrors.record(notice);
-        };
-
-        const ticket = freezeWatch.add(() => {
-          // 先如实标注（走的是既有的失败态，重发成功后会被正常译文覆盖），再重发。
-          failBatch(fullBatch, '页面曾被浏览器挂起，本批已重发');
-          // 与「重试」按钮同一条口径（见 `retrySegment` 里那句 `failedIds.delete`）：
-          // 重发一开始就把刚记下的失败收回，否则成功后这一段会同时算进 done 与 failed，
-          // 状态面板报出的结论数会比段落数还多。
-          for (const segment of fullBatch) failedIds.delete(segment.id);
-          void runOnce();
-        });
-        try {
-          void runOnce();
-          await batchSettled;
-          if (tracksProgress && mine === generation) reportProgress();
-        } catch (raw) {
-          // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
-          // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
-          const detail = raw instanceof Error ? raw.message : String(raw);
-          if (mine !== generation) return;
-          pageErrors.record({ code: undefined, message: `翻译失败：${detail}` });
-          failBatch(fullBatch, MALFORMED_RESPONSE);
-        } finally {
-          freezeWatch.remove(ticket);
+          return;
         }
-      }),
-      // 动态上限：撞 429 时 `throttle` 会把它压到 1，之后阶梯回升（见 throttle.ts）。
+        // 已经有更新的尝试在飞：收尾交给它。这里抢着 settle 会把这一批提前摘掉。
+        if (attempt !== mine2) return;
+        failBatch(fullBatch, describeTransportError(raw));
+        settleBatch();
+        return;
+      }
+
+      // 响应回来后这一轮可能已经被还原/被接管，也可能已经被看门狗重发过：都丢掉。
+      if (mine !== generation) {
+        settleBatch();
+        return;
+      }
+      if (attempt !== mine2) return;
+      settleBatch();
+      /**
+       * 限流信号有两个形状：整条失败（`ok:false` + code）与条目级失败
+       * （`ok:true` + 某条 `code:'RATE_LIMIT'`），两个都要认，否则最常见的那一种
+       * ——后台按条目上报——会漏掉，阀就永远不触发。
+       */
+      if (isRateLimited(response)) {
+        throttle.penalize();
+        if (collectingRateLimited) collectRateLimited(batch, response);
+      } else {
+        throttle.succeeded();
+      }
+
+      // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
+      // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
+      if (!response.ok) {
+        pageErrors.record({ code: response.code, message: describeError(response) });
+        failBatch(fullBatch, response.message);
+        return;
+      }
+      // `applyResults` 自己校验响应形状：形状不符时整批进失败态，不抛异常。
+      // 响应按代表段的 id 回来，先摊回全集再落地（逐段渲染/计数，见上方去重注释）。
+      const notice = applyResults(fullBatch, expandResults(response.results));
+      if (notice !== null) pageErrors.record(notice);
+    };
+
+    const ticket = freezeWatch.add(() => {
+      // 先如实标注（走的是既有的失败态，重发成功后会被正常译文覆盖），再重发。
+      failBatch(fullBatch, '页面曾被浏览器挂起，本批已重发');
+      // 与「重试」按钮同一条口径（见 `retrySegment` 里那句 `failedIds.delete`）：
+      // 重发一开始就把刚记下的失败收回，否则成功后这一段会同时算进 done 与 failed，
+      // 状态面板报出的结论数会比段落数还多。
+      for (const segment of fullBatch) failedIds.delete(segment.id);
+      void runOnce();
+    });
+    try {
+      void runOnce();
+      await batchSettled;
+      if (tracksProgress && mine === generation) reportProgress();
+    } catch (raw) {
+      // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
+      // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
+      const detail = raw instanceof Error ? raw.message : String(raw);
+      if (mine !== generation) return;
+      pageErrors.record({ code: undefined, message: `翻译失败：${detail}` });
+      failBatch(fullBatch, MALFORMED_RESPONSE);
+    } finally {
+      freezeWatch.remove(ticket);
+    }
+  };
+
+  /** 一遍池：把这些批次交给 `runPool`，并发由本轮那个阀决定。 */
+  const runThrough = async (list: TextSegment[][]): Promise<void> => {
+    await runPool(
+      list.map(batchTask),
+      // 动态上限：撞 429 时 `throttle` 会把它压下来，之后阶梯回升（见 throttle.ts）。
       throttle,
     );
+  };
+
+  try {
+    await runThrough(batches);
+    // —— 轮末补译：只此一遍。名单先清空再跑，开关也先关掉，所以这一遍里再撞 429
+    //    只会把段留在失败态（带「重试」按钮），不会攒出第三遍。
+    const pending = rateLimitedReps.splice(0);
+    collectingRateLimited = false;
+    if (pending.length > 0 && mine === generation) {
+      await runThrough(
+        planBatches(pending, { maxBatchChars: settings.maxBatchChars, maxSegmentsPerBatch: settings.maxSegmentsPerBatch }),
+      );
+    }
   } finally {
     // 只有自己仍是当前世代时才收回守卫：被接管的那一轮在飞完时不能把**新的一轮**
     // 的 running 清掉——那会让新的一轮在飞时又放进来第三个触发（多挂一份宿主）。
