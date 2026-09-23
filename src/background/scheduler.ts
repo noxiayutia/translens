@@ -46,7 +46,22 @@ export interface BatchDeps {
 }
 
 /** 退避预算（规格 §8）：网络错误 / 超时退避 500ms → 1500ms 两次。 */
-const BACKOFF_MS = [500, 1500];
+const BACKOFF_DEFAULT_MS = [500, 1500];
+/**
+ * 429 单独一套，且更长：1s → 2s → 4s，共 4 次尝试。
+ * 429 的语义是"窗口此刻是满的"，通常几秒内释放；两下就放弃会把整批永久打成红字
+ * （真机扫描实测：默认档的 2 秒预算撑不到窗口空出来）。
+ */
+const BACKOFF_RATE_LIMIT_MS = [1_000, 2_000, 4_000];
+
+/**
+ * 两套退避表，导出给对账用：内容脚本那一侧的**页面超时下限**必须大于这里最长的
+ * 一套总时长，否则"延长退避"就变成"必定超时"（断言在 `tests/content/index.test.ts`）。
+ */
+export const BACKOFF_TABLES = {
+  default: BACKOFF_DEFAULT_MS,
+  rateLimit: BACKOFF_RATE_LIMIT_MS,
+} as const;
 
 /** 二次切分的阈值下限：切点只允许落在句子边界，见 `splitBySentence`。 */
 const SPLIT_MIN_LEN = 200;
@@ -101,8 +116,9 @@ async function callEngine(texts: string[], deps: BatchDeps): Promise<string[]> {
 async function callEngineWithRetry(texts: string[], deps: BatchDeps): Promise<string[]> {
   const sleep = deps.sleep ?? defaultSleep;
   let last: EngineError | undefined;
+  let backoff = BACKOFF_DEFAULT_MS;
 
-  for (let attempt = 0; attempt <= BACKOFF_MS.length; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
       deps.onAttempt?.(attempt + 1);
       return await callEngine(texts, deps);
@@ -112,10 +128,12 @@ async function callEngineWithRetry(texts: string[], deps: BatchDeps): Promise<st
 
       if (!RETRYABLE_CODES.has(error.code)) throw error;
 
-      if (attempt < BACKOFF_MS.length) await sleep(BACKOFF_MS[attempt]);
+      // 退避表跟着**这一次**的错误码走：一次批次里先抖动后限流，剩下的等待按限流那套算。
+      backoff = error.code === 'RATE_LIMIT' ? BACKOFF_RATE_LIMIT_MS : BACKOFF_DEFAULT_MS;
+      if (attempt >= backoff.length) throw last;
+      await sleep(backoff[attempt]);
     }
   }
-  throw last ?? new EngineError('UNKNOWN', '未知错误');
 }
 
 /**

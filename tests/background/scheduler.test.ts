@@ -194,6 +194,70 @@ describe('translateBatch', () => {
     expect(out[0].text).toBe('你好');
   });
 
+  /**
+   * 限流的退避预算要**比网络抖动更长**：429 的意思是"窗口此刻是满的"，通常几秒内
+   * 就会释放；用 500ms + 1500ms 两下就放弃，实测会把整批永久打成红字。
+   */
+  it('429 用 1s / 2s / 4s 三档退避，共 4 次尝试', async () => {
+    const sleeps: number[] = [];
+    const { engine, calls } = fakeEngine([
+      new EngineError('RATE_LIMIT', '限流'),
+      new EngineError('RATE_LIMIT', '限流'),
+      new EngineError('RATE_LIMIT', '限流'),
+      ['你好'],
+    ]);
+    const out = await translateBatch(
+      [{ id: 'a', text: 'A' }],
+      deps(engine, { sleep: async (ms) => void sleeps.push(ms) }),
+    );
+    expect(calls).toHaveLength(4);
+    expect(sleeps).toEqual([1000, 2000, 4000]);
+    expect(out[0].text).toBe('你好');
+  });
+
+  it('429 预算用完（4 次都限流）才放弃，并把 RATE_LIMIT 记在条目上', async () => {
+    const sleeps: number[] = [];
+    const { engine, calls } = fakeEngine([new EngineError('RATE_LIMIT', '一直限流')]);
+    const out = await translateBatch(
+      [{ id: 'a', text: 'A' }],
+      deps(engine, { sleep: async (ms) => void sleeps.push(ms) }),
+    );
+    expect(calls).toHaveLength(4);
+    expect(sleeps).toEqual([1000, 2000, 4000]);
+    expect(out[0]).toMatchObject({ text: null, code: 'RATE_LIMIT' });
+  });
+
+  it('网络抖动仍用原来的 500ms / 1500ms 两档（两套预算互不影响）', async () => {
+    const sleeps: number[] = [];
+    const { engine, calls } = fakeEngine([new EngineError('NETWORK', '一直断网')]);
+    await translateBatch([{ id: 'a', text: 'A' }], deps(engine, { sleep: async (ms) => void sleeps.push(ms) }));
+    expect(calls).toHaveLength(3);
+    expect(sleeps).toEqual([500, 1500]);
+  });
+
+  /**
+   * 同一批里错误码会**换**（先抖一下、接着撞上窗口）。表是按"当下这一次的错误码"选的，
+   * 所以下面这条先 500ms（抖动那一档）、后切进限流那一档的 2s / 4s。
+   * 反过来的形状（先 429 后 NETWORK）同样成立：总尝试次数会跟着缩到抖动那一档的 3 次——
+   * 这是"换表"的直接后果，不是漏了什么保护。
+   */
+  it('一批里先 NETWORK 后 RATE_LIMIT：剩下的等待改用限流那一档', async () => {
+    const sleeps: number[] = [];
+    const { engine, calls } = fakeEngine([
+      new EngineError('NETWORK', '断网'),
+      new EngineError('RATE_LIMIT', '限流'),
+      new EngineError('RATE_LIMIT', '限流'),
+      ['你好'],
+    ]);
+    const out = await translateBatch(
+      [{ id: 'a', text: 'A' }],
+      deps(engine, { sleep: async (ms) => void sleeps.push(ms) }),
+    );
+    expect(calls).toHaveLength(4);
+    expect(sleeps).toEqual([500, 2000, 4000]);
+    expect(out[0].text).toBe('你好');
+  });
+
   it('重试耗尽后返回失败结果而不是抛错', async () => {    const { engine, calls } = fakeEngine([new EngineError('NETWORK', '一直断网')]);
     const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));
     expect(calls).toHaveLength(3);
