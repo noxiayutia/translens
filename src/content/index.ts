@@ -141,14 +141,14 @@ const freezeWatch = createFreezeWatchdog();
 /**
  * 把当前进度写进页面级进度条。
  *
- * `done` 取 `finished + failedIds`：**失败也算"有结论了"**——用户要看的是"还剩多少没结果"，
- * 不是"成功了几段"。两个集合都不重复计同一段（失败时 `failSegment` 只进 `failedIds`，
- * 重试成功时 `retrySegment` 先把它从 `failedIds` 收回），所以
- * `finished.size + failedIds.size ≤ segments.length` 恒成立——挂起重发那条路径同样成立，
+ * 分子只给 `finished`（真的译出来的那些段），失败另算一项露出来——标签说的是"已译"，
+ * 把失败混进分子就是文案与事实差一点（见 `progress.ts` 的 showProgress）。
+ *
+ * 不变量：`finished.size + failedIds.size ≤ segments.length`。挂起重发那条路径同样成立，
  * 因为重发前会先收回失败标记（见 `freezeWatch.add` 那一段）。
  */
 function reportProgress(): void {
-  showProgress(document, finished.size + failedIds.size, segments.length);
+  showProgress(document, finished.size, segments.length, failedIds.size);
 }
 
 /**

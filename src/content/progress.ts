@@ -35,10 +35,16 @@ function host(document: Document): HTMLElement {
   return element;
 }
 
-/** 显示或更新进度。done 包含失败的那些段——它们也是"有结论了"。 */
-export function showProgress(document: Document, done: number, total: number): void {
+/** 显示或更新进度。
+ *
+ * **分子只算成功的那几段**：标签写的是「已译」，把失败的段算进分子就是文案与事实差一点
+ * ——5 段失败时页面会写「已译 105/215 段」，而那 5 段其实没译出来。失败另起一段露出来，
+ * 一个数都不少算，但每个数都只说它说得出口的事。`failed` 为 0 时不显示后半句（噪声）。
+ */
+export function showProgress(document: Document, done: number, total: number, failed = 0): void {
   const element = host(document);
-  element.textContent = `已译 ${String(done)}/${String(total)} 段`;
+  element.textContent =
+    `已译 ${String(done)}/${String(total)} 段` + (failed > 0 ? ` · 失败 ${String(failed)}` : '');
   element.hidden = false;
 }
 

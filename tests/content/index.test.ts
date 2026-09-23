@@ -1217,6 +1217,12 @@ describe('内容脚本编排：失败与边界', () => {
 
     const reply = (n: number) =>
       resolvers[n]?.({ ok: true, results: items[n].map((item) => ({ id: item.id, text: translate(item.text) })) });
+    /** 整批条目级失败（限流的真实形状：`ok: true` + 每条 `text: null`）。 */
+    const failAll = (n: number) =>
+      resolvers[n]?.({
+        ok: true,
+        results: items[n].map((item) => ({ id: item.id, text: null, code: 'RATE_LIMIT', message: '接口限流，请稍后重试' })),
+      });
 
     reply(0);
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
@@ -1224,10 +1230,15 @@ describe('内容脚本编排：失败与边界', () => {
     // 第一批落地后排队的那一批进池。
     expect(resolvers).toHaveLength(4);
 
-    reply(1);
+    // 失败的一批**不进「已译」**，而是单独露出来：标签说的是"已译"。
+    failAll(1);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(progressText()).toBe('已译 12/40 段 · 失败 12');
+    expect(assertInvariant()).toBe(12);
+
     reply(2);
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
-    expect(assertInvariant()).toBe(36);
+    expect(progressText()).toBe('已译 24/40 段 · 失败 12');
 
     reply(3);
     await state;

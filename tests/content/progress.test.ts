@@ -38,6 +38,17 @@ describe('页面级翻译进度', () => {
     expect(find()?.hasAttribute('data-jy-root')).toBe(true);
   });
 
+  /**
+   * 标签写的是「已译」，失败的那几段就不在分子里——混进去会让页面说出一句
+   * 与事实差一点的话（「已译 105/215 段」里有 5 段其实没译出来）。
+   */
+  it('失败不混进「已译」，另起一段露出来；没有失败时不显示后半句', () => {
+    showProgress(document, 100, 215, 5);
+    expect(find()?.textContent).toBe('已译 100/215 段 · 失败 5');
+    showProgress(document, 100, 215, 0);
+    expect(find()?.textContent).toBe('已译 100/215 段');
+  });
+
   it('clear 之后节点消失，再显示可以重新建', () => {
     showProgress(document, 5, 5);
     clearProgress(document);
