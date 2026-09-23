@@ -1085,6 +1085,68 @@ describe('内容脚本编排：失败与边界', () => {
     chromeStub.runtime.sendMessage = originalSendMessage;
   });
 
+  /**
+   * 冻结缺口看门狗。真机症状：MDN 一页上百段停在「翻译中…」十分钟，无错误、无重试按钮。
+   * 根因不是接口慢（实测 L₁=1.5s / L₁₂=5.2s），而是**标签页被 Chrome 冻结**：
+   * 内容脚本的定时器一次都不跑，所以连超时都不会触发——超时随批缩放对它完全无效。
+   *
+   * 用假定时器复现冻结必须"墙上时间跳、tick 不跑"：`advanceTimersByTime` 会让
+   * `Date.now()` 与定时器一起推进，缺口永远测不出来（那才是真的自证循环）。
+   * 所以这里用 `setSystemTime` 只动时钟、不动定时器，再推一个 tick 让看门狗自己发现。
+   */
+  it('页面曾被冻结：未完成的批标 stale、写明原因并重发', async () => {
+    mount('<p>Hello world</p>');
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const delivered: unknown[] = [];
+    // 用数组装 resolver：直接写 `let r: ((v: unknown) => void) | null = null` 会被
+    // 控制流分析收窄成 `null`（赋值发生在闭包里，TS 看不见），调用处就成了 never。
+    const resolvers: Array<(value: unknown) => void> = [];
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      delivered.push(message);
+      // 第一条永不兑现 = 挂起期间"请求发出去了、响应永远回不来"的真实形态。
+      if (delivered.length === 1) return new Promise<never>(() => {});
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    };
+
+    vi.useFakeTimers();
+    const pending = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+    expect(delivered).toHaveLength(1);
+    expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
+
+    // 正常心跳与被节流的隐藏页（每分钟一次）都不该动手——阈值 120 秒正是为此而设。
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(delivered).toHaveLength(1);
+
+    // 真挂起：时钟又跳 150 秒，回调一次都没跑。
+    vi.setSystemTime(Date.now() + 150_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // 看门狗必须发现缺口：把这一批标成 stale 并**重发**（不是静默、也不是直接判失败）。
+    expect(delivered.length).toBeGreaterThanOrEqual(2);
+    const text = bodyTextOf(hosts()[0]);
+    expect(text).toContain('挂起');
+    expect(text).not.toContain('翻译中…');
+
+    // 重发的那一次正常回来后，这一批要能从 stale 走到成功，且**整轮能收尾**——
+    // 首发那个僵尸请求永远不兑现，等它的实现会让弹窗进度永远停在 0/1。
+    expect(resolvers).toHaveLength(1);
+    const items = (delivered[0] as { payload: { items: Array<{ id: string; text: string }> } }).payload.items;
+    resolvers[0]?.({ ok: true, results: items.map((item) => ({ id: item.id, text: translate(item.text) })) });
+    const state = await pending;
+    expect(state).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
+    expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
+
+    chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();

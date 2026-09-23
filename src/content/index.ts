@@ -7,6 +7,7 @@ import { MSG, type PageState, type TranslateItemResult, type TranslateTextsRespo
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
 import { collectSegments, pageHasKana, type ExtractedSegment, type ExtractorOptions } from './extractor';
 import { installDiagnose } from './diagnose';
+import { createFreezeWatchdog } from './freeze-watchdog';
 import { createHoverTranslator, type HoverController } from './hover';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
@@ -126,6 +127,15 @@ class BackgroundTimeoutError extends Error {
     this.name = 'BackgroundTimeoutError';
   }
 }
+
+/**
+ * 冻结看门狗（整份模块共用一个，批次各自登记票据）。
+ *
+ * 它治的是超时治不了的那一半：标签页被 Chrome 冻结时，**页面定时器一次都不跑**，
+ * `sendToBackground` 那条超时同样不会触发，于是宿主永久停在「翻译中…」、既不报错也不给
+ * 重试按钮。真机读数见 `freeze-watchdog.ts` 的文件头。
+ */
+const freezeWatch = createFreezeWatchdog();
 
 /**
  * 发一条消息给后台，**最多等 `batchTimeoutMs(该批字符数)`**。
@@ -562,7 +572,24 @@ async function translatePage(): Promise<void> {
         // 用户连重试都点不动）。这里统一收敛成**本批**的失败态。
         // 本批的代表段摊回的全集：请求只发 `batch`（去重后的代表段），**落地**按全集逐段算。
         const fullBatch = expandBatch(batch);
-        try {
+        /**
+         * 第几次尝试。标签页被冻结时看门狗会重发这一批，于是**两次尝试可能都会回来**；
+         * 只有最后一次被承认，先前那次的响应直接丢弃（否则同一段会被渲染两次，
+         * 而"已冻结重发"的标注也可能被一次迟到的旧响应盖掉）。
+         */
+        let attempt = 0;
+        /**
+         * 这一批"有结论了"的信号。任务体等的是它、不是某一次尝试：被冻结那一次的 promise
+         * 是永远不会兑现的僵尸，等它就等于让整轮 `runPool` 被一批死请求拖住
+         * （表现正是"译文都出来了，但弹窗的进度永远不到 100%"）。
+         */
+        let settleBatch: () => void = () => {};
+        const batchSettled = new Promise<void>((resolve) => {
+          settleBatch = resolve;
+        });
+
+        const runOnce = async (): Promise<void> => {
+          const mine2 = ++attempt;
           let response: TranslateTextsResponse;
           try {
             response = await sendToBackground({
@@ -577,13 +604,27 @@ async function translatePage(): Promise<void> {
             // SW 中途被回收时更常见的是**永不兑现**，由 `sendToBackground` 的超时收敛。
             // 一个批次炸掉不该让后面的批次跟着停：收敛成条目级失败继续跑。
             // `fullBatch` 含同文本的全部段：一个代表段炸了，摊到的每一段都进失败态。
-            if (mine !== generation) return;
+            // 这一轮已经被接管：没人再关心这一批的结论，但**必须**给个收尾，
+            // 否则任务体永远等在 `batchSettled` 上，那一轮的 `runPool` 与
+            // `finally` 里的守卫收回都会被一批死请求拖住。
+            if (mine !== generation) {
+              settleBatch();
+              return;
+            }
+            // 已经有更新的尝试在飞：收尾交给它。这里抢着 settle 会把这一批提前摘掉。
+            if (attempt !== mine2) return;
             failBatch(fullBatch, describeTransportError(raw));
+            settleBatch();
             return;
           }
 
-          // 响应回来后这一轮可能已经被还原/被接管：这一批的结论属于上一代，丢掉。
-          if (mine !== generation) return;
+          // 响应回来后这一轮可能已经被还原/被接管，也可能已经被看门狗重发过：都丢掉。
+          if (mine !== generation) {
+            settleBatch();
+            return;
+          }
+          if (attempt !== mine2) return;
+          settleBatch();
 
           // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
           // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
@@ -596,6 +637,20 @@ async function translatePage(): Promise<void> {
           // 响应按代表段的 id 回来，先摊回全集再落地（逐段渲染/计数，见上方去重注释）。
           const notice = applyResults(fullBatch, expandResults(response.results));
           if (notice !== null) pageErrors.record(notice);
+        };
+
+        const ticket = freezeWatch.add(() => {
+          // 先如实标注（走的是既有的失败态，重发成功后会被正常译文覆盖），再重发。
+          failBatch(fullBatch, '页面曾被浏览器挂起，本批已重发');
+          // 与「重试」按钮同一条口径（见 `retrySegment` 里那句 `failedIds.delete`）：
+          // 重发一开始就把刚记下的失败收回，否则成功后这一段会同时算进 done 与 failed，
+          // 状态面板报出的结论数会比段落数还多。
+          for (const segment of fullBatch) failedIds.delete(segment.id);
+          void runOnce();
+        });
+        try {
+          void runOnce();
+          await batchSettled;
         } catch (raw) {
           // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
           // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
@@ -603,6 +658,8 @@ async function translatePage(): Promise<void> {
           if (mine !== generation) return;
           pageErrors.record({ code: undefined, message: `翻译失败：${detail}` });
           failBatch(fullBatch, MALFORMED_RESPONSE);
+        } finally {
+          freezeWatch.remove(ticket);
         }
       }),
       settings.concurrency,
