@@ -41,11 +41,14 @@ type FakeWorker = MessageListener;
 type ContentScript = typeof import('../../src/content/index');
 
 /**
- * 与 `src/content/index.ts` 里的同名常量一致。不 import 它：静态 import 会在装 DOM
+ * 与 `src/content/index.ts` 里的同名实现一致。不 import 它：静态 import 会在装 DOM
  * 之前执行内容脚本模块（那里一 import 就注册消息监听器）。超时时长是用户看得见的
  * 行为（失败文案里就写着秒数），钉在这里是有意的。
  */
 const BACKGROUND_TIMEOUT_MS = 60_000;
+/** 超时随批字符数缩放：每字符 +100ms，下限 60 秒、上限 300 秒（见 `src/content/index.ts`）。 */
+const batchTimeoutMs = (chars: number): number =>
+  Math.min(300_000, Math.max(BACKGROUND_TIMEOUT_MS, BACKGROUND_TIMEOUT_MS + chars * 100));
 
 let chromeStub: ChromeStub;
 
@@ -1000,7 +1003,12 @@ describe('内容脚本编排：失败与边界', () => {
     expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
 
     // 差 1 毫秒到点：仍在等（这条断言同时挡掉"把超时写成 0 或写在别处"的实现）。
-    await vi.advanceTimersByTimeAsync(BACKGROUND_TIMEOUT_MS - 1);
+    // 预算按**这一批实际送出的字符数**算，不写死 60 秒——超时随批大小缩放（见
+    // `src/content/index.ts` 的 `batchTimeoutMs`），写死就会把这条用例钉成一个假数。
+    const sentChars = (delivered[0] as { payload: { items: Array<{ text: string }> } })
+      .payload.items.reduce((sum, item) => sum + item.text.length, 0);
+    const deadline = batchTimeoutMs(sentChars);
+    await vi.advanceTimersByTimeAsync(deadline - 1);
     expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
 
     await vi.advanceTimersByTimeAsync(1);
@@ -1027,6 +1035,54 @@ describe('内容脚本编排：失败与边界', () => {
     expect(again).toEqual({ translated: true, mode: 'translated-only', total: 1, done: 1, failed: 0 });
     expect(hosts()).toHaveLength(1);
     expect(bodyTextOf(hosts()[0])).toBe(translate('Hello world'));
+  });
+
+  /**
+   * 超时随批大小缩放。真机读数：MDN 那页平均每批 449 字符，而单请求实测要 ≈100 秒——
+   * 固定 60 秒意味着**每一批都在超时线附近**，用户拿到的是假的"后台没响应"。
+   * 反过来，把批次调大（设置里可到 8000 字符）时 60 秒更不够用。
+   */
+  it('大批次的超时按字符数放大：60 秒时仍在等，到点才失败', async () => {
+    mount(`<p>${'x'.repeat(1000)}</p>`);
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = () => new Promise<never>(() => {});
+    vi.useFakeTimers();
+    const pending = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+
+    const expected = batchTimeoutMs(1000);
+    // 旧的固定 60 秒在这里就会误杀这一批。
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
+
+    await vi.advanceTimersByTimeAsync(expected - 60_000 + 1);
+    await pending;
+    // 文案里的秒数必须是**实际**超时值，否则它就成了新的假话。
+    expect(bodyTextOf(hosts()[0])).toContain(`${expected / 1000} 秒没有响应`);
+    chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
+  it('超时上限 300 秒：再大的批次也不会让用户无限等下去', async () => {
+    mount(`<p>${'y'.repeat(4000)}</p>`);
+    const { worker, contentListener } = await loadContentScript();
+    worker.mockImplementation(autoReply());
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    chromeStub.runtime.sendMessage = () => new Promise<never>(() => {});
+    vi.useFakeTimers();
+    const pending = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+
+    expect(batchTimeoutMs(4000)).toBe(300_000);
+    await vi.advanceTimersByTimeAsync(299_999);
+    expect(bodyTextOf(hosts()[0])).toContain('翻译中…');
+    await vi.advanceTimersByTimeAsync(2);
+    await pending;
+    expect(bodyTextOf(hosts()[0])).toContain('300 秒没有响应');
+    chromeStub.runtime.sendMessage = originalSendMessage;
   });
 
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {

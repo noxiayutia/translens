@@ -72,34 +72,63 @@ function currentState(): PageState {
 }
 
 /**
- * 内容脚本 → 后台单次请求的超时。
+ * 内容脚本 → 后台单次请求的超时**下限**。
  *
  * MV3 的 service worker 空闲约 30 秒就会被浏览器回收。翻译中途被回收时
  * `chrome.runtime.sendMessage` 的 promise **可能永不兑现**：端口既不关闭也不报错，
  * 于是这一批永远停在「翻译中…」——`runPool` 永不 settle、`running` 永不释放，
  * 页面卡死且连重试按钮都出不来（规格 §8：绝不静默失败）。
  *
- * 取 60 秒：默认批次（12 段 / 1000 字符）正常几秒内就回来；这个上限要容得下调度器
- * 一次退避重试（500ms + 1500ms）与慢接口的往返，又不至于让用户对着一个死页面干等。
  * 超时归这一层——调度器自身不设超时（见 `background/scheduler.ts` 的 `callEngine`）。
  */
 const BACKGROUND_TIMEOUT_MS = 60_000;
+/** 每多一个字符的预算：100ms/字符。见 {@link batchTimeoutMs} 为什么按批大小缩放。 */
+const TIMEOUT_PER_CHAR_MS = 100;
+/** 上限 300 秒：再慢的接口也不该把用户吊在"翻译中…"上无限等（超时本身就是假话的来源）。 */
+const BACKGROUND_TIMEOUT_MAX_MS = 300_000;
+
+/**
+ * 这一批的超时预算 = 60 秒 + 批字符数 × 100ms，夹在 [60s, 300s]。
+ *
+ * 为什么不能是固定值：真机实测（MDN 一页，用户自配接口）平均每批 449 字符、
+ * 单请求要 ≈100 秒 —— 固定 60 秒等于**每一批都必然超时**，用户拿到的是假的
+ * 「后台没响应」（后台活着，是接口慢）。而设置里单批字符上限可以调到 8000，
+ * 固定值在那个档位下更不够用。按字符数缩放让"慢"与"死"重新可分辨。
+ *
+ * 100ms/字符是保守读数：它把"接口确实还在生成"与"端口已经死了"分开的代价只是
+ * 多等一会儿，而误判成超时的代价是让用户对着一次并不存在的失败点重试。
+ */
+function batchTimeoutMs(chars: number): number {
+  return Math.min(
+    BACKGROUND_TIMEOUT_MAX_MS,
+    Math.max(BACKGROUND_TIMEOUT_MS, BACKGROUND_TIMEOUT_MS + chars * TIMEOUT_PER_CHAR_MS),
+  );
+}
+
+/** 一条 `TRANSLATE_TEXTS` 消息里全部条目的字符数（非翻译类消息为 0，走下限）。 */
+function messageChars(message: unknown): number {
+  const items = (message as { payload?: { items?: Array<{ text?: string }> } })?.payload?.items;
+  return Array.isArray(items) ? items.reduce((sum, item) => sum + (item.text?.length ?? 0), 0) : 0;
+}
 
 /**
  * 后台在超时预算内一次都没响应。文案自带完整语义，所以不再套「无法连接后台」的壳：
  * 用户看到的应该是「后台没响应」，而不是一句会被理解成"网络不通"的通用错误。
+ *
+ * 秒数取自**这一次实际用的**预算，不是常量——写死 60 秒的话，缩放后这句文案就成了新的假话
+ * （用户等了 160 秒，页面告诉他"60 秒没有响应"）。
  */
 class BackgroundTimeoutError extends Error {
-  constructor() {
+  constructor(timeoutMs: number) {
     super(
-      `后台 ${Math.round(BACKGROUND_TIMEOUT_MS / 1000)} 秒没有响应（翻译服务可能已被浏览器回收），请重试`,
+      `后台 ${Math.round(timeoutMs / 1000)} 秒没有响应（翻译服务可能已被浏览器回收），请重试`,
     );
     this.name = 'BackgroundTimeoutError';
   }
 }
 
 /**
- * 发一条消息给后台，**最多等 `BACKGROUND_TIMEOUT_MS`**。
+ * 发一条消息给后台，**最多等 `batchTimeoutMs(该批字符数)`**。
  *
  * 超时与消息本身的成败都收敛成同一个 promise 的两种结局，调用方（批任务 / 单条重试）
  * 原有的 try/catch 照旧兜住——失败走已有的 `failBatch` 路径进失败态并可重试，
@@ -110,7 +139,8 @@ class BackgroundTimeoutError extends Error {
  */
 function sendToBackground(message: unknown): Promise<TranslateTextsResponse> {
   return new Promise<TranslateTextsResponse>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new BackgroundTimeoutError()), BACKGROUND_TIMEOUT_MS);
+    const timeoutMs = batchTimeoutMs(messageChars(message));
+    const timer = setTimeout(() => reject(new BackgroundTimeoutError(timeoutMs)), timeoutMs);
     const settle = (run: () => void): void => {
       clearTimeout(timer);
       run();
