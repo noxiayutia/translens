@@ -1182,6 +1182,60 @@ describe('内容脚本编排：失败与边界', () => {
     // 这一轮故意不收尾（所有请求都不兑现）：`pending` 不 await，用例只验 DOM 两态。
   });
 
+  /**
+   * 进度条按批推进，且**每步都不超过总数**（`finished + failedIds ≤ segments` 这条不变量
+   * 在挂起重发路径下同样成立——重发前会先收回失败标记，见 `freezeWatch.add` 那段）。
+   * 一轮结束、以及还原之后，进度条必须消失：留着它就是一句过期的话。
+   */
+  it('页面级进度按批推进，收尾与还原时撤掉', async () => {
+    mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
+    const { contentListener } = await loadContentScript();
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const resolvers: Array<(value: unknown) => void> = [];
+    const items: Array<Array<{ id: string; text: string }>> = [];
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      items.push((message as { payload: { items: Array<{ id: string; text: string }> } }).payload.items);
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    };
+
+    const progressText = () => document.getElementById('jy-progress')?.textContent ?? null;
+    const assertInvariant = () => {
+      const matched = /已译 (\d+)\/(\d+) 段/.exec(progressText() ?? '');
+      expect(matched).not.toBeNull();
+      expect(Number(matched?.[1])).toBeLessThanOrEqual(Number(matched?.[2]));
+      return Number(matched?.[1]);
+    };
+
+    const state = dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(resolvers).toHaveLength(3);
+    expect(progressText()).toBe('已译 0/40 段');
+
+    const reply = (n: number) =>
+      resolvers[n]?.({ ok: true, results: items[n].map((item) => ({ id: item.id, text: translate(item.text) })) });
+
+    reply(0);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(assertInvariant()).toBe(12);
+    // 第一批落地后排队的那一批进池。
+    expect(resolvers).toHaveLength(4);
+
+    reply(1);
+    reply(2);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(assertInvariant()).toBe(36);
+
+    reply(3);
+    await state;
+    expect(progressText()).toBeNull();
+
+    chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();

@@ -9,6 +9,7 @@ import { collectSegments, pageHasKana, type ExtractedSegment, type ExtractorOpti
 import { installDiagnose } from './diagnose';
 import { createFreezeWatchdog } from './freeze-watchdog';
 import { createHoverTranslator, type HoverController } from './hover';
+import { clearProgress, showProgress } from './progress';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
 import { DomRenderer } from './renderer';
@@ -136,6 +137,19 @@ class BackgroundTimeoutError extends Error {
  * 重试按钮。真机读数见 `freeze-watchdog.ts` 的文件头。
  */
 const freezeWatch = createFreezeWatchdog();
+
+/**
+ * 把当前进度写进页面级进度条。
+ *
+ * `done` 取 `finished + failedIds`：**失败也算"有结论了"**——用户要看的是"还剩多少没结果"，
+ * 不是"成功了几段"。两个集合都不重复计同一段（失败时 `failSegment` 只进 `failedIds`，
+ * 重试成功时 `retrySegment` 先把它从 `failedIds` 收回），所以
+ * `finished.size + failedIds.size ≤ segments.length` 恒成立——挂起重发那条路径同样成立，
+ * 因为重发前会先收回失败标记（见 `freezeWatch.add` 那一段）。
+ */
+function reportProgress(): void {
+  showProgress(document, finished.size + failedIds.size, segments.length);
+}
 
 /**
  * 发一条消息给后台，**最多等 `batchTimeoutMs(该批字符数)`**。
@@ -560,6 +574,12 @@ async function translatePage(): Promise<void> {
     maxBatchChars: settings.maxBatchChars,
     maxSegmentsPerBatch: settings.maxSegmentsPerBatch,
   });
+  /**
+   * 只有一批时不显示进度条：那一条落地整轮就结束了，浮层闪一下只是噪音。
+   * 进度条是给"几百段、要跑几十秒"那种页面准备的。
+   */
+  const tracksProgress = batches.length > 1;
+  if (tracksProgress) reportProgress();
 
   try {
     await runPool(
@@ -656,6 +676,7 @@ async function translatePage(): Promise<void> {
         try {
           void runOnce();
           await batchSettled;
+          if (tracksProgress && mine === generation) reportProgress();
         } catch (raw) {
           // 兜底：整批进失败态（可重试）——绝不静默失败。逐条挂的是"本批没法处理"这句
           // 稳定文案（异常原文可能很长/含内部细节），原始原因只进页面级提示。
@@ -684,6 +705,8 @@ async function translatePage(): Promise<void> {
   // 后到的网络抖动顶掉——那是最需要用户去设置页处理的一条。
   const pageNotice = pageErrors.peek();
   if (pageNotice !== null) toast(pageNotice.message);
+  // 一轮结束就撤掉进度条：它说的是"这一轮还剩多少"，轮结束了留着就是句过期的话。
+  if (tracksProgress) clearProgress(document);
 }
 
 async function retrySegment(segmentId: string): Promise<void> {
@@ -943,6 +966,8 @@ function restorePage(): void {
   pageKanaSnapshot = false;
   finished.clear();
   failedIds.clear();
+  // 还原是"都给我撤掉"，进度条也算其中之一：留着它会显示一个已经不存在的轮次。
+  clearProgress(document);
   // 页面级提示账本是每一轮的局部状态（见 translatePage 的 createNoticeTracker），
   // 还原推进了世代号，在飞那一轮的收尾 toast 本来就被守卫拦下，这里无需再清什么。
   // 还原是一个明确的"都给我撤掉"信号：浮层气泡关掉、悬停描边撤掉、
