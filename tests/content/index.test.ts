@@ -1236,6 +1236,40 @@ describe('内容脚本编排：失败与边界', () => {
     chromeStub.runtime.sendMessage = originalSendMessage;
   });
 
+  /**
+   * 后台推来的"第 n 次尝试"要落在**正在飞的那几段**上：排队中的段还没开始，
+   * 已经出结果的段更不该被改回去。这是页面上唯一能区分"接口在退避"与"接口就是慢"的信号。
+   */
+  it('收到 jinyi:attempt 时，在飞的那几段显示「重试中(第 n 次)」', async () => {
+    mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
+    const { contentListener } = await loadContentScript();
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const sentItems: Array<Array<{ id: string }>> = [];
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      sentItems.push((message as { payload: { items: Array<{ id: string }> } }).payload.items);
+      return new Promise<never>(() => {});
+    };
+    vi.useFakeTimers();
+    void dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 8; i += 1) await vi.advanceTimersByTimeAsync(0);
+    expect(sentItems).toHaveLength(3);
+
+    const firstBatchIds = sentItems[0].map((item) => item.id);
+    // 这是一条"推"消息：内容脚本处理完**不回应也不保持通道**（后台发它只是为了改文案）。
+    const handled = contentListener({ type: MSG.ATTEMPT, payload: { ids: firstBatchIds, attempt: 2 } }, {}, () => {});
+    expect(handled).toBe(false);
+
+    const textFor = (id: string) =>
+      bodyTextOf(document.querySelector(`jy-translation[data-jy-for="${id}"]`) as Element);
+    expect(textFor(firstBatchIds[0])).toBe('重试中(第 2 次)');
+    // 没被点名的段：另两批在飞（翻译中…）、最后一批排队（排队中…），都不该被改。
+    const others = hosts().filter((h) => !firstBatchIds.includes(h.getAttribute('data-jy-for') ?? ''));
+    expect(others.map(bodyTextOf).every((t) => t === '翻译中…' || t === '排队中…')).toBe(true);
+
+    chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();

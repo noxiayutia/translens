@@ -181,6 +181,24 @@ export class DomRenderer {
   }
 
   /**
+   * 把"正在退避重试"如实标到那几段上（「重试中(第 n 次)」）。
+   *
+   * 只动**已经在等结果**的宿主：还在排队的（`jy-queued`）没在重试，已经出译文或已失败的
+   * 更不该被改回占位文本。重试本身发生在后台，内容脚本唯一知道它的途径就是
+   * `MSG.ATTEMPT` 这条推送（见 `shared/messages.ts` 的注释）。
+   */
+  markRetrying(segmentIds: string[], attempt: number): void {
+    for (const id of segmentIds) {
+      const host = this.hosts.get(id);
+      if (host === undefined) continue;
+      const body = host.shadowRoot?.querySelector('.jy-body');
+      if (body === null || body === undefined) continue;
+      if (!body.classList.contains('jy-pending') || body.classList.contains('jy-queued')) continue;
+      body.textContent = `重试中(第 ${String(attempt)} 次)`;
+    }
+  }
+
+  /**
    * 把"排队中"的段升级成"翻译中"——请求真的进池了才升级。
    *
    * 只动当前处于排队态的宿主：已经出译文或已失败的段不能被一次迟到的"开始请求"

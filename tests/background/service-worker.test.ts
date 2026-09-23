@@ -204,6 +204,49 @@ describe('runtime.onMessage 消息路由', () => {
    * 还会用旧凭据失败。这条钉的是"每条消息各读一次设置"，不是缓存掉的长驻配置。
    * v3 形状：凭据住在 `profiles` 里被选中的那一份，`engineId` 是档案 id。
    */
+  /**
+   * 退避重试发生在后台，内容脚本看不见——所以后台要把"这是第几次尝试"推回去，
+   * 页面才可能显示「重试中(第 n 次)」。没有这一条，用户在几百段页面上唯一能看到的
+   * 就是「翻译中…」一直不变（真机读数：被节流的后台标签页里"在推进"与"卡住"同形）。
+   */
+  it('引擎重试时把第 n 次尝试推给发起方的标签页，带上这一批的段落 id', async () => {
+    let attempt = 0;
+    vi.stubGlobal('fetch', async () => {
+      attempt += 1;
+      if (attempt < 3) throw new Error('socket hang up');
+      return new Response(JSON.stringify({ choices: [{ message: { content: '<<<1>>>\n你好\n<<<2>>>\n世界' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    await useUsableEngine();
+
+    const response = await stub.runtime.dispatchMessage(
+      { type: MSG.TRANSLATE_TEXTS, payload: { items: [{ id: 'a', text: 'Hello' }, { id: 'b', text: 'World' }] } },
+      { tab: { id: 7 } },
+    );
+    await response.response(9000); // 退避重试要 500ms + 1500ms，默认的 1 秒等待不够
+
+    const pushed = stub.tabs.sent
+      .map((entry) => ({ tabId: entry.tabId, message: entry.message as { type?: string; payload?: unknown } }))
+      .filter((entry) => entry.message.type === MSG.ATTEMPT);
+    expect(pushed.map((entry) => (entry.message.payload as { attempt: number }).attempt)).toEqual([2, 3]);
+    expect((pushed[0]?.message.payload as { ids: string[] }).ids).toEqual(['a', 'b']);
+    expect(pushed.map((entry) => entry.tabId)).toEqual([7, 7]);
+  });
+
+  /** 没有标签页可推（弹窗自己发的测试连接、或发送失败）都不能让翻译本身失败。 */
+  it('没有 sender.tab 时不推尝试消息，翻译照常成功', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('socket hang up');
+    });
+    await useUsableEngine();
+    const out = await translateTexts({ items: [{ id: 'a', text: 'Hello' }] });
+    const body = (await out.response(9000)) as { ok: boolean; results: Array<{ text: string | null; code?: string }> };
+    expect(body.results[0]).toMatchObject({ text: null, code: 'NETWORK' });
+    expect(stub.tabs.sent.filter((e) => (e.message as { type?: string }).type === MSG.ATTEMPT)).toEqual([]);
+  });
+
   it('档案配置（含 API Key）逐条消息现读：中途保存新 Key，下一条消息直接用新 Key', async () => {
     const authHeaders: Array<string | null> = [];
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {

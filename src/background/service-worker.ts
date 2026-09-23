@@ -2,7 +2,14 @@
 import { TieredCache, TranslationCache, type StorageArea } from '../core/cache';
 import { EngineError, toEngineError } from '../engines/types';
 import { chromeArea } from '../shared/chrome-area';
-import { isFetchModelsMessage, isTranslateTextsMessage, MSG, type FetchModelsResponse, type TranslateTextsResponse } from '../shared/messages';
+import {
+  isFetchModelsMessage,
+  isTranslateTextsMessage,
+  MSG,
+  type AttemptMessage,
+  type FetchModelsResponse,
+  type TranslateTextsResponse,
+} from '../shared/messages';
 import { DEFAULT_SETTINGS, NO_ENGINE_PROBLEM, loadSettings, resolveEngine, type Settings } from '../shared/settings';
 import { fetchModels } from './models';
 import { translateBatch } from './scheduler';
@@ -86,6 +93,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 async function handleTranslateTexts(
   payload: { items: Array<{ id: string; text: string }>; targetLang?: string },
+  /** 发起方所在标签页；有它才能把"第 n 次尝试"推回去（没有就只是不推，翻译照常）。 */
+  tabId: number | undefined,
 ): Promise<TranslateTextsResponse> {
   try {
     const settings = await loadSettings(persistentArea);
@@ -139,6 +148,24 @@ async function handleTranslateTexts(
       glossary: engine.supportsGlossary ? settings.glossary : undefined,
       systemPrompt: engine.supportsGlossary ? settings.systemPrompt : undefined,
       cache,
+      /**
+       * 退避重试对页面本来是不可见的（它只看得到"这批还没回来"）。第一次尝试不必推——
+       * 页面本来就显示「翻译中…」；从第二次起推一条 `ATTEMPT`，让那几段能改成
+       * 「重试中(第 n 次)」，用户才分得清"在退避"与"就是慢"。
+       * 推送失败（标签页已经关了）一律静默：进度消息丢了不影响这一批本身。
+       */
+      onAttempt:
+        tabId === undefined
+          ? undefined
+          : (attempt) => {
+              if (attempt < 2) return;
+              void chrome.tabs
+                .sendMessage(tabId, {
+                  type: MSG.ATTEMPT,
+                  payload: { ids: payload.items.map((item) => item.id), attempt },
+                } satisfies AttemptMessage)
+                .catch(() => undefined);
+            },
     });
 
     return { ok: true, results };
@@ -164,7 +191,7 @@ async function handleFetchModels(payload: { profileId: string }): Promise<FetchM
   return fetchModels(profile);
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isFetchModelsMessage(message)) {
     handleFetchModels(message.payload)
       .then(sendResponse)
@@ -178,7 +205,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (!isTranslateTextsMessage(message)) return false;
-  handleTranslateTexts(message.payload)
+  handleTranslateTexts(message.payload, sender.tab?.id)
     .then(sendResponse)
     .catch((raw: unknown) => {
       const error: EngineError = toEngineError(raw);

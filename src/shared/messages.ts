@@ -31,6 +31,18 @@ export const MSG = {
    * 后台按这个 id 自己从存储读 `baseUrl` 与 `apiKey`。
    */
   FETCH_MODELS: 'jinyi:fetch-models',
+  /**
+   * service worker → 内容脚本：这一批正在做**第 n 次**尝试（退避重试）。
+   *
+   * 为什么需要一条独立的消息：重试发生在后台（`background/scheduler.ts` 的
+   * `callEngineWithRetry`），内容脚本只看得到"这一批还没回来"。于是「接口在退避」与
+   * 「接口就是慢」在页面上长得一模一样——都是一片「翻译中…」。真机读数
+   * （`.qa/p0-probe.mjs`）还叠了一层：标签页被节流到每分钟醒一次时，连"有没有在推进"
+   * 都看不出来。这条消息让页面能写出「重试中(第 n 次)」，把两件事分开。
+   *
+   * 带着 `ids` 是因为只有被点名的那几段真的在重试：同一页上还有排队中的段。
+   */
+  ATTEMPT: 'jinyi:attempt',
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -58,6 +70,16 @@ export interface TranslateTextsMessage {
 export type TranslateTextsResponse =
   | { ok: true; results: TranslateItemResult[] }
   | { ok: false; code: EngineErrorCode; message: string };
+
+export interface AttemptMessage {
+  type: typeof MSG.ATTEMPT;
+  payload: {
+    /** 正在重试的那几段。 */
+    ids: string[];
+    /** 第几次尝试，从 1 起算（收到 1 时页面什么都不必改，所以实际推的都是 ≥2）。 */
+    attempt: number;
+  };
+}
 
 export interface PageState {
   translated: boolean;
@@ -109,5 +131,21 @@ export function isTranslateTextsMessage(value: unknown): value is TranslateTexts
       typeof item === 'object' &&
       typeof (item as TranslateItem).id === 'string' &&
       typeof (item as TranslateItem).text === 'string',
+  );
+}
+
+/** `ATTEMPT` 的运行时校验：内容脚本据此决定要不要动页面。 */
+export function isAttemptMessage(value: unknown): value is AttemptMessage {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Partial<AttemptMessage>;
+  if (message.type !== MSG.ATTEMPT) return false;
+  if (!message.payload || typeof message.payload !== 'object') return false;
+  const payload = message.payload as { ids?: unknown; attempt?: unknown };
+  return (
+    Array.isArray(payload.ids) &&
+    payload.ids.every((id) => typeof id === 'string') &&
+    typeof payload.attempt === 'number' &&
+    Number.isInteger(payload.attempt) &&
+    payload.attempt >= 1
   );
 }

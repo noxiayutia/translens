@@ -35,6 +35,14 @@ export interface BatchDeps {
   signal?: AbortSignal;
   /** 测试可注入假定时器；默认真实等待 */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * 每次引擎调用**之前**上报这是第几次尝试（1 起算）。
+   *
+   * 只有这里知道重试发生过：内容脚本看到的只是"这一批还没回来"。后台把它推回页面，
+   * 用户才分得清"接口在退避"与"接口就是慢"（见 `shared/messages.ts` 的 `MSG.ATTEMPT`）。
+   * 可选——不传时行为与之前逐字相同。
+   */
+  onAttempt?: (attempt: number) => void;
 }
 
 /** 退避预算（规格 §8）：网络错误 / 超时退避 500ms → 1500ms 两次。 */
@@ -96,6 +104,7 @@ async function callEngineWithRetry(texts: string[], deps: BatchDeps): Promise<st
 
   for (let attempt = 0; attempt <= BACKOFF_MS.length; attempt += 1) {
     try {
+      deps.onAttempt?.(attempt + 1);
       return await callEngine(texts, deps);
     } catch (raw) {
       const error = toEngineError(raw);

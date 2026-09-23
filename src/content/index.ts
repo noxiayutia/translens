@@ -3,7 +3,7 @@ import { runPool } from '../core/pool';
 import { planBatches, type TextSegment } from '../core/segmenter';
 import { isNeverTranslate } from '../core/site-rules';
 import { RETRYABLE_CODES } from '../engines/types';
-import { MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
+import { isAttemptMessage, MSG, type PageState, type TranslateItemResult, type TranslateTextsResponse } from '../shared/messages';
 import { DEFAULT_SETTINGS, loadUiSettings, type DisplayMode, type UiSettings } from '../shared/settings';
 import { collectSegments, pageHasKana, type ExtractedSegment, type ExtractorOptions } from './extractor';
 import { installDiagnose } from './diagnose';
@@ -995,6 +995,12 @@ function restorePage(): void {
  */
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const type = (message as { type?: string } | null)?.type;
+
+  // 后台推来的"这批正在做第 n 次尝试"：只改页面上那几段的占位文本，不需要回应。
+  if (isAttemptMessage(message)) {
+    renderer?.markRetrying(message.payload.ids, message.payload.attempt);
+    return false;
+  }
 
   const runTranslate = (): void => {
     translatePage()

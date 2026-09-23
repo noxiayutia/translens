@@ -172,8 +172,29 @@ describe('translateBatch', () => {
     expect(out[0].text).toBe('你好');
   });
 
-  it('重试耗尽后返回失败结果而不是抛错', async () => {
-    const { engine, calls } = fakeEngine([new EngineError('NETWORK', '一直断网')]);
+  /**
+   * 页面上要能分辨"接口在退避重试"与"接口就是慢"——这两种状态在占位文本上长得一模一样，
+   * 而用户能做的只有等或放弃。调度器是唯一知道第几次尝试的地方，所以由它上报。
+   */
+  it('每次引擎调用前上报"这是第几次尝试"', async () => {
+    const seen: number[] = [];
+    const { engine } = fakeEngine([
+      new EngineError('NETWORK', '断网'),
+      new EngineError('RATE_LIMIT', '限流'),
+      ['你好'],
+    ]);
+    await translateBatch([{ id: 'a', text: 'A' }], deps(engine, { onAttempt: (n) => void seen.push(n) }));
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
+  it('不传 onAttempt 时照常工作（可选回调不该成为调用方的负担）', async () => {
+    const { engine, calls } = fakeEngine([['你好']]);
+    const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));
+    expect(calls).toHaveLength(1);
+    expect(out[0].text).toBe('你好');
+  });
+
+  it('重试耗尽后返回失败结果而不是抛错', async () => {    const { engine, calls } = fakeEngine([new EngineError('NETWORK', '一直断网')]);
     const out = await translateBatch([{ id: 'a', text: 'A' }], deps(engine));
     expect(calls).toHaveLength(3);
     expect(out[0]).toMatchObject({ text: null, code: 'NETWORK' });
