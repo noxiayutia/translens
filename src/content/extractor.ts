@@ -142,6 +142,10 @@ export const MAX_WRAPPER_DEPTH = 16;
 interface ElementStyle {
   display: string;
   visibility: string;
+  /** 只为 sr-only 判据服务：零面积盒只在 `absolute` 上才去量（见 {@link detectHiddenKind}）。 */
+  position: string;
+  textIndent: string;
+  fontSize: string;
 }
 
 /** `styleOf` 的读取口径。渲染器要复用 {@link inlineText}，所以这个形状是导出的。 */
@@ -169,6 +173,11 @@ export function createStyleLookup(): StyleLookup {
     const entry: ElementStyle = {
       display: style?.display ?? '',
       visibility: style?.visibility ?? '',
+      // 同一次 getComputedStyle 上多读三个属性不额外触发样式解析，也就不动
+      // 「每次采集的样式读取 ≤ 元素数 ×1.2」那条规模守卫（它数的是读取次数，不是属性数）。
+      position: style?.position ?? '',
+      textIndent: style?.textIndent ?? '',
+      fontSize: style?.fontSize ?? '',
     };
     cache.set(element, entry);
     return entry;
@@ -176,7 +185,8 @@ export function createStyleLookup(): StyleLookup {
 }
 
 /**
- * 「这个元素自己藏没藏」的**唯一**判据（`hidden` / `aria-hidden` / `display:none` / `visibility`）。
+ * 「这个元素自己藏没藏」的**唯一**判据（`hidden` / `aria-hidden` / `display:none` /
+ * `visibility`，外加 sr-only 一族的三种**视觉隐藏**——完整清单见 {@link detectHiddenKind}）。
  *
  * **导出**：增量观察者的属性路径（`observer.ts`）要用同一条口径判断"被改动的元素
  * 现在到底可不可见"——"什么算看不见"在整页采集与增量触发里必须逐字相同，两处各写
@@ -189,12 +199,22 @@ export function isHidden(element: Element, styleOf: StyleLookup): boolean {
 }
 
 /**
- * {@link isHidden} 的**诊断口径**：返回"自己是怎么藏的"（`display:none` / `visibility:hidden`
- * / `hidden` / `aria-hidden`），没藏返回 undefined。
+ * {@link isHidden} 的**诊断口径**：返回"自己是怎么藏的"，没藏返回 undefined。
  *
- * 只有一份判定逻辑——{@link isHidden} 就是它取反，所以两者永远不可能给出不同答案。
- * 单独导出是因为诊断要把**具体哪一种**隐藏如实报给用户：`display:none` 是"真隐藏"，
- * `visibility:hidden` 往往是"展开动画还没走完"，处置完全不同。
+ * 取值共七种，前四条是既有的：`hidden` / `aria-hidden` / `display:none` /
+ * `visibility:hidden|collapse`；后三条是**视觉隐藏**（sr-only 一族）：
+ * `visually-hidden:zero-box`、`visually-hidden:text-indent`、`visually-hidden:font-size`。
+ *
+ * 为什么要单独有这三条：`.sr-only` 的经典写法把盒压到 1×1 或用负缩进/零字号把文字推出
+ * 可视区，它的 `display` 是 block、`visibility` 是 visible —— 前四条一条都不占，于是
+ * "只翻译可见文本"的承诺漏了它（真机实测：MDN 与 arxiv 的「Skip to main content」被翻译了，
+ * 用户看不到、额度照烧）。诊断会把这三种取值原样报出，所以名字要能读。
+ *
+ * **判据必须窄**：零面积盒只在 `position:absolute` 时才去量。`getBoundingClientRect()`
+ * 强制布局，对每个元素都调会把规模守卫（`extractor-scale`：样式读取 ≤ 元素数 ×1.2 那一档
+ * 的同类约束）打成真回归；而 sr-only 的签名恰恰就是 absolute + 1px。
+ * 同理**不能**把 `clip-path !== 'none'` 单独当隐藏——`inset(0 0 50% 0)` 这类装饰裁剪是
+ * 看得见的，误杀正常内容比漏掉一条 sr-only 更糟。
  */
 export function detectHiddenKind(element: Element, styleOf: StyleLookup): string | undefined {
   if (element.hasAttribute('hidden')) return 'hidden';
@@ -202,7 +222,22 @@ export function detectHiddenKind(element: Element, styleOf: StyleLookup): string
   const style = styleOf(element);
   if (style.display === 'none') return 'display:none';
   if (style.visibility === 'hidden' || style.visibility === 'collapse') return `visibility:${style.visibility}`;
+  if (style.position === 'absolute' && isZeroAreaBox(element)) return 'visually-hidden:zero-box';
+  if (parseFloat(style.textIndent) <= -999) return 'visually-hidden:text-indent';
+  if (parseFloat(style.fontSize) <= 0) return 'visually-hidden:font-size';
   return undefined;
+}
+
+/**
+ * 盒被压到 1×1 及以下（`clip: rect(0,0,0,0)` 与 `clip-path: inset(50%)` 两种写法都落在这里）。
+ *
+ * 只在调用方已经确认 `position:absolute` 之后才问——这条读的是布局而非样式，不能白拿。
+ * 宿主没实现布局（jsdom 里所有盒都是 0×0）时，绝对定位的元素会被判成视觉隐藏；
+ * 本仓库的夹具里没有"绝对定位 + 有文本 + 期望被采集"的元素，所以这个方向是安全的。
+ */
+function isZeroAreaBox(element: Element): boolean {
+  const box = element.getBoundingClientRect();
+  return box.width <= 1 && box.height <= 1;
 }
 
 /**

@@ -500,6 +500,53 @@ describe('collectSegments', () => {
     expect(collectSegments(root, { targetLang: 'zh-Hans' })).toEqual([]);
   });
 
+  /**
+   * 屏幕阅读器专用（.sr-only）文本：它 `display` 是 block、`visibility` 是 visible，
+   * 既有四条隐藏判据一条都不占，于是被当成"可见文本"送进接口并插出用户永远看不到的译文
+   * （真机实测：MDN 与 arxiv 的「Skip to main content」都被翻译了）。
+   * README 隐私一节写的是"只有在网页里**可见**的文本才会被送去翻译"——是实现不符，不是文档要改。
+   */
+  describe('视觉隐藏（sr-only 一族）不采集', () => {
+    it('经典 sr-only：absolute + 1px 盒 + clip:rect(0,0,0,0)', () => {
+      const root = mount(
+        '<a class="skip" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0, 0, 0, 0)">Skip to main content</a>' +
+          '<p>Ordinary visible sentence</p>',
+      );
+      expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Ordinary visible sentence']);
+    });
+
+    it('现代 sr-only：absolute + 1px 盒 + clip-path:inset(50%)', () => {
+      const root = mount(
+        '<span style="position:absolute;width:1px;height:1px;clip-path:inset(50%)">Screen reader only label</span>' +
+          '<p>Ordinary visible sentence</p>',
+      );
+      expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Ordinary visible sentence']);
+    });
+
+    it('负文本缩进（老式图片替换）不采集', () => {
+      const root = mount(
+        '<p style="text-indent:-9999px">Legacy image replacement text</p>' + '<p>Ordinary visible sentence</p>',
+      );
+      expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Ordinary visible sentence']);
+    });
+
+    it('零字号不采集', () => {
+      const root = mount('<p style="font-size:0">Zero font size hidden text</p>' + '<p>Ordinary visible sentence</p>');
+      expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Ordinary visible sentence']);
+    });
+
+    // 以下两条是**反例**：判据必须窄到只认 sr-only 的签名，误杀正常内容比漏掉它更糟。
+    it('1px 盒但不是绝对定位的元素仍按现状采集', () => {
+      const root = mount('<p style="width:1px;height:1px;overflow:hidden">Tiny but laid out normally</p>');
+      expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Tiny but laid out normally']);
+    });
+
+    it('装饰性 clip-path（盒不为零、非绝对定位）仍采集', () => {
+      const root = mount('<p style="clip-path:inset(0 0 50% 0)">Half clipped decorative heading</p>');
+      expect(collectSegments(root, { targetLang: 'zh-Hans' }).map((s) => s.text)).toEqual(['Half clipped decorative heading']);
+    });
+  });
+
   it('隐藏的行内子元素不并入父段', () => {
     const root = mount(
       '<p>Visible <span style="display:none">secret draft text</span> text here</p>' +
