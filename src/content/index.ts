@@ -9,6 +9,7 @@ import { collectSegments, pageHasKana, type ExtractedSegment, type ExtractorOpti
 import { installDiagnose } from './diagnose';
 import { createFreezeWatchdog } from './freeze-watchdog';
 import { createHoverTranslator, type HoverController } from './hover';
+import { createThrottle } from './throttle';
 import { clearProgress, showProgress } from './progress';
 import type { InlineTranslation } from './inline-types';
 import { createIncrementalObserver } from './observer';
@@ -137,6 +138,12 @@ class BackgroundTimeoutError extends Error {
  * 重试按钮。真机读数见 `freeze-watchdog.ts` 的文件头。
  */
 const freezeWatch = createFreezeWatchdog();
+
+/** 这一条响应里有没有 429（整条失败与条目级失败两种形状都要看）。 */
+function isRateLimited(response: TranslateTextsResponse): boolean {
+  if (!response.ok) return response.code === 'RATE_LIMIT';
+  return Array.isArray(response.results) && response.results.some((item) => item.code === 'RATE_LIMIT');
+}
 
 /**
  * 把当前进度写进页面级进度条。
@@ -580,6 +587,11 @@ async function translatePage(): Promise<void> {
    */
   const tracksProgress = batches.length > 1;
   if (tracksProgress) reportProgress();
+  /**
+   * 本轮的限流降并发阀。作用域就是这一轮的池（不是全局、也不是按引擎 id）：
+   * 一轮只用一个档案，429 是按档案计的。跨标签页/跨轮不共享，理由见 `throttle.ts` 文件头。
+   */
+  const throttle = createThrottle(settings.concurrency);
 
   try {
     await runPool(
@@ -650,6 +662,13 @@ async function translatePage(): Promise<void> {
           }
           if (attempt !== mine2) return;
           settleBatch();
+          /**
+           * 限流信号有两个形状：整条失败（`ok:false` + code）与条目级失败
+           * （`ok:true` + 某条 `code:'RATE_LIMIT'`），两个都要认，否则最常见的那一种
+           * ——后台按条目上报——会漏掉，阀就永远不触发。
+           */
+          if (isRateLimited(response)) throttle.penalize();
+          else throttle.succeeded();
 
           // 条目级失败（缺 API Key、限流、断网）走的是 ok: true + text: null 这条路，
           // 见 `sameCodeFailureMessage`：整批同码时只攒一句提示，且不挂重试按钮。
@@ -688,7 +707,8 @@ async function translatePage(): Promise<void> {
           freezeWatch.remove(ticket);
         }
       }),
-      settings.concurrency,
+      // 动态上限：撞 429 时 `throttle` 会把它压到 1，之后阶梯回升（见 throttle.ts）。
+      throttle,
     );
   } finally {
     // 只有自己仍是当前世代时才收回守卫：被接管的那一轮在飞完时不能把**新的一轮**
@@ -798,6 +818,7 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
   // 与整页共用同一套判择逻辑（同一个 `createNoticeTracker` + `pickNotice`），
   // 不再两处各写一份覆盖规则。
   const pageErrors = createNoticeTracker();
+  const incrementalThrottle = createThrottle(snapshot.concurrency);
   await runPool(
     batches.map((batch) => async () => {
       try {
@@ -821,16 +842,22 @@ async function translateIncremental(newSegments: ExtractedSegment[]): Promise<vo
         if (!response.ok) {
           pageErrors.record({ code: response.code, message: describeError(response) });
           failBatch(batch, response.message);
+          if (isRateLimited(response)) incrementalThrottle.penalize();
+          else incrementalThrottle.succeeded();
           return;
         }
         const resultNotice = applyResults(batch, response.results);
         if (resultNotice !== null) pageErrors.record(resultNotice);
+        if (isRateLimited(response)) incrementalThrottle.penalize();
+        else incrementalThrottle.succeeded();
       } catch {
         if (renderer !== current) return;
         failBatch(batch, MALFORMED_RESPONSE);
       }
     }),
-    snapshot.concurrency,
+    // 增量也有自己的阀：它同样是这一页在飞的请求，被限流时一样该停下来。
+    // 与整页各自独立（跨轮不共享），见 throttle.ts 文件头。
+    incrementalThrottle,
   );
 
   // 整批同码的页面级提示照常浮出（规格 §8：绝不静默失败）；页面已经还原就不再打扰。

@@ -1281,6 +1281,47 @@ describe('内容脚本编排：失败与边界', () => {
     chromeStub.runtime.sendMessage = originalSendMessage;
   });
 
+  /**
+   * 阀真的接在池上：一批回报 429 之后，腾出来的那个位子**不该**立刻被下一批占走。
+   * 只测 throttle 自己的升降档不算数——那三档并发是 `runPool` 读的，接线断了单元全绿
+   * 页面照样满并发。
+   */
+  it('一批里出现 429 时本轮并发立刻降到 1：后续批次不再并行发出', async () => {
+    mount(Array.from({ length: 40 }, (_, i) => `<p>Paragraph number ${i + 1} has enough letters here</p>`).join(''));
+    const { contentListener } = await loadContentScript();
+
+    const originalSendMessage = chromeStub.runtime.sendMessage;
+    const resolvers: Array<(value: unknown) => void> = [];
+    const items: Array<Array<{ id: string; text: string }>> = [];
+    chromeStub.runtime.sendMessage = (message: unknown) => {
+      items.push((message as { payload: { items: Array<{ id: string; text: string }> } }).payload.items);
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    };
+    void dispatchWithoutFallbackTimer(contentListener, MSG.TRANSLATE_PAGE);
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(resolvers).toHaveLength(3); // 并发 3，第 4 批还在排队
+
+    // 第一批整批 429 → 阀降到 1：这一批腾出来的位子不该被下一批占走。
+    resolvers[0]?.({
+      ok: true,
+      results: items[0].map((item) => ({ id: item.id, text: null, code: 'RATE_LIMIT', message: '接口限流，请稍后重试' })),
+    });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(resolvers).toHaveLength(3);
+
+    // 再完成两批（都干净）→ 在飞的降到 0，池才放出**一个**（不是三个）。
+    resolvers[1]?.({ ok: true, results: items[1].map((item) => ({ id: item.id, text: translate(item.text) })) });
+    resolvers[2]?.({ ok: true, results: items[2].map((item) => ({ id: item.id, text: translate(item.text) })) });
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    expect(resolvers).toHaveLength(4);
+
+    const state = await dispatchWithoutFallbackTimer(contentListener, MSG.RESTORE_PAGE);
+    expect(state.translated).toBe(false);
+    chromeStub.runtime.sendMessage = originalSendMessage;
+  });
+
   it('响应级失败（ok: false）时标注该批条目并弹一次提示', async () => {
     mount('<p>Hello world</p><p>Second paragraph here</p>');
     const { worker, contentListener } = await loadContentScript();
