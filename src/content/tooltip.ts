@@ -161,6 +161,12 @@ const ICONS: Record<TooltipIcon, ReadonlyArray<{ tag: string; attrs: Record<stri
 };
 
 const TOOLTIP_CSS = `
+  /* 约定：下面这一整张表是一个 JS 模板字符串。注释里**不许出现反引号**——它会从那里把
+     模板截断，样式表后半段静默丢失；只有当被包住的东西恰好未定义时 typecheck 才炸，
+     换成已定义的名字（GAP、HOST_ID 这类）就完全无声。要指代标识符就直接写名字或用引号。
+     判据在 tooltip.test.ts 的「样式表完整」那条：钉的是本表最后一条规则，截断在它之前即红。
+     （往表尾追加规则时，记得把那条钉子挪到新的末尾。） */
+
   :host {
     /* 令牌：与 popup.css / options.css 同一套设计语言里的「深色浮层」一档。
        浮层永远压在**别人的页面**上，跟着页面亮暗切换只会更难看清，所以只要一套值。

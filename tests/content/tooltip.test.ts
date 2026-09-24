@@ -650,6 +650,27 @@ describe('无障碍：状态变化能被播报（常驻活区）', () => {
 });
 
 /**
+ * TOOLTIP_CSS 是一个 JS 模板字符串：注释里混进反引号会从那里把整张表截断，
+ * 而后半段丢失通常是**静默**的（只有被包住的标识符恰好未定义时 typecheck 才炸）。
+ * 这一组就是那条"事后补的判据"——与 border-left 事故换来布局不变式、气泡复活换来
+ * 监听器生命周期同一类。
+ */
+describe('样式表完整性：模板被反引号截断要当场红', () => {
+  it('样式表完整：最后一条规则在（模板被反引号截断就会当场红）', () => {
+    // TOOLTIP_CSS 是一个 JS 模板字符串，注释里混进反引号会从那里把整张表截断。
+    // 危险在于它通常**不会**报错：只有当被包住的标识符恰好未定义时 typecheck 才炸，
+    // 换成 GAP / HOST_ID 这类已定义的名字，模板就静默拼接、后半张样式表凭空消失。
+    // 所以钉在表的最末一条规则上：任何截断都发生在它之前 ⇒ 这条断言红。
+    showTooltip(RECT, { text: '译文' });
+    expect(hasRule(css(), '@media (prefers-reduced-motion: reduce)')).toBe(true);
+    // 顺带钉住"截断点之前也不能少东西"：中段这几条各自都在（表头、caret、圆点档）。
+    expect(decls(':host {')['--jy-surface']).toBe('rgba(24, 26, 30, 0.97)');
+    expect(hasRule(css(), '.jy-layer::after {')).toBe(true);
+    expect(decls('.jy-bubble[data-variant="chip"] {')['border-radius']).toBe('999px');
+  });
+});
+
+/**
  * 划词的两段式触发：第一段是**紧凑小气泡（chip）**，指针停在它上面满延时才发请求。
  * 悬停机制放在浮层这一侧，因为只有它拥有监听器的生老病死（见下面 hideTooltip 那条）。
  */
