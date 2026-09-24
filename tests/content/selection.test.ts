@@ -104,6 +104,13 @@ function findButton(labelPrefix: string): HTMLButtonElement | undefined {
   ) as HTMLButtonElement | undefined;
 }
 
+/** 页面脚本那一侧的点击：isTrusted=false，与真实 UI 事件唯一的区别就是这个。 */
+function syntheticClickButton(labelPrefix: string): HTMLButtonElement | undefined {
+  const button = findButton(labelPrefix);
+  if (button !== undefined) dispatchSynthetic(button, new MouseEvent('click', { bubbles: true, composed: true }));
+  return button;
+}
+
 /**
  * 按真机的顺序派发一次完整的按钮点击（mousedown → mouseup → click），并**在 mouseup 派发
  * 途中**记录被按下的那个按钮还在不在文档里。
@@ -680,6 +687,68 @@ describe('安全闸门：只响应真实用户手势（isTrusted）', () => {
     await settle();
     expect(calls).toEqual(['Hello world']);
     expect(bubbleText()).toBe('译文:Hello world');
+  });
+});
+
+/**
+ * 安全闸门：浮层里的按钮只认真实手势。
+ *
+ * 浮层是 **open** shadow DOM，页面脚本摸得到宿主，也就能替用户把「翻译」/「复制」点下去。
+ * 「翻译」那条会把文本带着用户的 Key 送去用户自己付费的引擎，「复制」那条会写剪贴板——
+ * 与 mouseup、pointerenter 同一类路径，就该同一类答案。委托层把门（一处一套答案），
+ * 所以 `TooltipButton` 的回调契约不用改。
+ */
+describe('安全闸门：浮层里的按钮只认真实 click', () => {
+  it('合成 click 点「翻译」：零请求，气泡还停在待触发那一屏', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate, 10_000);
+    mockSelection({ text: 'Hello world' });
+    mouseup();
+    await settle();
+
+    syntheticClickButton('翻译');
+    await settle();
+    expect(calls).toEqual([]);
+    expect(variant()).toBe('chip');
+    expect(bubbleText()).toBe(CHIP_HINT);
+  });
+
+  it('成对断言：同一现场把 click 换成真实手势 → 照常翻（证明上一条不是"永远拒绝"）', async () => {
+    const { translate, calls } = autoTranslate();
+    givenSelection(translate, 10_000);
+    mockSelection({ text: 'Hello world' });
+    mouseup();
+    await settle();
+
+    clickButton('翻译');
+    await settle();
+    expect(calls).toEqual(['Hello world']);
+  });
+
+  it('合成 click 点「复制」：不写剪贴板、按钮文案不动', async () => {
+    const writeText = vi.fn(async () => undefined);
+    mockClipboard(writeText);
+    const { translate } = autoTranslate();
+    givenSelection(translate);
+    await selectAndTranslate('Hello world');
+
+    const button = syntheticClickButton('复制');
+    await settle();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(button?.textContent).toBe('复制');
+  });
+
+  it('成对断言：同一现场真实手势的 click → 剪贴板照常写入、文案就地改', async () => {
+    const writeText = vi.fn(async () => undefined);
+    mockClipboard(writeText);
+    const { translate } = autoTranslate();
+    givenSelection(translate);
+    await selectAndTranslate('Hello world');
+
+    const button = clickButton('复制');
+    await settle();
+    expect(writeText).toHaveBeenCalledWith('译文:Hello world');
+    expect(button?.textContent).toBe('已复制');
   });
 });
 

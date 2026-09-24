@@ -374,6 +374,25 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
     expect(onClick.mock.calls[0]?.[0]).toBe(button);
   });
 
+  it('安全闸门：合成 click（isTrusted=false）不打到回调——浮层是 open shadow，页面脚本点得到它', () => {
+    const onClick = vi.fn();
+    showTooltip(RECT, { text: '译文', buttons: [{ label: '复制', variant: 'primary', icon: 'copy', onClick }] });
+
+    const button = buttons()[0] as HTMLButtonElement;
+    dispatchSynthetic(button, new MouseEvent('click', { bubbles: true, composed: true }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('成对断言：同一处委托，真实手势的 click 照常打到回调（证明上一条不是"永远拒绝"）', () => {
+    const onClick = vi.fn();
+    showTooltip(RECT, { text: '译文', buttons: [{ label: '复制', variant: 'primary', icon: 'copy', onClick }] });
+
+    const button = buttons()[0] as HTMLButtonElement;
+    dispatchTrusted(button, new MouseEvent('click', { bubbles: true, composed: true }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onClick.mock.calls[0]?.[0]).toBe(button);
+  });
+
   it('两个按钮各自回调、互不串台', () => {
     const copy = vi.fn();
     const translate = vi.fn();
