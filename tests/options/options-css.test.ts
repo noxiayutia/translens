@@ -30,8 +30,8 @@ describe('设置页样式：令牌', () => {
 
   it('暗色只定义一次，且覆盖正文用到的每一个颜色令牌', () => {
     const dark = declarations(optionsCss, ':root', DARK);
-    expect(dark['--surface']).toBe('#1c1c1e');
-    expect(dark['--text']).toBe('#f5f5f7');
+    expect(dark['--surface']).toBe('#1e1c19');
+    expect(dark['--text']).toBe('#f2efe6');
     expect(dark['--danger']).toBe('#ff453a');
     // 暗色块不许把亮色令牌漏一半：正文里出现的**颜色**令牌必须都在暗色块里有值。
     //
@@ -56,11 +56,10 @@ describe('设置页样式：令牌', () => {
       '--ease',
       '--dur',
       '--shadow-card',
-      // 强调色上的文字色，亮/暗都是 `#ffffff`：暗色下强调色仍是深蓝，白字照样可读。
-      // 这是设计上有据可查的例外，不是漏定义。
-      '--on-accent',
-      // 开关旋钮与它同理：亮/暗都是 `#ffffff`（规格 §3.1）。iOS 的白钮在暗色下依然对——
+      // 开关旋钮：亮/暗都是 `#ffffff`（规格 §3.1）。iOS 的白钮在暗色下依然对——
       // 底下是 `--track-off`/`--ok`，不是深色文字底。
+      // （`--on-accent` 以前也走这条例外——亮暗都是白。换品牌色板后它**真的**分亮暗了：
+      // 亮色是碳黑底上的象牙字，暗色反转为象牙底上的碳黑字，所以它必须进暗色块。）
       '--knob',
     ]);
     const darkMissing = [...used].filter(
@@ -135,7 +134,7 @@ describe('设置页样式：键盘与窄窗口', () => {
 });
 
 describe('设置页样式：D2 控件层', () => {
-  it('按钮体系：主按钮药丸+--accent、次级是蓝链接 --link、危险链接悬停用 color-mix（样机映射）', () => {
+  it('按钮体系：主按钮药丸+--accent、次级是赤褐链接 --link、危险链接悬停用 color-mix（样机映射）', () => {
     // 合并规则按解析器语义整体点名（选择器必须完整相等），这正是它比子串匹配强的地方。
     const shell = declarations(optionsCss, '.primary, .ghost');
     expect(shell['border-radius']).toBe('var(--radius-pill)');

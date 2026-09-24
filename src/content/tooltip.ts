@@ -131,8 +131,8 @@ const TOOLTIP_CSS = `
     --jy-text: #ffffff;
     --jy-text-2: #a8b0bb;
     --jy-danger: #f87171;
-    --jy-accent: #2563eb;
-    --jy-accent-hover: #1d4ed8;
+    --jy-accent: #f2efe6;
+    --jy-accent-hover: #ffffff;
     --jy-radius-md: 10px;
     --jy-radius-sm: 6px;
   }
@@ -284,9 +284,10 @@ const TOOLTIP_CSS = `
     outline-offset: 2px;
   }
 
-  /* 主按钮（复制）：这一屏唯一的实心强调色，与弹窗的 .primary 同一个蓝。 */
+  /* 主按钮（复制）：这一屏唯一的实心强调色，与弹窗的 .primary 同一支象牙（浮层是深底，
+     所以按钮取品牌反相档：象牙底 + 碳黑字）。 */
   .jy-action[data-variant="primary"] {
-    color: #ffffff;
+    color: #0d0d10;
     background: var(--jy-accent);
     border-color: transparent;
   }

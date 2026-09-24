@@ -16,25 +16,26 @@
   /* 下面这一组与 src/options/options.css 的 `:root` 必须逐字一致（两份 CSS 各写一份，
      不引第三个文件：扩展页面只加载自己那一份，共用文件会凭空多一个构建期依赖）。 */
   --surface: #ffffff;
-  --surface-2: #f5f5f7;
-  --surface-3: #ececee;
+  --surface-2: #f7f5f0; /* 暖纸白：页面底，呼应品牌 logo 的象牙画布 */
+  --surface-3: #efece4;
   --border: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.14);
   --text: #1d1d1f;
   --text-2: #6e6e73;
   --text-3: #86868b;
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
-  --accent-weak: rgba(0, 113, 227, 0.12);
+  --accent: #0d0d10; /* 碳黑：品牌主色，实心按钮与选中态 */
+  --accent-hover: #2b2b30; /* 黑底按钮的悬停只能往亮走 */
+  --accent-weak: rgba(13, 13, 16, 0.08);
   --ok: #34c759;
   --danger: #ff3b30;
-  --on-accent: #ffffff;
+  --on-accent: #f2efe6; /* 象牙白：碳黑按钮上的文字 */
   /* 单元 D 新增（规格 §3.1）。每个都要么在暗色块里有值，要么进守卫的 NOT_A_COLOR 例外清单。 */
-  --link: #0066cc; /* Apple 链接蓝：文字按钮专用，与按钮蓝 --accent 分职 */
+  --link: #b3541e; /* 赤褐（品牌第三色）：文字链接专用，与实心按钮的碳黑 --accent 分职 */
+  --link-hover: #8f4116;
   --ok-text: #248a3d; /* 绿色文字专用：--ok 的 #34c759 在浅底上约 2.2:1，读不清 */
   --danger-text: #d70015; /* 红色文字专用（「删除」与错误状态行） */
   --track-off: rgba(120, 120, 128, 0.32); /* iOS 开关关态轨道 */
-  --knob: #ffffff; /* 开关旋钮：亮暗同值，走 NOT_A_COLOR 例外（同 --on-accent 的道理） */
+  --knob: #ffffff; /* 开关旋钮：亮暗同值（底下是 --track-off/--ok，不是深色文字底），走 NOT_A_COLOR 例外 */
   --chip: rgba(120, 120, 128, 0.16); /* 徽章底、行内代码底 */
   --hover: rgba(0, 0, 0, 0.035); /* 行/链接悬停底 */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.05);
@@ -48,20 +49,22 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --surface: #1c1c1e;
-    --surface-2: #000000;
-    --surface-3: #2c2c2e;
+    --surface: #1e1c19;
+    --surface-2: #121110;
+    --surface-3: #2a2724;
     --border: rgba(255, 255, 255, 0.12);
     --border-strong: rgba(255, 255, 255, 0.2);
-    --text: #f5f5f7;
-    --text-2: #a1a1a6;
-    --text-3: #8e8e93;
-    --accent: #0a84ff;
-    --accent-hover: #409cff;
-    --accent-weak: rgba(10, 132, 255, 0.22);
+    --text: #f2efe6; /* 暗色下的正文直接用象牙白 */
+    --text-2: #a8a299;
+    --text-3: #8b857c;
+    --accent: #f2efe6; /* 暗色反转：强调按钮变成象牙底 */
+    --accent-hover: #ffffff;
+    --accent-weak: rgba(242, 239, 230, 0.16);
+    --on-accent: #0d0d10; /* 象牙底按钮上的文字回到碳黑 */
     --ok: #30d158;
     --danger: #ff453a;
-    --link: #419cff;
+    --link: #e08a5a; /* 赤褐提亮一档，暗底上才够对比度 */
+    --link-hover: #f0a678;
     --ok-text: #30d158;
     --danger-text: #ff453a;
     --track-off: rgba(120, 120, 128, 0.42);
@@ -116,7 +119,6 @@ body {
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
-  color: var(--accent);
 }
 
 .brand-name {
@@ -202,7 +204,7 @@ body {
 }
 
 /*
- * 禁用态必须与可用态一眼可分：原来没有这条规则，禁用时仍是满亮蓝、看着完全可点
+ * 禁用态必须与可用态一眼可分：原来没有这条规则，禁用时仍是满亮强调色、看着完全可点
  * （“此页面不可用” / “翻译进行中” / 设置还没读出来时都是这个状态）。
  *
  * 三条分开写而不是合并：渲染层在这三种态下都会 `delete dataset.active`，但**不能靠它**——
@@ -478,7 +480,7 @@ body {
 }
 
 .link:hover {
-  color: var(--accent-hover);
+  color: var(--link-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -317,7 +317,7 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
     expect(speak?.tagName).toBe('BUTTON');
     expect(speak?.getAttribute('data-variant')).toBe('secondary');
 
-    expect(decls(':host {')['--jy-accent']).toBe('#2563eb');
+    expect(decls(':host {')['--jy-accent']).toBe('#f2efe6');
     expect(decls('.jy-action[data-variant="primary"] {')['background']).toBe('var(--jy-accent)');
     const base = decls('.jy-action {');
     expect(base['background']).toBe('rgba(255, 255, 255, 0.1)');
@@ -330,7 +330,7 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
 
   it('三态齐全：hover / active / focus-visible（焦点环是浅色，深底上看得见）', () => {
     twoButtons();
-    expect(decls(':host {')['--jy-accent-hover']).toBe('#1d4ed8');
+    expect(decls(':host {')['--jy-accent-hover']).toBe('#ffffff');
     expect(decls('.jy-action:hover {')['background']).toBe('rgba(255, 255, 255, 0.16)');
     expect(decls('.jy-action:active {')['background']).toBe('rgba(255, 255, 255, 0.22)');
     expect(decls('.jy-action[data-variant="primary"]:hover {')['background']).toBe('var(--jy-accent-hover)');
