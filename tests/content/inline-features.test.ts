@@ -150,6 +150,7 @@ function hoverChip(): void {
   const node = bubble();
   if (node === null) throw new Error('划词没有先出小气泡');
   dispatchTrusted(node, new MouseEvent('pointerenter'));
+  dispatchTrusted(node, new MouseEvent('pointermove'));
 }
 
 function pressShift(): void {

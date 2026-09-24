@@ -722,11 +722,24 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
     return node;
   }
 
-  /** 指针进入/离开气泡。真实手势与合成事件走同一条派发路径，唯一区别是 isTrusted。 */
-  function pointerEnter(type: 'pointerenter' | 'pointerleave' = 'pointerenter', trusted = true): void {
+  /** 指针进入/离开/移动。真实手势与合成事件走同一条派发路径，唯一区别是 isTrusted。 */
+  function pointerEvent(
+    type: 'pointerenter' | 'pointerleave' | 'pointermove' = 'pointerenter',
+    trusted = true,
+  ): void {
     const event = new MouseEvent(type);
     if (trusted) dispatchTrusted(hostNode(), event);
     else dispatchSynthetic(hostNode(), event);
+  }
+
+  /**
+   * 真机实测的手势形状（`.qa/run-selection-chip.mjs` 的 ⑭）：指针**移动**进气泡时，浏览器发的是
+   * `pointerover` + `pointerenter` + `pointermove` 三件；而"气泡被插到静止的指针底下"时只有前两件、
+   * 没有 move。起算因此挂在 move 上——enter 单独出现不代表用户把指针"停"了上来。
+   */
+  function pointerArrives(): void {
+    pointerEvent('pointerenter');
+    pointerEvent('pointermove');
   }
 
   function withIntent(onTrigger = vi.fn()) {
@@ -734,10 +747,24 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
     return onTrigger;
   }
 
+  it('只有 pointerenter、没有任何 pointermove：不起算（气泡被插到静止的指针底下）', async () => {
+    const onTrigger = withIntent();
+
+    // 真机 ⑭ 的形状：拖选越过行底时，chip 生成在指针底下，Chrome 补发 over + enter 但不发 move。
+    pointerEvent('pointerenter');
+    await vi.advanceTimersByTimeAsync(DELAY * 3);
+    expect(onTrigger).not.toHaveBeenCalled();
+
+    // 用户真的动了一下，才算"停在上面"。
+    pointerEvent('pointermove');
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
   it('进入后满延时触发一次', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY - 1);
     expect(onTrigger).not.toHaveBeenCalled(); // 差 1ms 也不算"停住了"
     await vi.advanceTimersByTimeAsync(1);
@@ -747,9 +774,9 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('延时未到就离开：取消，之后到点也不触发', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY - 1);
-    pointerEnter('pointerleave');
+    pointerEvent('pointerleave');
     await vi.advanceTimersByTimeAsync(DELAY * 2);
     expect(onTrigger).not.toHaveBeenCalled();
   });
@@ -757,10 +784,10 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('离开再回来：重新起算，且只有一个计时器', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(100);
-    pointerEnter('pointerleave');
-    pointerEnter();
+    pointerEvent('pointerleave');
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(100);
     expect(onTrigger).not.toHaveBeenCalled(); // 第二次进入还差 50ms
     await vi.advanceTimersByTimeAsync(50);
@@ -770,12 +797,12 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('触发是一次性的：离开再回来不再触发第二次（译文已经出来了，不该再烧一次额度）', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY);
     expect(onTrigger).toHaveBeenCalledTimes(1);
 
-    pointerEnter('pointerleave');
-    pointerEnter();
+    pointerEvent('pointerleave');
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY * 2);
     expect(onTrigger).toHaveBeenCalledTimes(1);
   });
@@ -783,7 +810,7 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('hideTooltip 清掉未到点的计时器：气泡关了还"到点"就是偷偷烧额度', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY - 1);
     hideTooltip();
     await vi.advanceTimersByTimeAsync(DELAY * 2);
@@ -793,7 +820,7 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('把内容换成不带意图的一屏（pending / 译文）：上一代的计时当场作废', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY - 1);
     showTooltip(RECT, { text: '翻译中…', state: 'pending' });
     await vi.advanceTimersByTimeAsync(DELAY * 2);
@@ -803,7 +830,8 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('安全闸门：合成 pointerenter（isTrusted=false）不触发——页面脚本不能替用户停在气泡上', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter('pointerenter', false);
+    pointerEvent('pointerenter', false);
+    pointerEvent('pointermove', false);
     await vi.advanceTimersByTimeAsync(DELAY * 2);
     expect(onTrigger).not.toHaveBeenCalled();
   });
@@ -811,7 +839,7 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('成对断言：同一处监听器，真实手势的 pointerenter 照常触发（证明上一条不是"永远拒绝"）', async () => {
     const onTrigger = withIntent();
 
-    pointerEnter('pointerenter', true);
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY);
     expect(onTrigger).toHaveBeenCalledTimes(1);
   });
@@ -819,10 +847,10 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   it('没带 hoverIntent 的普通气泡：进进出出什么都不发生（悬停翻译的移出保留不受影响）', async () => {
     showTooltip(RECT, { text: '译文' });
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY * 2);
-    pointerEnter('pointerleave');
-    pointerEnter();
+    pointerEvent('pointerleave');
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY * 2);
 
     expect(isTooltipVisible()).toBe(true);
@@ -831,7 +859,7 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
 
   it('计时器不因反复开合而泄漏：关闭再打开，只有新一代的那一次会触发', async () => {
     const first = withIntent();
-    pointerEnter();
+    pointerArrives();
     hideTooltip();
 
     const second = vi.fn();
@@ -840,7 +868,7 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
     expect(first).not.toHaveBeenCalled();
     expect(second).not.toHaveBeenCalled(); // 新一代也还没被指针进入过
 
-    pointerEnter();
+    pointerArrives();
     await vi.advanceTimersByTimeAsync(DELAY);
     expect(second).toHaveBeenCalledTimes(1);
   });

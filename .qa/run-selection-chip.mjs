@@ -410,7 +410,7 @@ try {
   check(
     '⑫a 指针停在 chip 之外、原地不动 800ms：零请求，仍是待触发那一屏',
     !inside && r12a === before12 && still12?.variant === 'chip',
-    `P=${P.x.toFixed(0)},${P.y.toFixed(0)} 在盒内=${inside}（几何不可达即为结论）· 盒 ${tip12?.x?.toFixed(0)},${tip12?.y?.toFixed(0)},${tip12?.w}×${tip12?.h} · 请求增量 ${r12a - before12}`,
+    `P=${P.x.toFixed(0)},${P.y.toFixed(0)} 在盒内=${inside}（P 取的是 chip 底边之下 12px，故意落在带外；带内的情形由 ⑭ 量）· 盒 ${tip12?.x?.toFixed(0)},${tip12?.y?.toFixed(0)},${tip12?.w}×${tip12?.h} · 请求增量 ${r12a - before12}`,
   );
   await moveTo(tip12.x + tip12.w / 2, tip12.y + tip12.h / 2); // 真把指针移进气泡
   await sleep(DWELL_MS);
@@ -422,6 +422,68 @@ try {
     `请求增量 ${r12b - before12} · ${brief(tip12b)}`,
   );
   await shot('12-stationary-pointer');
+
+  // ---------- ⑭ chip 插到静止指针的底下：Chrome 会不会补发 pointerenter ----------
+  // 这一条量的就是"拖选越过最后一行行底"那个**最常见**的落点：松手处本来就在字底下方几十像素，
+  // 而 chip 的带 = 选区块底 +8 … +48（实测盒高 40）——落点落在带内，不是"几何不可达"。
+  // 构造：JS 造好选区 → 在带内放一个 user-select:none 的垫片 → 真鼠标在垫片上按下并抬起
+  // （按下不另起选区，所以选区活得下来；抬起那一刻才生成 chip，而指针**此后一动不动**）。
+  await pressEscape();
+  await api.cdp.eval(S, 'document.getElementById("jy-pad")?.remove()');
+  const before14 = await requests();
+  const geo14 = JSON.parse(
+    await api.cdp.eval(
+      S,
+      `(() => {
+        const el = document.getElementById('author-link');       // "Jane Doe"：本轮还没送过
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        const block = r.getBoundingClientRect();
+        const padTop = block.bottom + 20;                        // 带 = 块底+8 … 块底+48
+        const pad = document.createElement('div');
+        pad.id = 'jy-pad';
+        pad.style.cssText = 'position:fixed;left:' + (block.left + 4) + 'px;top:' + padTop +
+          'px;width:80px;height:12px;user-select:none';
+        document.documentElement.append(pad);
+        return JSON.stringify({ blockBottom: block.bottom, len: sel.toString().trim().length,
+          x: block.left + 20, y: padTop + 6 });
+      })()`,
+    ),
+  );
+  await api.activate(page.targetId);
+  await moveTo(geo14.x, geo14.y); // 指针先就位：此后进入 chip 的那一步不是"移动"造成的
+  // 先记下"抬起之前宿主见过哪些悬停事件"——要区分的正是 Chrome 补发的是 enter/over 还是 move，
+  // 它决定移动判据该挂哪一个。
+  await api.cdp.eval(
+    S,
+    `(() => { globalThis.__hover = [];
+      const host = document.querySelector('#jy-tooltip');
+      for (const t of ['pointerover','pointerenter','pointermove']) {
+        (host ?? document.documentElement).addEventListener(t, () => globalThis.__hover.push(t), true);
+      }
+      return String((host ?? document.documentElement) === host); })()`,
+  );
+  await api.cdp.mouse(S, 'mousePressed', geo14.x, geo14.y, { buttons: 1 });
+  const selAfterPress = (await api.cdp.eval(S, 'String(getSelection()).trim()')).length;
+  await api.cdp.mouse(S, 'mouseReleased', geo14.x, geo14.y, { buttons: 0 });
+  await sleep(200);
+  const tip14 = await readTip();
+  const band14 = { top: geo14.blockBottom + 8, bottom: geo14.blockBottom + 48 }; // chip 实测高 40
+  const inside14 = tip14 !== null && geo14.y >= band14.top && geo14.y <= band14.bottom;
+  const events14 = await api.cdp.eval(S, 'JSON.stringify(globalThis.__hover ?? [])');
+  await sleep(800); // 指针一动不动
+  const r14 = await requests();
+  const tip14b = await readTip();
+  check(
+    '⑭ chip 生成在静止指针的底下（带内落点）、指针不动 800ms：不许起算',
+    selAfterPress === geo14.len && inside14 && r14 === before14,
+    `选区 ${geo14.len} 字（按下后仍 ${selAfterPress}）· 指针 y=${geo14.y.toFixed(0)} 在带 ${band14.top.toFixed(0)}…${band14.bottom.toFixed(0)} 内=${inside14} · 抬起后宿主见过的悬停事件=${events14} · 请求增量 ${r14 - before14} · ${brief(tip14b)}`,
+  );
+  await shot('14-inserted-under-pointer');
+  await api.cdp.eval(S, 'document.getElementById("jy-pad")?.remove()');
 
   await pressEscape();
   await api.cdp.eval(S, 'getSelection()?.removeAllRanges()');

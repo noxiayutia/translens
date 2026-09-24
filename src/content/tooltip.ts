@@ -98,7 +98,8 @@ export interface TooltipButton {
 export type TooltipVariant = 'bubble' | 'chip';
 
 /**
- * 悬停意图：**指针停在这个气泡上满 `delayMs` 才算数**。
+ * 悬停意图：**指针在自己的指针移动下停在这个气泡上满 `delayMs` 才算数**（起算事件是
+ * `pointermove`，不是 `pointerenter`——理由见 `onHostPointermove` 里的真机读数）。
  *
  * 为什么由浮层自己管，而不是划词那一侧挂监听：浮层知道这个气泡什么时候被换掉、什么时候被关掉
  * （{@link hideTooltip}），而"气泡没了、计时器还在，到点偷偷发一次请求"正是这里唯一的失效形状。
@@ -423,11 +424,16 @@ function armHoverIntent(next: TooltipHoverIntent | undefined): void {
   hoverIntent = next ?? null;
 }
 
-function onHostPointerenter(event: PointerEvent): void {
+function onHostPointermove(event: PointerEvent): void {
   /**
-   * **只认真实指针**（与划词的 mouseup、悬停的 mouseover 同一道闸门、同一套理由）：
-   * 浮层是 open shadow，页面脚本摸得到宿主，合成一个 pointerenter 就能替用户"停在气泡上"，
+   * **只认真实指针**（与划词的 mouseup、悬停的 mouseover、按钮委托的 click 同一道闸门、同一套
+   * 理由）：浮层是 open shadow，页面脚本摸得到宿主，合成一个 pointermove 就能替用户"停在气泡上"，
    * 带着用户的 Key 去打用户付费的引擎。{@link TooltipHoverIntent} 的全部意义是"用户自己停上来"。
+   *
+   * **起算挂在 move 而不是 enter**，是真机定的（`.qa/run-selection-chip.mjs` 的 ⑭）：拖选越过
+   * 最后一行的行底时，chip 会生成在静止的指针底下，而 Chrome 为这次 DOM 变化补发
+   * `pointerover` + `pointerenter`、**不发** `pointermove`。挂在 enter 上就等于"用户什么也没做，
+   * 150ms 后自己翻了"——那正是这次要消灭的行为。移动一下才起算，与 README/规格的说法一致。
    */
   if (!event.isTrusted || hoverIntent === null || intentTimer !== null) return;
   const intent = hoverIntent;
@@ -653,8 +659,8 @@ function ensureHost(): { node: HTMLElement; style: HTMLStyleElement; parts: Bubb
   // 委托挂在 host 本身：气泡内容每次重建，接线却只有这一份。
   created.addEventListener('click', onHostClick);
   // 悬停意图同样挂在 host 上，与宿主同生共死（hideTooltip 丢掉节点就带走了这两个监听）。
-  // 用 enter/leave 而不是 over/out：指针在 shadow 内部的元素之间移动不该被当成"离开又回来"。
-  created.addEventListener('pointerenter', onHostPointerenter);
+  // 起算用 move、取消用 leave：见 onHostPointermove 里"DOM 变化会补发 enter 但不补发 move"那条。
+  created.addEventListener('pointermove', onHostPointermove);
   created.addEventListener('pointerleave', onHostPointerleave);
   host = created;
   skeleton = parts;

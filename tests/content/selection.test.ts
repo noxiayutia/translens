@@ -156,11 +156,12 @@ function syntheticMouseup(button = 0): void {
   dispatchSynthetic(document.body, new MouseEvent('mouseup', { bubbles: true, button }));
 }
 
-/** 第二段的两条入口之一：把真实指针停到小气泡上（派发在宿主上，与浏览器的 pointerenter 同形）。 */
+/** 第二段的两条入口之一：把真实指针停到小气泡上（enter + move，真机移动进气泡就是这两件）。 */
 function hoverChip(): void {
   const node = bubble();
   if (node === null) throw new Error('划词没有先出小气泡');
   dispatchTrusted(node, new MouseEvent('pointerenter'));
+  dispatchTrusted(node, new MouseEvent('pointermove'));
 }
 
 /** 指针移出小气泡（"还没停够就走"）。 */
