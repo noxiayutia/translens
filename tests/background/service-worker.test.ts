@@ -57,8 +57,18 @@ function stubEngineFetch(): StubCall[] {
     const body = JSON.parse(String(init?.body)) as StubCall['body'];
     calls.push({ url, body });
     const user = body.messages.find((message) => message.role === 'user')?.content ?? '';
-    const texts = [...user.matchAll(/<<<\d+>>>\n([^\n]*)/g)].map((match) => match[1] as string);
-    const content = texts.map((text, index) => `<<<${index + 1}>>>\n【${text}】`).join('\n');
+    // 两种请求形状都要认：多段带 `<<<N>>>` 编号，单段不带（`openai-compat.ts` 的 `SINGLE_RULES`）。
+    // 只认标记的话，单段请求在这里会解析出 0 条文本 ⇒ 回一个空 content ⇒ 引擎抛
+    // BAD_RESPONSE ⇒ 缓存一条都不写，而红的是"缓存层次顺序"那两条毫不相干的用例。
+    const numbered = /<<<\d+>>>/.test(user);
+    const texts = numbered
+      ? [...user.matchAll(/<<<\d+>>>\n([^\n]*)/g)].map((match) => match[1] as string)
+      : user.trim() === ''
+        ? []
+        : [user.trim()];
+    const content = numbered
+      ? texts.map((text, index) => `<<<${index + 1}>>>\n【${text}】`).join('\n')
+      : `【${texts[0] ?? ''}】`;
     return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -190,11 +200,14 @@ describe('runtime.onMessage 消息路由', () => {
     await translateTexts({ items: [{ id: 'item-1', text: 'Hello' }], targetLang: 'en' }).response();
     const systemOf = (call: StubCall): string =>
       call.body.messages.find((message) => message.role === 'system')?.content ?? '';
-    expect(systemOf(calls[0])).toContain('Target language: en');
+    // 断言写成渲染后的完整语言名（`Target language: English (en)`）而不是裸标签：
+    // 提示词里现在给的是模型认得的名字。两条各自唯一对应一个目标语言，
+    // "谁胜出"这个判据没有放松。
+    expect(systemOf(calls[0])).toContain('Target language: English (en)');
 
     // 没带就按设置走（同一个 payload 形状，只有这一处差异）。
     await translateTexts({ items: [{ id: 'item-2', text: 'World' }] }).response();
-    expect(systemOf(calls[1])).toContain('Target language: ja');
+    expect(systemOf(calls[1])).toContain('Target language: 日本語 (ja)');
   });
 
   /**

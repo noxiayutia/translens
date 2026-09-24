@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildMessages, openAiCompatEngine, parseNumberedResponse } from '../../src/engines/openai-compat';
+import { buildMessages, openAiCompatEngine, parseNumberedResponse, parseResponse } from '../../src/engines/openai-compat';
 import { EngineError, RETRYABLE_CODES } from '../../src/engines/types';
 
 function chatResponse(content: string, status = 200): Response {
@@ -31,6 +31,36 @@ describe('buildMessages', () => {
     const messages = buildMessages(['Hello', 'World'], 'zh-Hans');
     expect(messages[1].content).toContain('<<<1>>>');
     expect(messages[1].content).toContain('<<<2>>>');
+  });
+
+  /**
+   * 单段**不发**编号标记。这不是风格选择，是实测出来的：MiMo `mimo-v2.6-flash` 在
+   * 单段时 0/8 会吞掉 `<<<1>>>`（同一输入回 `1 你好` / `1. 你好` / `1>>>\n你好`），
+   * 免标记则 15/15 给出干净译文。而单段本来就是「测试连接」和降级逐条的形状。
+   */
+  it('单段请求不带编号标记，user 消息就是原文', () => {
+    const messages = buildMessages(['Hello'], 'zh-Hans');
+    expect(messages[1].content).toBe('Hello');
+    expect(messages[1].content).not.toContain('<<<');
+  });
+
+  it('单段用单段规则，不提编号也不提标记', () => {
+    const system = buildMessages(['Hello'], 'zh-Hans')[0].content;
+    expect(system).toContain('Translate the user message');
+    expect(system).not.toContain('numbered segments');
+    expect(system).not.toContain('<<<N>>>');
+  });
+
+  it('多段要求逐字符复制标记', () => {
+    const system = buildMessages(['Hello', 'World'], 'zh-Hans')[0].content;
+    expect(system).toContain('Copy that marker verbatim');
+  });
+
+  /** `Target language: zh-Hans` 实测被 MiMo 回过一次「请指定目标语言。」 */
+  it('目标语言写成模型认得的名字，而不是裸标签', () => {
+    expect(buildMessages(['Hello', 'World'], 'zh-Hans')[0].content).toContain('简体中文 (zh-Hans)');
+    // 表里没有的语言不能把文案写成 `undefined (xx)`：退回裸标签。
+    expect(buildMessages(['Hello', 'World'], 'xx')[0].content).toContain('Target language: xx');
   });
 
   it('术语表写进 system 消息', () => {
@@ -85,6 +115,46 @@ describe('parseNumberedResponse', () => {
   });
 });
 
+describe('parseResponse', () => {
+  it('单段直接取整条内容（请求里本来就没有标记）', () => {
+    expect(parseResponse('你好', 1)).toEqual(['你好']);
+    expect(parseResponse('  你好\n', 1)).toEqual(['你好']);
+  });
+
+  it('单段只有空白也抛 BAD_RESPONSE', () => {
+    let caught: unknown;
+    try {
+      parseResponse('   \n ', 1);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(EngineError);
+    expect((caught as EngineError).code).toBe('BAD_RESPONSE');
+  });
+
+  /**
+   * 单段不再要求标记，但有些模型养成了一律回显的习惯 —— 不抹就会把
+   * `<<<1>>>` 原样贴到用户页面上。这条钉住那个漏洞已经补上。
+   */
+  it('单段会抹掉模型自作主张加的开头标记', () => {
+    expect(parseResponse('<<<1>>>\n你好', 1)).toEqual(['你好']);
+    expect(parseResponse('<<<1>>>你好', 1)).toEqual(['你好']);
+    // 只有开头那一个被抹；中间的属于正文。
+    expect(parseResponse('甲 <<<1>>> 乙', 1)).toEqual(['甲 <<<1>>> 乙']);
+    // 只剩标记没有内容，仍然要抛，不能贴一个空格子上去。
+    expect(() => parseResponse('<<<1>>>', 1)).toThrow(EngineError);
+  });
+
+  /**
+   * 这条钉的是"别把单段的宽容推广到多段"：多段仍必须数得到标记，
+   * 否则顺序错位会被静默吞掉。
+   */
+  it('多段仍走编号协议，不因单段分支而放松', () => {
+    expect(() => parseResponse('你好\n世界', 2)).toThrow(EngineError);
+    expect(parseResponse('<<<1>>>\n你好\n<<<2>>>\n世界', 2)).toEqual(['你好', '世界']);
+  });
+});
+
 describe('openAiCompatEngine.translate', () => {
   it('缺少配置时抛 AUTH', async () => {
     await expect(
@@ -97,6 +167,16 @@ describe('openAiCompatEngine.translate', () => {
     vi.stubGlobal('fetch', fetchMock);
     const out = await openAiCompatEngine.translate(request(['Hello', 'World']), CONFIG);
     expect(out).toEqual(['你好', '世界']);
+  });
+
+  /** 端到端钉住单段这一条路：发出去不带标记，回来的裸文本就是译文。 */
+  it('单段：请求体无标记，响应无标记也能成功', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(chatResponse('你好'));
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await openAiCompatEngine.translate(request(['Hello']), CONFIG);
+    expect(out).toEqual(['你好']);
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body.messages[1].content).toBe('Hello');
   });
 
   it('请求体使用配置的模型且 temperature 为 0', async () => {

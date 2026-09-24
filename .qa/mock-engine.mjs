@@ -2,13 +2,15 @@
 // 只监听 127.0.0.1，进程退出即消失。
 //
 // 用法：node .qa/mock-engine.mjs [port]
-//   POST /v1/chat/completions  → 按 <<<n>>> 标记回译文（译文 = 「译·」+ 原文，便于逐条核对顺序与错位）
+//   POST /v1/chat/completions  → 按请求形状回译文（译文 = 「译·」+ 原文，便于逐条核对顺序与错位）
+//     · 多段请求带 <<<n>>> 编号 → 按编号回
+//     · 单段请求不带编号（见 src/engines/openai-compat.ts 的 SINGLE_RULES）→ 直接回一条
 //   GET  /v1/models            → 两个模型，供设置页「获取可用模型」
 //   GET  /__ctl                → 当前模式与累计统计
 //   POST /__ctl {"mode":...}   → 切模式；{"reset":true} 清零统计
 //
 // 模式：ok / auth401 / rate429(前 2 次 429 后恢复) / tooLong413 / http500 / badjson /
-//       badmarkers(少一段) / empty(返回空数组) / slow(挂 60s)
+//       badmarkers(少一段，只对带编号的请求生效) / empty(返回空内容) / slow(挂 60s)
 //
 // 改这个文件之前先读 `docs/qa/2026-09-24-measurement-traps.md`：这里的每一个计数器都踩过"闸放在被测行为之后
 // ⇒ 读数恒为 0"这类坑（共六个），它们骗掉的是一整轮验收结论。
@@ -106,7 +108,16 @@ const server = createServer(async (req, res) => {
     }
     const user = payload?.messages?.find((m) => m.role === 'user')?.content ?? '';
     const system = payload?.messages?.find((m) => m.role === 'system')?.content ?? '';
-    const parts = [...user.split(/<<<\d+>>>/g).slice(1)].map((s) => s.trim());
+    // 两种请求形状：多段带 `<<<N>>>` 编号，单段**不带**（`src/engines/openai-compat.ts`
+    // 的 `MULTI_RULES` / `SINGLE_RULES`：单段没有需要拆回来的东西）。
+    // 只认标记的话，单段请求会被数成 0 段 —— `segments` 静默少算，正是
+    // `docs/qa/2026-09-24-measurement-traps.md` 总则 3 那一类失效。
+    const numbered = /<<<\d+>>>/.test(user);
+    const parts = numbered
+      ? [...user.split(/<<<\d+>>>/g).slice(1)].map((s) => s.trim())
+      : user.trim() === ''
+        ? []
+        : [user.trim()];
     state.segments += parts.length;
     state.chars += user.length;
     const entry = {
@@ -114,6 +125,7 @@ const server = createServer(async (req, res) => {
       at: Date.now(),
       model: payload?.model,
       temperature: payload?.temperature,
+      numbered,
       segs: parts.length,
       chars: user.length,
       hasKey: Boolean(req.headers.authorization),
@@ -179,14 +191,22 @@ const server = createServer(async (req, res) => {
       await new Promise((r) => setTimeout(r, 400000));
       return json(res, 200, {});
     }
-    if (mode === 'badmarkers') {
+    if (mode === 'badmarkers' && numbered) {
+      // 只破坏**带编号**的请求：单段请求本来就没有编号可错。
+      // 若在这里无条件回 `<<<1>>>` 形状，降级后的逐条请求（全是单段）会把
+      // `<<<1>>>只有一段` 当成译文收下 —— `run-errors.mjs` 的
+      // 「降级后仍然全部译出」会绿，而 14 个格子填的其实是同一句标记文本。
       return json(res, 200, { choices: [{ message: { content: '<<<1>>>\n只有一段' } }] });
     }
     if (mode === 'empty') {
-      return json(res, 200, { choices: [{ message: { content: '<<<1>>>\n' + '<<<2>>>'.repeat(parts.length) } }] });
+      return json(res, 200, {
+        choices: [{ message: { content: numbered ? '<<<1>>>\n' + '<<<2>>>'.repeat(parts.length) : '' } }],
+      });
     }
 
-    const content = parts.map((text, i) => `<<<${i + 1}>>>\n译·${text}`).join('\n');
+    const content = numbered
+      ? parts.map((text, i) => `<<<${i + 1}>>>\n译·${text}`).join('\n')
+      : `译·${parts[0] ?? ''}`;
     return json(res, 200, { choices: [{ message: { content } }] });
   }
 

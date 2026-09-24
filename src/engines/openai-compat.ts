@@ -1,3 +1,4 @@
+import { LANGUAGES } from '../core/lang';
 import { hasHostPermission, originPattern } from '../shared/host-permission';
 import { describeHttpError, statusToErrorCode } from './api-error';
 import { EngineError, toEngineError, type EngineConfig, type Term, type TranslateRequest, type Translator } from './types';
@@ -9,21 +10,43 @@ export interface ChatMessage {
 
 const marker = (index: number): string => `<<<${index}>>>`;
 
-const SYSTEM_RULES = [
+/**
+ * 编号协议只为**多段**存在：它的唯一作用是把 N 条译文拆回原顺序，而单段没有可拆的东西。
+ * 实测 MiMo `mimo-v2.6-flash` 在单段时 0/8 会吞掉 `<<<1>>>`（`temperature:0`，同一输入
+ * 八次给出 `1 你好` / `1. 你好` / `1>>>\n你好` / 整句英文回复各不相同），
+ * 免标记请求则 15/15 直接给出干净译文。
+ */
+const MULTI_RULES = [
   'You are a professional translation engine.',
   'You will receive numbered segments. Translate every segment into the target language.',
   'Output ONLY the translations, using exactly the same numbered markers and the same number of segments.',
   'Never merge, split, reorder or omit segments. Never add explanations, notes or quotes.',
+  // 缺这一句时 MiMo 会把标记改写成 `1.` / `1 ` / `1>>>`（3 段实测 3/8~7/8，两次测法本身就不一致）。
+  // 补上"逐字符复制"后 3 段 12/12。换标记形状没用：`[[1]]` 3/8、`<1>` 6/8、`@@@1@@@` 1/8。
+  'Each marker has the exact form <<<N>>>. Copy that marker verbatim, character by character, including every < and >, immediately before its translation.',
 ].join(' ');
 
+const SINGLE_RULES = [
+  'You are a professional translation engine.',
+  'Translate the user message into the target language.',
+  'Output ONLY the translation. Never add explanations, notes or quotes.',
+].join(' ');
+
+/** 裸标签模型未必认得：MiMo 对 `Target language: zh-Hans` 回过一次「请指定目标语言。」 */
+function targetLanguageName(code: string): string {
+  const label = LANGUAGES.find((option) => option.code === code)?.label;
+  return label ? `${label} (${code})` : code;
+}
+
 export function buildMessages(texts: string[], to: string, glossary?: Term[], systemPrompt?: string): ChatMessage[] {
-  const systemParts = [`Target language: ${to}`, SYSTEM_RULES];
+  const single = texts.length === 1;
+  const systemParts = [`Target language: ${targetLanguageName(to)}`, single ? SINGLE_RULES : MULTI_RULES];
   if (glossary && glossary.length > 0) {
     systemParts.push(`Glossary (must be used exactly): ${glossary.map((t) => `${t.from} => ${t.to}`).join('; ')}`);
   }
   if (systemPrompt && systemPrompt.trim().length > 0) systemParts.push(systemPrompt.trim());
 
-  const user = texts.map((text, index) => `${marker(index + 1)}\n${text}`).join('\n');
+  const user = single ? texts[0] : texts.map((text, index) => `${marker(index + 1)}\n${text}`).join('\n');
   return [
     { role: 'system', content: systemParts.join('\n') },
     { role: 'user', content: user },
@@ -50,6 +73,23 @@ export function parseNumberedResponse(content: string, count: number): string[] 
     parts.push(text);
   }
   return parts;
+}
+
+/**
+ * 单段直接取整条 `content`（请求里根本没有标记，见 `MULTI_RULES` 的说明）；
+ * 多段仍按编号切回。
+ *
+ * 这里要顺手抹掉**开头多余的** `<<<1>>>`：有些模型养成了一律回显标记的习惯，
+ * 而单段路径不再要求它，不抹就会把 `<<<1>>>` 原样贴到用户的页面上。
+ * 只认开头那一个 —— 出现在中间的 `<<<1>>>` 是正文的一部分，不该被动。
+ */
+export function parseResponse(content: string, count: number): string[] {
+  if (count !== 1) return parseNumberedResponse(content, count);
+  const text = content.replace(/^\s*<<<1>>>\s*/, '').trim();
+  if (text.length === 0) {
+    throw new EngineError('BAD_RESPONSE', '模型返回的内容只有空白');
+  }
+  return [text];
 }
 
 export const openAiCompatEngine: Translator = {
@@ -128,6 +168,6 @@ export const openAiCompatEngine: Translator = {
     if (typeof content !== 'string' || content.length === 0) {
       throw new EngineError('BAD_RESPONSE', '接口返回内容为空');
     }
-    return parseNumberedResponse(content, request.texts.length);
+    return parseResponse(content, request.texts.length);
   },
 };

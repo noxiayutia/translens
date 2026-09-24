@@ -22,8 +22,8 @@ function check(name, pass, reading) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 发一批并发翻译请求，返回每个的 {status, ms}。 */
-async function fire(n, texts) {
+/** 发一批并发翻译请求，返回每个的 {status, ms}。`numbered=false` 发**免标记**形状。 */
+async function fire(n, texts, numbered = true) {
   const started = Date.now();
   const settled = await Promise.all(
     Array.from({ length: n }, (_, i) => {
@@ -35,7 +35,7 @@ async function fire(n, texts) {
           model: 'mock-mini',
           messages: [
             { role: 'system', content: 'sys' },
-            { role: 'user', content: `<<<1>>>\n${texts[i]}` },
+            { role: 'user', content: numbered ? `<<<1>>>\n${texts[i]}` : texts[i] },
           ],
         }),
       }).then(async (res) => ({ status: res.status, ms: Date.now() - t0, body: await res.json() }));
@@ -43,6 +43,9 @@ async function fire(n, texts) {
   );
   return { settled, wall: Date.now() - started };
 }
+
+const setCtl = (body) =>
+  fetch(`${BASE}/__ctl`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 const ctl = async () => (await fetch(`${BASE}/__ctl`)).json();
 const log = async () => (await fetch(`${BASE}/__log`)).json();
@@ -135,6 +138,38 @@ try {
   // ④ 译文形状：扫描表"译出段"那一列靠 `译·` 前缀数段落，形状变了读数会静默失真。
   const ok = accepted[0]?.body?.choices?.[0]?.message?.content ?? '';
   check('回文是 `<<<n>>>` + `译·` 前缀', ok === '<<<1>>>\n译·A one', JSON.stringify(ok));
+
+  // ④b 单段**免标记**形状（产品的 `SINGLE_RULES` 真的会发这种）。量具只认标记的话
+  //     `segments` 会把它数成 0 段，扫描表"段次"整列静默少算 —— 正是
+  //     `docs/qa/2026-09-24-measurement-traps.md` 总则 3 那一类失效。
+  await setCtl({ reset: true, mode: 'ok', delayMs: 0, allowConcurrent: 0 });
+  const plain = await fire(3, ['p1', 'p2', 'p3'], false);
+  const plainSegs = (await ctl()).segments;
+  check('免标记请求各算 1 段（segments=3 而不是 0）', plainSegs === 3, `segments=${String(plainSegs)}`);
+  const plainTexts = plain.settled.map((r) => r.body?.choices?.[0]?.message?.content).join('|');
+  check('免标记请求回 `译·原文` 且不带标记', plainTexts === '译·p1|译·p2|译·p3', JSON.stringify(plainTexts));
+  check(
+    '日志条目带上 numbered=false（扫描可据此分辨两种形状）',
+    (await log()).log.every((e) => e.numbered === false),
+    JSON.stringify((await log()).log.map((e) => e.numbered)),
+  );
+
+  // ④c `badmarkers` 只该破坏**带编号**的请求：单段本来就没有编号可错。
+  //     它要是也无条件回 `<<<1>>>只有一段`，降级逐条（全是单段）会把这句当译文收下，
+  //     `run-errors.mjs` 的「降级后仍然全部译出」会绿，而页面上 14 格填的是同一句话。
+  await setCtl({ reset: true, mode: 'badmarkers', delayMs: 0, allowConcurrent: 0 });
+  const badPlain = await fire(1, ['keep'], false);
+  check(
+    'badmarkers 不破坏免标记请求（降级逐条拿到的仍是真译文）',
+    badPlain.settled[0]?.body?.choices?.[0]?.message?.content === '译·keep',
+    JSON.stringify(badPlain.settled[0]?.body?.choices?.[0]?.message?.content),
+  );
+  const badMarked = await fire(1, ['keep'], true);
+  check(
+    'badmarkers 仍然破坏带编号请求（这个模式本身没被改废）',
+    badMarked.settled[0]?.body?.choices?.[0]?.message?.content === '<<<1>>>\n只有一段',
+    JSON.stringify(badMarked.settled[0]?.body?.choices?.[0]?.message?.content),
+  );
 
   // ⑤ 窗口 0 = 不限量（其余场景脚本依赖这个语义）。
   await fetch(`${BASE}/__ctl`, {
