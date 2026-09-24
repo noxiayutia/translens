@@ -141,9 +141,16 @@ export class Cdp {
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...base }, sessionId);
   }
 
-  /** CDP 鼠标事件：type 为 mouseMoved / mousePressed / mouseReleased / mouseWheel。 */
+  /**
+   * CDP 鼠标事件：type 为 mouseMoved / mousePressed / mouseReleased / mouseWheel。
+   *
+   * `opts.buttons` 是**按键位掩码的当前状态**（左键 = 1）。不传就由 Blink 按 type 自己推。
+   * 拖选页面文字必须显式带上它：mousePressed 之后的那几个 mouseMoved 若 buttons 为 0，
+   * Blink 认为没有键按着，选区一个字都不会建起来（实测拖完 getSelection() 是空串）。
+   */
   async mouse(sessionId, type, x, y, opts = {}) {
     const params = { type, x, y, modifiers: opts.modifiers ?? 0 };
+    if (opts.buttons !== undefined) params.buttons = opts.buttons;
     if (type !== 'mouseMoved') {
       params.button = opts.button ?? 'left';
       params.clickCount = opts.clickCount ?? 1;

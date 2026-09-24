@@ -142,6 +142,16 @@ function mouseup(): void {
   dispatchTrusted(document.body, new MouseEvent('mouseup', { bubbles: true, button: 0 }));
 }
 
+/**
+ * 划词第二段：把真实指针停到小气泡上。生产默认停留 150ms，所以调用之后要等
+ * {@link afterHoverDelay} 那一轮（本文件测的是真接线，不去改内容脚本自带的默认值）。
+ */
+function hoverChip(): void {
+  const node = bubble();
+  if (node === null) throw new Error('划词没有先出小气泡');
+  dispatchTrusted(node, new MouseEvent('pointerenter'));
+}
+
 function pressShift(): void {
   dispatchTrusted(window, new KeyboardEvent('keydown', { key: 'Shift' }));
 }
@@ -191,7 +201,7 @@ afterEach(() => {
 });
 
 describe('接线：设置决定监听器', () => {
-  it('默认设置（两个开关都是 true）：划词 mouseup 走后台请求，译文出现在浮层里', async () => {
+  it('默认设置（两个开关都是 true）：划词两段走通后台请求，译文出现在浮层里', async () => {
     mount('<p>Hello world</p>');
     const { worker } = await loadContentScript();
     worker.mockImplementation(autoReply());
@@ -200,6 +210,11 @@ describe('接线：设置决定监听器', () => {
     mockSelection('Hello world');
     mouseup();
     await settle();
+    // 第一段只弹小气泡：一次请求都不该发出去。
+    expect(sentTexts(worker)).toEqual([]);
+    expect(bubbleState()).toBe('done');
+    hoverChip();
+    await afterHoverDelay();
 
     expect(sentTexts(worker)).toEqual([['Hello world']]);
     // targetLang 故意不传：后台当场读设置，永远是最新的那个（内容脚本手里不缓存密钥语言）。
@@ -250,12 +265,14 @@ describe('接线：设置决定监听器', () => {
     worker.mockImplementation(autoReply());
     await settle();
 
-    const off = await dispatch(MSG.APPLY_SETTINGS, { hoverTranslate: true, selectionTranslate: true, targetLang: 'ja' });
+    const off = await dispatch(MSG.APPLY_SETTINGS, { hoverTranslate: true, selectionTranslate: true });
     expect(off).toEqual({ ok: true });
 
     mockSelection('Hello world');
     mouseup();
     await settle();
+    hoverChip();
+    await afterHoverDelay();
     expect(sentTexts(worker)).toEqual([['Hello world']]);
 
     await dispatch(MSG.APPLY_SETTINGS, { hoverTranslate: false, selectionTranslate: false });
@@ -279,6 +296,8 @@ describe('接线：设置决定监听器', () => {
     mockSelection('Hello world');
     mouseup();
     await settle();
+    hoverChip();
+    await afterHoverDelay();
     expect(sentTexts(worker)).toEqual([['Hello world']]); // 划词这一项开成功了
 
     // 悬停那项没带 → 按现状仍是 false：即便按住 Shift 进入段落也不该有第三次请求。
@@ -355,6 +374,8 @@ describe('接线：右键菜单与还原', () => {
     mockSelection('Hello world');
     mouseup();
     await settle();
+    hoverChip();
+    await afterHoverDelay();
     expect(bubbleText()).toBe('翻译中…');
 
     await dispatch(MSG.RESTORE_PAGE);
@@ -391,6 +412,8 @@ describe('接线：与整页翻译共存', () => {
     mockSelection('Hover target text');
     mouseup();
     await settle();
+    hoverChip();
+    await afterHoverDelay();
 
     // 页面那批还在飞，划词的气泡已经出了结果。
     expect(sentTexts(worker)).toEqual([['Slow page paragraph'], ['Hover target text']]);
@@ -426,6 +449,8 @@ describe('接线：与整页翻译共存', () => {
       mockSelection('Hello world');
       mouseup();
       await settle();
+      hoverChip();
+      await afterHoverDelay();
       expect(sentTexts(worker), displayMode).toEqual([
         ['First paragraph'],
         ['Hello world'],
@@ -468,12 +493,17 @@ describe('验收重点：布局不变式', () => {
     window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift' }));
     expect(bubbleText()).toContain('译:');
 
-    // 划词一轮：出气泡、点复制。
+    // 划词一轮：出小气泡、停上去出译文、点复制。
     mockSelection('Copy me');
     mouseup();
     await settle();
+    hoverChip();
+    await afterHoverDelay();
     const copy = bubble()?.shadowRoot?.querySelector('button');
-    copy?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    // 真实手势：浮层里的按钮委托只认 isTrusted 的 click。
+    if (copy !== null && copy !== undefined) {
+      dispatchTrusted(copy, new MouseEvent('click', { bubbles: true, composed: true }));
+    }
     await settle();
 
     // —— 以上全流程，body 一个字节都不动；一切痕迹只在 documentElement 上。
@@ -489,7 +519,7 @@ describe('验收重点：布局不变式', () => {
    * 第二轮（界面美化）在真实链路上的验收：观感都在浮层自己的 shadow 里，
    * 页面拿不到、也不被改动——气泡的状态位、图标按钮、高亮框全挂 documentElement。
    */
-  it('划词全流程：气泡走 pending → done、按钮带内联 SVG 图标，页面 body 仍逐字节不变', async () => {
+  it('划词全流程：小气泡零请求 → 停上去 pending → done，按钮带内联 SVG 图标，页面 body 仍逐字节不变', async () => {
     mount('<p>Hello world</p>');
     const { worker } = await loadContentScript();
     const queued: (() => void)[] = [];
@@ -507,6 +537,15 @@ describe('验收重点：布局不变式', () => {
     mockSelection('Hello world');
     mouseup();
     await settle();
+    // 第一段：请求还没出去，页面上是一个待触发的小气泡。
+    expect(queued).toHaveLength(0);
+    expect(bubbleState()).toBe('done');
+    expect(Array.from(bubble()?.shadowRoot?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual([
+      '翻译',
+    ]);
+
+    hoverChip();
+    await afterHoverDelay();
     expect(bubbleText()).toBe('翻译中…');
     expect(bubbleState()).toBe('pending');
 
@@ -516,7 +555,7 @@ describe('验收重点：布局不变式', () => {
     expect(bubbleText()).toBe('译:Hello world');
 
     const iconButtons = Array.from(bubble()?.shadowRoot?.querySelectorAll('button') ?? []);
-    expect(iconButtons.map((button) => button.textContent)).toEqual(['复制', '朗读']);
+    expect(iconButtons.map((button) => button.textContent)).toEqual(['复制']);
     expect(iconButtons.every((button) => button.querySelector('svg') !== null)).toBe(true);
     // 按钮仍是可点的普通按钮（不能为了好看变成 pointer-events:none 的装饰）。
     expect(bubble()?.style.pointerEvents).toBe('auto');

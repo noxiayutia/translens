@@ -548,8 +548,6 @@ function onFeatureToggleChange(
           payload: {
             hoverTranslate: next.hoverTranslate,
             selectionTranslate: next.selectionTranslate,
-            // 顺带报一次目标语言：内容脚本手里那份可能已经过期（朗读语种用）。
-            targetLang: next.targetLang,
           },
         })) as { ok?: unknown } | undefined;
         applied = reply?.ok === true;

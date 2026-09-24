@@ -50,7 +50,6 @@ const applied: Record<FeatureField, boolean | null> = { hoverTranslate: null, se
 async function notifyAllTabs(payload: {
   hoverTranslate: boolean;
   selectionTranslate: boolean;
-  targetLang: string;
 }): Promise<boolean> {
   const tabs = await chrome.tabs.query({});
   // 叫 `confirmed` 而不是 `applied`：模块级那个 `applied` 是"上一次写入成功的值"（Record），
@@ -95,8 +94,6 @@ function bindSwitch(ctx: SectionContext, input: HTMLInputElement, field: Feature
         appliedToPages = await notifyAllTabs({
           hoverTranslate: current.hoverTranslate,
           selectionTranslate: current.selectionTranslate,
-          // 顺带报一次目标语言：内容脚本手里那份可能已经过期（朗读语种用）。
-          targetLang: current.targetLang,
         });
       } catch (raw) {
         setStatus(status, 'err', `已保存，但通知已打开的页面失败：${describe(raw)}`);

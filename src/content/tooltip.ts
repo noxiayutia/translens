@@ -9,7 +9,7 @@
  * - 带 `data-jy-root` 标记，采集端（extractor）会把整棵子树跳过，不会被二次翻译；
  * - 所有来自接口的文字一律 `textContent` 写入，禁止 innerHTML（引擎返回内容不可信）；
  * - `max-height` + `overflow: auto`：超长译文在气泡内部滚动，不会把页面撑出滚动条；
- * - 与 toast 不同，气泡**必须可交互**（复制/朗读按钮），所以没有 `pointer-events: none`；
+ * - 与 toast 不同，气泡**必须可交互**（复制按钮、小气泡上的「翻译」），所以没有 `pointer-events: none`；
  * - **无障碍**：气泡骨架**常驻**（同一次打开期间只造一次），承载译文的 `.jy-text` 挂着
  *   `role="status"`，状态变化（翻译中 → 译文 / 失败文案）只更新它的文字。
  *   为什么是这种形状、而不是"给每次新建的节点加个 aria-live"，见 createBubbleSkeleton。
@@ -21,10 +21,13 @@
  *
  * DOM 结构（shadow 内）：
  *   .jy-layer            ← 定位与 caret 的锚（气泡自己 overflow:auto 裁不了探出去的箭头）
- *     .jy-bubble         ← 表面：背景/边框/圆角/阴影/max-height、data-placement、data-state
+ *     .jy-bubble         ← 表面：背景/边框/圆角/阴影/max-height、data-placement、data-state、data-variant
  *       .jy-text         ← 译文（可选中复制），同时是常驻的 ARIA 活区（role=status）
  *       .jy-actions      ← 按钮行（没有按钮时整行不在树里）
  *         .jy-action     ← 按钮（图标 + 文案）
+ *
+ * `data-variant="chip"` 是划词的**待触发态**：一行摆下提示语与「翻译」按钮的紧凑尺寸，
+ * 配上 `hoverIntent` 之后「指针停在气泡上满延时」才换成一屏译文。定位与观感语言与 bubble 同一套。
  */
 
 /** 与给定矩形保持的间距（像素）。 */
@@ -80,15 +83,34 @@ export interface TooltipLayout extends TooltipPosition {
 export type TooltipState = 'done' | 'pending' | 'error';
 
 /** 按钮图标的名字。图标一律在 createIcon 里用 createElementNS 造出来。 */
-export type TooltipIcon = 'copy' | 'speak';
+export type TooltipIcon = 'copy' | 'translate';
 
 export interface TooltipButton {
   label: string;
-  /** 'primary' = 实心强调色的主操作（复制）；省略即半透明白底的次操作（朗读）。 */
+  /** 'primary' = 实心强调色的主操作（复制）；省略即半透明白底的次操作（小气泡上的「翻译」）。 */
   variant?: 'primary' | 'secondary';
   icon?: TooltipIcon;
   /** 点击回调；参数是按钮自身，用来就地改文案（「复制」→「已复制」）。 */
   onClick: (button: HTMLButtonElement) => void;
+}
+
+/** 气泡的一档观感尺寸：'bubble' = 承载译文那一屏；'chip' = 划词的紧凑待触发态。 */
+export type TooltipVariant = 'bubble' | 'chip';
+
+/**
+ * 悬停意图：**指针停在这个气泡上满 `delayMs` 才算数**。
+ *
+ * 为什么由浮层自己管，而不是划词那一侧挂监听：浮层知道这个气泡什么时候被换掉、什么时候被关掉
+ * （{@link hideTooltip}），而"气泡没了、计时器还在，到点偷偷发一次请求"正是这里唯一的失效形状。
+ * 它同时是一次性的（触发即摘），因为"停在上面"这件事不该有第二次。
+ */
+export interface TooltipHoverIntent {
+  /**
+   * 停留多久才触发。**必填**：延时是这个机制的全部语义，浮层不替调用方留一个默认值
+   * （划词那一侧的 `DEFAULT_HOVER_DELAY_MS` 才是唯一的一份读数）。
+   */
+  delayMs: number;
+  onTrigger: () => void;
 }
 
 export interface TooltipContent {
@@ -97,6 +119,10 @@ export interface TooltipContent {
   /** 视觉状态；省略即普通译文。 */
   state?: TooltipState;
   buttons?: TooltipButton[];
+  /** 观感档位；省略即 'bubble'（译文那一屏的尺寸一个字没变）。 */
+  variant?: TooltipVariant;
+  /** 悬停意图；省略即普通气泡——指针在它上进进出出什么都不做。 */
+  hoverIntent?: TooltipHoverIntent;
 }
 
 const HOST_ID = 'jy-tooltip';
@@ -112,10 +138,16 @@ const ICONS: Record<TooltipIcon, ReadonlyArray<{ tag: string; attrs: Record<stri
     { tag: 'rect', attrs: { x: '9', y: '9', width: '12', height: '12', rx: '2' } },
     { tag: 'path', attrs: { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' } },
   ],
-  // 朗读：喇叭 + 一道声波。
-  speak: [
-    { tag: 'path', attrs: { d: 'M11 5 6 9H2v6h6l5 4z' } },
-    { tag: 'path', attrs: { d: 'M15.54 8.46a5 5 0 0 1 0 7.07' } },
+  // 翻译：左半「文」、右半「A」——14px 上唯一还认得出来的"翻成另一种文字"画法。
+  translate: [
+    // 「文」：丶、一、撇、捺。
+    { tag: 'path', attrs: { d: 'M8.4 4 9.9 5.9' } },
+    { tag: 'path', attrs: { d: 'M3.4 9.2h9.8' } },
+    { tag: 'path', attrs: { d: 'M9.5 10.4 3.7 20' } },
+    { tag: 'path', attrs: { d: 'M7.8 13.2 13 20' } },
+    // 「A」：一撇一捺 + 横梁。
+    { tag: 'path', attrs: { d: 'M14.5 20 17.6 10.6 20.7 20' } },
+    { tag: 'path', attrs: { d: 'M15.7 16.4h3.8' } },
   ],
 };
 
@@ -225,13 +257,34 @@ const TOOLTIP_CSS = `
     -webkit-user-select: text;
   }
 
+  /* 划词的小气泡（待触发态）：提示语与「翻译」按钮挤成一行，内边距比译文那一屏紧。
+     只改尺寸与排版，表面/边框/阴影/caret 全部沿用上面 .jy-bubble 那一档——
+     两屏是同一个东西的两种状态，不是两种控件。
+     排在 pending / error 之前：万一两者同时命中，状态色赢（提示语不该盖掉失败文案的红）。 */
+  .jy-bubble[data-variant="chip"] {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+  }
+
+  /* 提示语是入口的说明，不是结论：次级色 + 比译文小一号。 */
+  .jy-bubble[data-variant="chip"] .jy-text {
+    color: var(--jy-text-2);
+    font-size: 12px;
+  }
+
+  .jy-bubble[data-variant="chip"] .jy-actions {
+    margin-top: 0;
+  }
+
   /* 翻译中：降饱和的次级色 + 轻微脉冲（这一屏只有一行字，呼吸比转圈合适）。 */
   .jy-bubble[data-state="pending"] .jy-text {
     color: var(--jy-text-2);
     animation: jy-pulse 1.4s ease-in-out infinite;
   }
 
-  /* 失败：深底上提亮过的红，是**文字**不是按钮（失败态没有可复制/朗读的东西）。 */
+  /* 失败：深底上提亮过的红，是**文字**不是按钮（失败态没有可复制的东西）。 */
   .jy-bubble[data-state="error"] .jy-text {
     color: var(--jy-danger);
   }
@@ -264,7 +317,7 @@ const TOOLTIP_CSS = `
     border: 1px solid transparent;
     border-radius: var(--jy-radius-sm);
     cursor: pointer;
-    /* 次按钮（朗读）：半透明白底 + 一道描边。 */
+    /* 次按钮（小气泡上的「翻译」）：半透明白底 + 一道描边。 */
     color: var(--jy-text);
     background: rgba(255, 255, 255, 0.1);
     border-color: var(--jy-border-strong);
@@ -346,6 +399,50 @@ let listeners: Listeners | null = null;
  * 用 WeakMap 就不存在"上一代气泡的回调泄漏"这回事。
  */
 let buttonHandlers = new WeakMap<HTMLButtonElement, (button: HTMLButtonElement) => void>();
+
+/**
+ * 当前这一屏的悬停意图；`null` = 这一屏不吃悬停。
+ * 它与 `host` 同生命周期（{@link hideTooltip} 一律清空），但**不**与 `showTooltip` 同生命周期：
+ * 同一个气泡从 chip 换成 pending 那一屏时，意图必须当场作废（见 {@link armHoverIntent}）。
+ */
+let hoverIntent: TooltipHoverIntent | null = null;
+let intentTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearIntentTimer(): void {
+  if (intentTimer === null) return;
+  clearTimeout(intentTimer);
+  intentTimer = null;
+}
+
+/**
+ * 换一屏内容 = 换一次悬停语义：先无条件作废上一代还没到点的计时器，再决定这一屏的意图。
+ * 「气泡已经关了/已经换成译文了，计时器却还在跑」在这里是唯一会偷偷烧用户额度的路径。
+ */
+function armHoverIntent(next: TooltipHoverIntent | undefined): void {
+  clearIntentTimer();
+  hoverIntent = next ?? null;
+}
+
+function onHostPointerenter(event: PointerEvent): void {
+  /**
+   * **只认真实指针**（与划词的 mouseup、悬停的 mouseover 同一道闸门、同一套理由）：
+   * 浮层是 open shadow，页面脚本摸得到宿主，合成一个 pointerenter 就能替用户"停在气泡上"，
+   * 带着用户的 Key 去打用户付费的引擎。{@link TooltipHoverIntent} 的全部意义是"用户自己停上来"。
+   */
+  if (!event.isTrusted || hoverIntent === null || intentTimer !== null) return;
+  const intent = hoverIntent;
+  intentTimer = setTimeout(() => {
+    intentTimer = null;
+    // 一次性：触发过就不再挂第二次意图（译文已经在路上了，指针反复进出不该反复请求）。
+    hoverIntent = null;
+    intent.onTrigger();
+  }, intent.delayMs);
+}
+
+/** 指针移出宿主：取消还没到点的计时（但保留意图，让用户能重新停上来）。 */
+function onHostPointerleave(): void {
+  clearIntentTimer();
+}
 
 /**
  * 定位规则（纯函数，尺寸由调用方测量后传入，方便在 jsdom 下测——那边量出来恒为 0）：
@@ -472,6 +569,7 @@ function createBubbleSkeleton(): BubbleParts {
 /** 把内容写进骨架：只改属性与文字，**绝不换节点**（换节点＝活区收不到变化）。 */
 function renderBubble(parts: BubbleParts, content: TooltipContent): void {
   parts.bubble.setAttribute('data-state', content.state ?? 'done');
+  parts.bubble.setAttribute('data-variant', content.variant ?? 'bubble');
   // 只在文字真的变了时才写：同一段反复进入（缓存命中）拿到的是同一份译文，
   // 再写一遍等于又制造一次活区变化，读屏会重复念同一句话。
   if (parts.text.textContent !== content.text) parts.text.textContent = content.text;
@@ -545,6 +643,10 @@ function ensureHost(): { node: HTMLElement; style: HTMLStyleElement; parts: Bubb
   shadow.append(style, parts.layer);
   // 委托挂在 host 本身：气泡内容每次重建，接线却只有这一份。
   created.addEventListener('click', onHostClick);
+  // 悬停意图同样挂在 host 上，与宿主同生共死（hideTooltip 丢掉节点就带走了这两个监听）。
+  // 用 enter/leave 而不是 over/out：指针在 shadow 内部的元素之间移动不该被当成"离开又回来"。
+  created.addEventListener('pointerenter', onHostPointerenter);
+  created.addEventListener('pointerleave', onHostPointerleave);
   host = created;
   skeleton = parts;
   return { node: created, style, parts };
@@ -566,7 +668,7 @@ function detachListeners(): void {
 /**
  * 显示/刷新气泡（单例：同一时刻只存在一个，重复调用是替换内容与位置）。
  * 打开期间挂三种关闭途径：点外部（pointerdown 捕获）、Escape、页面滚动（捕获阶段）；
- * hide() 时全部摘掉。
+ * hide() 时全部摘掉。`content.hoverIntent` 每一屏重新起算（见 {@link armHoverIntent}）。
  */
 export function showTooltip(rect: TooltipRect, content: TooltipContent): void {
   const { node, style, parts } = ensureHost();
@@ -577,6 +679,7 @@ export function showTooltip(rect: TooltipRect, content: TooltipContent): void {
   // 首次显示、以及被外部（测试清理、扩展热更）摘掉后再显示：一律确保它真的在树上。
   if (!node.isConnected) document.documentElement.append(node);
   renderBubble(parts, content);
+  armHoverIntent(content.hoverIntent);
 
   const size = measure(node);
   const layout = layoutTooltip(rect, size, viewportSize());
@@ -607,6 +710,8 @@ export function showTooltip(rect: TooltipRect, content: TooltipContent): void {
 /** 关闭气泡并摘掉全部监听；没有气泡时是空操作。 */
 export function hideTooltip(): void {
   detachListeners();
+  // 未到点的悬停意图必须在这里一起作废：气泡都没了还留着计时器，到点就是一次没人要的请求。
+  armHoverIntent(undefined);
   if (host === null) return;
   host.remove();
   host = null;
@@ -619,4 +724,15 @@ export function hideTooltip(): void {
 /** 当前是否有气泡打开着。 */
 export function isTooltipVisible(): boolean {
   return host !== null;
+}
+
+/**
+ * 这次事件的落点在不在浮层里（含 shadow 内部的那些节点）。
+ *
+ * 给入口闸门用：浮层里的按钮被按下再抬起时，页面上**上一次划的选区还在**，只看选区的判据
+ * 会把这一下当成"又划了一次词"。而 `composedPath` 是唯一可靠的落点信号——它在 shadow 边界
+ * 上会把宿主节点放进路径里，`closest()` 做不到（见 selection.ts 的 isOwnOverlay 同一话题）。
+ */
+export function isEventInTooltip(event: Event): boolean {
+  return host !== null && event.composedPath().includes(host);
 }

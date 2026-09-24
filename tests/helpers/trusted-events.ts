@@ -37,6 +37,9 @@ const FLIPPED_TYPES = [
   'mousedown',
   'pointerdown',
   'mouseover',
+  // 划词小气泡的悬停意图同样只认真实指针（tooltip.ts 的 hoverIntent）。
+  'pointerenter',
+  'pointerleave',
   'keydown',
   'keyup',
   // 诊断模式（Alt+Shift+点击）也走同一个 isTrusted 闸门，见 content/diagnose.ts。

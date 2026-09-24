@@ -1,7 +1,7 @@
 // src/content/selection.ts
 import { normalizeText } from '../core/lang';
 import { isEditable } from './extractor';
-import { hideTooltip, isTooltipVisible, setActionLabel, showTooltip, type TooltipRect } from './tooltip';
+import { hideTooltip, isEventInTooltip, isTooltipVisible, setActionLabel, showTooltip, type TooltipRect } from './tooltip';
 import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './inline-types';
 
 /**
@@ -9,16 +9,29 @@ import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './i
  *
  * 与悬停共用 {@link tooltip} 的 fixed 浮层：挂在 `document.documentElement` 上、
  * `data-jy-root` 标记、所有文字 `textContent` 写入——对页面内容零插入、零样式注入。
- * 鼠标划词（mouseup）与右键菜单（`MSG.TRANSLATE_SELECTION`）走**同一条路径**。
+ * 鼠标划词（mouseup）与右键菜单（`MSG.TRANSLATE_SELECTION`）共用同一份选区读取与渲染，
+ * 但**触发是两段式的、只管鼠标那一条**：左键划词只弹一个紧凑小气泡（chip，零请求），
+ * 指针停在上面满延时、或点小气泡上的「翻译」按钮，才发第一次请求。中间这一步不是装饰——
+ * 一划中就翻，等于把拖选时带上的半句、错行、整段照发；多出来的那一次停留，
+ * 就是"这段真是你要翻的吗"。右键菜单仍**立刻翻**（那是用户逐次明确的动作）。
  */
 
 /** 设计文档 §4.2：长度 1~2000 字符才触发。上限防的是把整页正文一次性送去接口。 */
 const MAX_CHARS = 2000;
 
+/**
+ * 指针在小气泡上停多久之后才发请求：快速划过时一次都不该发。
+ * 与悬停翻译的 `DEFAULT_DELAY_MS` 同一套理由，取值更短——这次指针是**故意**移到气泡上的。
+ */
+const DEFAULT_HOVER_DELAY_MS = 150;
+
+/** 小气泡上那行提示语：说明这个入口怎么用（悬停是隐形的，不写出来没人会发现）。 */
+const CHIP_HINT = '悬停或点击翻译';
+
 export interface SelectionDeps {
   translate: InlineTranslator;
-  /** 朗读用的语言：当前目标语言。取函数是因为设置可能中途被改。 */
-  targetLang: () => string;
+  /** 测试可以缩短停留时长；生产用默认值（仿 hover.ts 的 delayMs 体例）。 */
+  hoverDelayMs?: number;
 }
 
 export interface SelectionController {
@@ -92,19 +105,6 @@ function readSelection(): { text: string; rect: TooltipRect } | null {
   return { text, rect: rectFromRange(range) };
 }
 
-function speak(text: string, lang: string): void {
-  const synthesis = window.speechSynthesis;
-  // 老引擎/测试环境可能整段缺席：没有语音通道就什么都不做（按钮不做 Promise 状态可观察，
-  // 这条路径没有可靠的失败信号可显示，静默是这里唯一不撒谎的选择——朗读本身是锦上添花）。
-  if (synthesis === undefined || typeof SpeechSynthesisUtterance !== 'function') return;
-  // 重新划词/换段时先停下上一段：两段语音叠着念不是"朗读"。
-  synthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  // 设计文档 §4.2：用当前目标语言念，而不是让引擎按原文语种猜。
-  utterance.lang = lang;
-  synthesis.speak(utterance);
-}
-
 /**
  * 复制译文。分层守卫不管 src/content，这里用 `navigator` 是正当的：
  * 剪贴板是用户点「复制」这一动作的直接后果，没有别的通道可走。
@@ -129,37 +129,43 @@ function copyTranslation(text: string, button: HTMLButtonElement): void {
 }
 
 export function createSelectionTranslator(deps: SelectionDeps): SelectionController {
+  const delayMs = deps.hoverDelayMs ?? DEFAULT_HOVER_DELAY_MS;
   let enabled = false;
   let generation = 0;
 
-  function bubble(rect: TooltipRect, translation: InlineTranslation): void {
+  /** 第三屏：译文 + 唯一的实心主按钮「复制」。失败态只有错误文案，不挂按钮（没东西可复制）。 */
+  function showTranslation(rect: TooltipRect, translation: InlineTranslation): void {
     if (translation.ok) {
       showTooltip(rect, {
         text: translation.text,
         buttons: [
-          // 复制是这一屏唯一的实心强调色按钮（主操作），朗读是半透明白底的次操作。
           {
             label: '复制',
             variant: 'primary',
             icon: 'copy',
             onClick: (button) => copyTranslation(translation.text, button),
           },
-          { label: '朗读', icon: 'speak', onClick: () => speak(translation.text, deps.targetLang()) },
         ],
       });
       return;
     }
-    // 后台/网络失败：气泡里显示错误文案，不静默（失败态没有可复制/朗读的东西，不挂按钮）。
+    // 后台/网络失败：气泡里显示错误文案，不静默（失败态没有可复制的东西，不挂按钮）。
     showTooltip(rect, { text: translation.message, state: 'error' });
   }
 
-  function run(text: string, rect: TooltipRect): void {
-    const mine = ++generation;
+  /**
+   * 第二段：发出那一次请求。
+   *
+   * `generation` 由调用方决定：小气泡那一条沿用**弹出它的那一代**（停留与请求属于同一次划词），
+   * 右键菜单那一条自己先推进一代（见 {@link translateNow}）。
+   */
+  function sendRequest(text: string, rect: TooltipRect): void {
+    const mine = generation;
     showTooltip(rect, { text: PENDING_TEXT, state: 'pending' });
     const present = (result: InlineTranslation): void => {
       // 更新的划词/还原已经发生，或用户已把气泡关掉（点外部/Escape/滚动）：结论丢弃。
       if (mine !== generation || !isTooltipVisible()) return;
-      bubble(rect, result);
+      showTranslation(rect, result);
     };
     void deps.translate(text).then(
       present,
@@ -170,6 +176,35 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
         });
       },
     );
+  }
+
+  /**
+   * 第一段：只弹小气泡，零请求。进第二段有两条路——指针停在上面满延时（`hoverIntent`，
+   * 机制住在浮层里），或点上面那个「翻译」按钮（纯悬停对键盘用户是死路，这是确定入口）。
+   */
+  function showChip(text: string, rect: TooltipRect): void {
+    const mine = ++generation;
+    /**
+     * 世代不等 ⇒ 这一次停留属于**已经被换掉的那个小气泡**（换选区、页面还原 `reset()` 都算——
+     * 后者故意不关气泡，只推进世代）。浮层那一侧另有一层一次性保护：触发过就把意图摘掉，
+     * 指针再进再出也不会补发第二次。
+     */
+    const fire = (): void => {
+      if (mine !== generation) return;
+      sendRequest(text, rect);
+    };
+    showTooltip(rect, {
+      text: CHIP_HINT,
+      variant: 'chip',
+      buttons: [{ label: '翻译', icon: 'translate', onClick: fire }],
+      hoverIntent: { delayMs, onTrigger: fire },
+    });
+  }
+
+  /** 立刻翻译：不经过小气泡。右键菜单的每一项都是用户逐次明确的动作，不该再问第二次。 */
+  function translateNow(text: string, rect: TooltipRect): void {
+    generation += 1;
+    sendRequest(text, rect);
   }
 
   function onMouseup(event: MouseEvent): void {
@@ -183,9 +218,20 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
     if (!event.isTrusted) return;
     // 只认主键：右键的 mouseup 属于上下文菜单，走菜单消息那条路径，不该在这里抢跑。
     if (event.button !== 0) return;
+    /**
+     * 落点在插件自己的浮层里 ⇒ 这是"按了浮层上的按钮"，不是"又划了一次词"。
+     *
+     * 少了这道判断，真机上两个按钮都是死的：按下「翻译」/「复制」时页面上的选区还在，
+     * `readSelection` 一律放行 → 这里重开一个小气泡 → `renderBubble` 把**刚被按下的那个节点**
+     * 从文档里换掉 → Chrome 不再为这一对按下/抬起合成 click（按下与抬起的目标已断开）。
+     * 实测形状：mousedown/mouseup 都带正确的 composedPath 到了按钮，click 永远不来。
+     * jsdom 会把手发的 click 打进已脱离的节点，所以这条只在真机暴露——单测里钉的是
+     * "被按下的按钮还在文档里"（selection.test.ts 同名那组）。
+     */
+    if (isEventInTooltip(event)) return;
     const selection = readSelection();
     if (selection === null) return;
-    run(selection.text, selection.rect);
+    showChip(selection.text, selection.rect);
   }
 
   function resetState(): void {
@@ -213,12 +259,12 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
       // 带过来的 `info.selectionText`——那是浏览器引擎报告的选择状态，不是页面投递的参数。
       const selection = readSelection();
       if (selection !== null) {
-        run(selection.text, selection.rect);
+        translateNow(selection.text, selection.rect);
         return;
       }
       const text = typeof fallbackText === 'string' ? normalizeText(fallbackText) : '';
       if (text === '' || text.length > MAX_CHARS) return;
-      run(text, viewportCenter());
+      translateNow(text, viewportCenter());
     },
     reset() {
       resetState();

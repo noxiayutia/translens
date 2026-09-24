@@ -997,7 +997,7 @@ describe('悬停/划词快捷开关', () => {
 
   it('取消勾选：写进存储，并把 APPLY_SETTINGS 推给活动标签页', async () => {
     applySettingsResponder(true);
-    await seedSettings({ hoverTranslate: true, targetLang: 'fr' });
+    await seedSettings({ hoverTranslate: true });
     await loadPopup();
 
     const { hoverToggle } = ui();
@@ -1008,7 +1008,7 @@ describe('悬停/划词快捷开关', () => {
     const pushed = chromeStub.tabs.sent
       .map(({ message }) => message as { type?: string; payload?: Record<string, unknown> })
       .find((message) => message.type === MSG.APPLY_SETTINGS);
-    expect(pushed?.payload).toEqual({ hoverTranslate: false, selectionTranslate: true, targetLang: 'fr' });
+    expect(pushed?.payload).toEqual({ hoverTranslate: false, selectionTranslate: true });
     // 只推这一条：不顺手发 TOGGLE_PAGE/TRANSLATE_PAGE，开关不该触发重译或还原。
     expect(sentTypes().filter((type) => type === MSG.APPLY_SETTINGS)).toHaveLength(1);
     expect(sentTypes().filter((type) => type === MSG.TOGGLE_PAGE || type === MSG.TRANSLATE_PAGE)).toHaveLength(0);

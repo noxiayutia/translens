@@ -510,8 +510,6 @@ async function translatePage(): Promise<void> {
   // 增量层的唯一设置来源：此后新内容一律沿用这份快照（见 translateIncremental）。
   pageSnapshot = settings;
   pageKanaSnapshot = kanaOnPage;
-  // 朗读的目标语言跟着这一轮翻译用的一次刷新（翻译请求本身不依赖它，见 translateInline）。
-  inlineTargetLang = settings.targetLang;
   finished.clear();
   failedIds.clear();
   segments = collected;
@@ -983,14 +981,10 @@ async function translateInline(text: string): Promise<InlineTranslation> {
 export interface FeatureSettings {
   hoverTranslate: boolean;
   selectionTranslate: boolean;
-  /** 可选携带：弹窗改动任何一项时都顺带报一次当前目标语言，朗读的语种跟着刷新。 */
-  targetLang?: string;
 }
 
 let hover: HoverController | null = null;
 let selection: SelectionController | null = null;
-/** 朗读语言缓存；来源同 `displayMode`——读一次设置，翻译请求本身不受它影响（见 translateInline）。 */
-let inlineTargetLang: string = DEFAULT_SETTINGS.targetLang;
 /** 上一次实际应用的两项开关：APPLY_SETTINGS 允许只带一半字段，缺的按现状保持。 */
 let appliedFeatures: { hoverTranslate: boolean; selectionTranslate: boolean } = {
   hoverTranslate: DEFAULT_SETTINGS.hoverTranslate,
@@ -1000,10 +994,7 @@ let appliedFeatures: { hoverTranslate: boolean; selectionTranslate: boolean } = 
 function controllers(): { hover: HoverController; selection: SelectionController } {
   if (hover === null || selection === null) {
     hover = createHoverTranslator({ translate: translateInline });
-    selection = createSelectionTranslator({
-      translate: translateInline,
-      targetLang: () => inlineTargetLang,
-    });
+    selection = createSelectionTranslator({ translate: translateInline });
   }
   return { hover, selection };
 }
@@ -1015,7 +1006,6 @@ function controllers(): { hover: HoverController; selection: SelectionController
  */
 export function applyFeatureSettings(next: FeatureSettings): void {
   const pair = controllers();
-  if (typeof next.targetLang === 'string' && next.targetLang !== '') inlineTargetLang = next.targetLang;
   appliedFeatures = { hoverTranslate: next.hoverTranslate, selectionTranslate: next.selectionTranslate };
   if (next.hoverTranslate) pair.hover.enable();
   else pair.hover.disable();
@@ -1028,10 +1018,7 @@ export function applyFeatureSettings(next: FeatureSettings): void {
  *  翻译路径会另行报告设置损坏。 */
 function initFeatureSettings(): void {
   void loadUiSettings().then(
-    (settings) => {
-      inlineTargetLang = settings.targetLang;
-      applyFeatureSettings(settings);
-    },
+    (settings) => applyFeatureSettings(settings),
     () => applyFeatureSettings(DEFAULT_SETTINGS),
   );
 }
@@ -1067,10 +1054,10 @@ function restorePage(): void {
 /**
  * 响应弹窗/快捷键/右键菜单的入口。
  *
- * `TRANSLATE_SELECTION`（右键菜单的"翻译选中文本"）走划词的同一条路径：内容脚本自己读
- * 选区取文本与定位，读不到就用菜单带来的 `payload.text` 兜底、视口中央定位。菜单是用户
- * 逐次明确点击的动作，所以它**不受 `selectionTranslate` 开关管辖**（那个开关只管自动的
- * mouseup 气泡）。
+ * `TRANSLATE_SELECTION`（右键菜单的"翻译选中文本"）走划词那套选区读取与气泡，但**跳过
+ * 小气泡那一段**：内容脚本自己读选区取文本与定位，读不到就用菜单带来的 `payload.text`
+ * 兜底、视口中央定位，然后当场发请求。菜单是用户逐次明确点击的动作，所以它既**不受
+ * `selectionTranslate` 开关管辖**（那个开关只管自动的 mouseup 小气泡），也不该再被问第二次。
  *
  * 带响应的分支都要兜住异常：`translatePage` 失败（设置版本高于本代码、存储坏了）时如果
  * 不响应，弹窗就会一直等到消息端口超时——用户看到的是一个没反应的按钮而不是原因。
@@ -1128,7 +1115,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       hoverTranslate: typeof raw.hoverTranslate === 'boolean' ? raw.hoverTranslate : appliedFeatures.hoverTranslate,
       selectionTranslate:
         typeof raw.selectionTranslate === 'boolean' ? raw.selectionTranslate : appliedFeatures.selectionTranslate,
-      targetLang: typeof raw.targetLang === 'string' ? raw.targetLang : undefined,
     });
     sendResponse({ ok: true });
     return false;

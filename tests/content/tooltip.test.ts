@@ -20,6 +20,7 @@ import {
   showTooltip,
 } from '../../src/content/tooltip';
 import { declarations, hasRule, type Declarations } from '../helpers/css';
+import { dispatchSynthetic, dispatchTrusted } from '../helpers/trusted-events';
 
 function host(): HTMLElement | null {
   return document.querySelector('[data-jy-tooltip]');
@@ -156,7 +157,7 @@ describe('showTooltip：DOM 纪律', () => {
     const button = buttons()[0];
     expect(button?.textContent).toBe('复制');
     // composed:true 与真实点击一致：事件要穿过 shadow 边界，才能被 host 上的委托收到。
-    button?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    if (button !== undefined) dispatchTrusted(button, new MouseEvent('click', { bubbles: true, composed: true }));
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(onClick.mock.calls[0]?.[0]).toBe(button);
   });
@@ -201,7 +202,7 @@ describe('关闭途径', () => {
     expect(host()).toBeNull();
   });
 
-  it('点气泡内部（按钮）不关闭——否则复制/朗读永远点不到', () => {
+  it('点气泡内部（按钮）不关闭——否则复制/翻译永远点不到', () => {
     showTooltip(RECT, { text: '译文', buttons: [{ label: '复制', onClick: () => {} }] });
     const button = buttons()[0] as HTMLButtonElement;
     // composed:true：真实 pointerdown 会穿过 shadow 边界到达 window 捕获监听——
@@ -303,19 +304,19 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
       text: '译文',
       buttons: [
         { label: '复制', variant: 'primary', icon: 'copy', onClick: () => {} },
-        { label: '朗读', icon: 'speak', onClick: () => {} },
+        { label: '翻译', icon: 'translate', onClick: () => {} },
       ],
     });
     return buttons();
   }
 
-  it('复制是实心强调色主按钮、朗读是半透明白底次按钮；两者仍是 <button type="button">', () => {
-    const [copy, speak] = twoButtons();
+  it('复制是实心强调色主按钮、翻译是半透明白底次按钮；两者仍是 <button type="button">', () => {
+    const [copy, translate] = twoButtons();
     expect(copy?.tagName).toBe('BUTTON');
     expect(copy?.type).toBe('button');
     expect(copy?.getAttribute('data-variant')).toBe('primary');
-    expect(speak?.tagName).toBe('BUTTON');
-    expect(speak?.getAttribute('data-variant')).toBe('secondary');
+    expect(translate?.tagName).toBe('BUTTON');
+    expect(translate?.getAttribute('data-variant')).toBe('secondary');
 
     expect(decls(':host {')['--jy-accent']).toBe('#f2efe6');
     expect(decls('.jy-action[data-variant="primary"] {')['background']).toBe('var(--jy-accent)');
@@ -340,8 +341,8 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
 
   it('每个按钮前面一个内联 SVG 图标：14×14、currentColor、纯装饰、排在标签之前', () => {
     const rendered = twoButtons();
-    // 复制是两个方框（rect + path），朗读是喇叭 + 声波（path + path）。
-    const shapesPerIcon = [2, 2];
+    // 复制是两个方框（rect + path），翻译是「文」+「A」两半（文 4 笔 + A 的撇捺与横）。
+    const shapesPerIcon = [2, 6];
 
     rendered.forEach((button, index) => {
       const svg = button.querySelector('svg');
@@ -368,27 +369,27 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
     const button = buttons()[0] as HTMLButtonElement;
     const svg = button.querySelector('svg') as SVGElement;
     // composed:true：真实点击落在 shadow 里的图标上，照样要穿过边界到 host 的委托。
-    svg.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    dispatchTrusted(svg, new MouseEvent('click', { bubbles: true, composed: true }));
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(onClick.mock.calls[0]?.[0]).toBe(button);
   });
 
   it('两个按钮各自回调、互不串台', () => {
     const copy = vi.fn();
-    const speak = vi.fn();
+    const translate = vi.fn();
     showTooltip(RECT, {
       text: '译文',
       buttons: [
         { label: '复制', variant: 'primary', icon: 'copy', onClick: copy },
-        { label: '朗读', icon: 'speak', onClick: speak },
+        { label: '翻译', icon: 'translate', onClick: translate },
       ],
     });
 
     const [first, second] = buttons();
-    first?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-    second?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    if (first !== undefined) dispatchTrusted(first, new MouseEvent('click', { bubbles: true, composed: true }));
+    if (second !== undefined) dispatchTrusted(second, new MouseEvent('click', { bubbles: true, composed: true }));
     expect(copy).toHaveBeenCalledTimes(1);
-    expect(speak).toHaveBeenCalledTimes(1);
+    expect(translate).toHaveBeenCalledTimes(1);
   });
 
   it('改文案走 setActionLabel：图标留下、只换标签（直接写 textContent 会把图标抹掉）', () => {
@@ -400,7 +401,7 @@ describe('按钮：主操作实心、次操作半透明，都带内联 SVG 图�
     });
 
     const button = buttons()[0] as HTMLButtonElement;
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    dispatchTrusted(button, new MouseEvent('click', { bubbles: true, composed: true }));
 
     expect(button.textContent).toBe('已复制');
     expect(button.querySelector('svg')).not.toBeNull();
@@ -626,5 +627,202 @@ describe('无障碍：状态变化能被播报（常驻活区）', () => {
     expect(second).not.toBe(first);
     expect(first?.isConnected).toBe(false);
     expect(second?.textContent).toBe('第二段');
+  });
+});
+
+/**
+ * 划词的两段式触发：第一段是**紧凑小气泡（chip）**，指针停在它上面满延时才发请求。
+ * 悬停机制放在浮层这一侧，因为只有它拥有监听器的生老病死（见下面 hideTooltip 那条）。
+ */
+describe('chip 变体：紧凑小气泡（.jy-bubble[data-variant]）', () => {
+  it('不写 variant 就是 bubble；写 chip 才落到 chip（悬停翻译与译文态一个字没变）', () => {
+    showTooltip(RECT, { text: '译文' });
+    expect(bubbleNode()?.getAttribute('data-variant')).toBe('bubble');
+
+    showTooltip(RECT, { text: '译文', variant: 'chip' });
+    expect(bubbleNode()?.getAttribute('data-variant')).toBe('chip');
+  });
+
+  it('chip 的尺寸：一行摆下提示语与按钮，内边距比译文气泡紧', () => {
+    showTooltip(RECT, { text: '悬停或点击翻译', variant: 'chip' });
+
+    const chip = decls('.jy-bubble[data-variant="chip"] {');
+    expect(chip['display']).toBe('flex');
+    expect(chip['align-items']).toBe('center');
+    expect(chip['gap']).toBe('8px');
+    expect(chip['padding']).toBe('6px 8px');
+    // 按钮行本来带着 10px 上边距（译文气泡里它在文字下方）；同一行了就得归零。
+    expect(decls('.jy-bubble[data-variant="chip"] .jy-actions {')['margin-top']).toBe('0');
+    // 译文那一档不跟着变：紧尺寸只属于 chip。
+    expect(decls('.jy-bubble {')['padding']).toBe('12px 14px');
+    expect(decls('.jy-actions {')['margin-top']).toBe('10px');
+  });
+
+  it('chip 里的提示语是次级色小字：它是入口的说明，不是结论', () => {
+    showTooltip(RECT, { text: '悬停或点击翻译', variant: 'chip' });
+
+    const text = decls('.jy-bubble[data-variant="chip"] .jy-text {');
+    expect(text['color']).toBe('var(--jy-text-2)');
+    expect(text['font-size']).toBe('12px');
+  });
+
+  it('translate 图标：createElementNS 造出来的 24 视框描边图形，纯装饰', () => {
+    showTooltip(RECT, { text: '翻译', buttons: [{ label: '翻译', icon: 'translate', onClick: () => {} }] });
+
+    const svg = buttons()[0]?.querySelector('svg') as SVGElement;
+    expect(svg).not.toBeNull();
+    expect(svg.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    expect(svg.getAttribute('viewBox')).toBe('0 0 24 24');
+    expect(svg.getAttribute('stroke')).toBe('currentColor');
+    expect(svg.getAttribute('aria-hidden')).toBe('true');
+    expect(buttons()[0]?.firstElementChild).toBe(svg);
+    // 六条笔画全部由 createElementNS 造出来：没有一个字符串被当成标记解析。
+    const shapes = Array.from(svg.querySelectorAll('*'));
+    for (const shape of shapes) {
+      expect(shape.namespaceURI).toBe('http://www.w3.org/2000/svg');
+      expect(shape.tagName.toLowerCase()).toBe('path');
+    }
+    expect(shapes.length).toBeGreaterThan(1);
+  });
+});
+
+describe('hoverIntent：指针停在气泡上满延时才触发', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const DELAY = 150;
+
+  function hostNode(): HTMLElement {
+    const node = host();
+    if (node === null) throw new Error('没有气泡宿主');
+    return node;
+  }
+
+  /** 指针进入/离开气泡。真实手势与合成事件走同一条派发路径，唯一区别是 isTrusted。 */
+  function pointerEnter(type: 'pointerenter' | 'pointerleave' = 'pointerenter', trusted = true): void {
+    const event = new MouseEvent(type);
+    if (trusted) dispatchTrusted(hostNode(), event);
+    else dispatchSynthetic(hostNode(), event);
+  }
+
+  function withIntent(onTrigger = vi.fn()) {
+    showTooltip(RECT, { text: '悬停或点击翻译', variant: 'chip', hoverIntent: { delayMs: DELAY, onTrigger } });
+    return onTrigger;
+  }
+
+  it('进入后满延时触发一次', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    expect(onTrigger).not.toHaveBeenCalled(); // 差 1ms 也不算"停住了"
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('延时未到就离开：取消，之后到点也不触发', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    pointerEnter('pointerleave');
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(onTrigger).not.toHaveBeenCalled();
+  });
+
+  it('离开再回来：重新起算，且只有一个计时器', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(100);
+    pointerEnter('pointerleave');
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(onTrigger).not.toHaveBeenCalled(); // 第二次进入还差 50ms
+    await vi.advanceTimersByTimeAsync(50);
+    expect(onTrigger).toHaveBeenCalledTimes(1); // 不是两次：没有计时器叠加
+  });
+
+  it('触发是一次性的：离开再回来不再触发第二次（译文已经出来了，不该再烧一次额度）', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+
+    pointerEnter('pointerleave');
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('hideTooltip 清掉未到点的计时器：气泡关了还"到点"就是偷偷烧额度', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    hideTooltip();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(onTrigger).not.toHaveBeenCalled();
+  });
+
+  it('把内容换成不带意图的一屏（pending / 译文）：上一代的计时当场作废', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    showTooltip(RECT, { text: '翻译中…', state: 'pending' });
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(onTrigger).not.toHaveBeenCalled();
+  });
+
+  it('安全闸门：合成 pointerenter（isTrusted=false）不触发——页面脚本不能替用户停在气泡上', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter('pointerenter', false);
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(onTrigger).not.toHaveBeenCalled();
+  });
+
+  it('成对断言：同一处监听器，真实手势的 pointerenter 照常触发（证明上一条不是"永远拒绝"）', async () => {
+    const onTrigger = withIntent();
+
+    pointerEnter('pointerenter', true);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('没带 hoverIntent 的普通气泡：进进出出什么都不发生（悬停翻译的移出保留不受影响）', async () => {
+    showTooltip(RECT, { text: '译文' });
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    pointerEnter('pointerleave');
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+
+    expect(isTooltipVisible()).toBe(true);
+    expect(bubbleText()).toBe('译文');
+  });
+
+  it('计时器不因反复开合而泄漏：关闭再打开，只有新一代的那一次会触发', async () => {
+    const first = withIntent();
+    pointerEnter();
+    hideTooltip();
+
+    const second = vi.fn();
+    showTooltip(RECT, { text: '第二段', variant: 'chip', hoverIntent: { delayMs: DELAY, onTrigger: second } });
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled(); // 新一代也还没被指针进入过
+
+    pointerEnter();
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(second).toHaveBeenCalledTimes(1);
   });
 });
