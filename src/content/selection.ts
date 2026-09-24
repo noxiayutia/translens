@@ -11,7 +11,7 @@ import { PENDING_TEXT, type InlineTranslation, type InlineTranslator } from './i
  * `data-jy-root` 标记、所有文字 `textContent` 写入——对页面内容零插入、零样式注入。
  * 鼠标划词（mouseup）与右键菜单（`MSG.TRANSLATE_SELECTION`）共用同一份选区读取与渲染，
  * 但**触发是两段式的、只管鼠标那一条**：左键划词只弹一个紧凑小气泡（chip，零请求），
- * 指针停在上面满延时、或点小气泡上的「翻译」按钮，才发第一次请求。中间这一步不是装饰——
+ * 指针在上面动一下并停满延时、或点这颗圆点，才发第一次请求。中间这一步不是装饰——
  * 一划中就翻，等于把拖选时带上的半句、错行、整段照发；多出来的那一次停留，
  * 就是"这段真是你要翻的吗"。右键菜单仍**立刻翻**（那是用户逐次明确的动作）。
  */
@@ -25,8 +25,8 @@ const MAX_CHARS = 2000;
  */
 const DEFAULT_HOVER_DELAY_MS = 150;
 
-/** 小气泡上那行提示语：说明这个入口怎么用（悬停是隐形的，不写出来没人会发现）。 */
-const CHIP_HINT = '悬停或点击翻译';
+/** 圆点的无障碍名：屏幕上它一个字都没有，读屏与键盘用户只有这一个名字。 */
+const CHIP_BUTTON_LABEL = '翻译选中的文字';
 
 export interface SelectionDeps {
   translate: InlineTranslator;
@@ -180,7 +180,7 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
 
   /**
    * 第一段：只弹小气泡，零请求。进第二段有两条路——指针停在上面满延时（`hoverIntent`，
-   * 机制住在浮层里），或点上面那个「翻译」按钮（纯悬停对键盘用户是死路，这是确定入口）。
+   * 机制住在浮层里），或点这颗圆点本身（纯悬停对键盘用户是死路，这是确定入口）。
    */
   function showChip(text: string, rect: TooltipRect): void {
     const mine = ++generation;
@@ -194,9 +194,12 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
       sendRequest(text, rect);
     };
     showTooltip(rect, {
-      text: CHIP_HINT,
+      // 圆点上没有任何文字：.jy-text 留空（它仍是常驻活区，节点不换；空活区不播报）。
+      text: '',
       variant: 'chip',
-      buttons: [{ label: '翻译', icon: 'translate', onClick: fire }],
+      // 整个圆点就是这一个按钮（primary：它是这一屏唯一的实心强调色），iconOnly 让 label
+      // 只当无障碍名、不上屏。
+      buttons: [{ label: CHIP_BUTTON_LABEL, variant: 'primary', icon: 'translate', iconOnly: true, onClick: fire }],
       hoverIntent: { delayMs, onTrigger: fire },
     });
   }
@@ -221,7 +224,7 @@ export function createSelectionTranslator(deps: SelectionDeps): SelectionControl
     /**
      * 落点在插件自己的浮层里 ⇒ 这是"按了浮层上的按钮"，不是"又划了一次词"。
      *
-     * 少了这道判断，真机上两个按钮都是死的：按下「翻译」/「复制」时页面上的选区还在，
+     * 少了这道判断，真机上两个按钮都是死的：按下圆点 /「复制」时页面上的选区还在，
      * `readSelection` 一律放行 → 这里重开一个小气泡 → `renderBubble` 把**刚被按下的那个节点**
      * 从文档里换掉 → Chrome 不再为这一对按下/抬起合成 click（按下与抬起的目标已断开）。
      * 实测形状：mousedown/mouseup 都带正确的 composedPath 到了按钮，click 永远不来。

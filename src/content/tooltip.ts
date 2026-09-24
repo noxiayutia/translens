@@ -9,7 +9,7 @@
  * - 带 `data-jy-root` 标记，采集端（extractor）会把整棵子树跳过，不会被二次翻译；
  * - 所有来自接口的文字一律 `textContent` 写入，禁止 innerHTML（引擎返回内容不可信）；
  * - `max-height` + `overflow: auto`：超长译文在气泡内部滚动，不会把页面撑出滚动条；
- * - 与 toast 不同，气泡**必须可交互**（复制按钮、小气泡上的「翻译」），所以没有 `pointer-events: none`；
+ * - 与 toast 不同，气泡**必须可交互**（译文屏的「复制」、划词的圆点），所以没有 `pointer-events: none`；
  * - **无障碍**：气泡骨架**常驻**（同一次打开期间只造一次），承载译文的 `.jy-text` 挂着
  *   `role="status"`，状态变化（翻译中 → 译文 / 失败文案）只更新它的文字。
  *   为什么是这种形状、而不是"给每次新建的节点加个 aria-live"，见 createBubbleSkeleton。
@@ -26,8 +26,9 @@
  *       .jy-actions      ← 按钮行（没有按钮时整行不在树里）
  *         .jy-action     ← 按钮（图标 + 文案）
  *
- * `data-variant="chip"` 是划词的**待触发态**：一行摆下提示语与「翻译」按钮的紧凑尺寸，
- * 配上 `hoverIntent` 之后「指针停在气泡上满延时」才换成一屏译文。定位与观感语言与 bubble 同一套。
+ * `data-variant="chip"` 是划词的**待触发态**：一颗 30px 的纯图标圆点，屏幕上没有任何文字
+ * （名字只在 `aria-label` 里）。整个圆点就是那个 button，配上 `hoverIntent` 之后
+ * 「指针移上来并停满延时」才换成一屏译文。定位与观感语言与 bubble 同一套。
  */
 
 /** 与给定矩形保持的间距（像素）。 */
@@ -87,9 +88,16 @@ export type TooltipIcon = 'copy' | 'translate';
 
 export interface TooltipButton {
   label: string;
-  /** 'primary' = 实心强调色的主操作（复制）；省略即半透明白底的次操作（小气泡上的「翻译」）。 */
+  /** 'primary' = 实心强调色的主操作；省略即半透明白底的次操作。 */
   variant?: 'primary' | 'secondary';
   icon?: TooltipIcon;
+  /**
+   * 纯图标按钮：**`label` 不上屏，只当无障碍名**（写进 `aria-label`）。
+   *
+   * 划词的圆点用它——那颗点上屏幕一个可见文字都没有，读屏与键盘用户拿到的名字仍然完整。
+   * 图标自己是 `aria-hidden` 的装饰（见 createIcon），所以名字只有一份，不会被念两遍。
+   */
+  iconOnly?: boolean;
   /** 点击回调；参数是按钮自身，用来就地改文案（「复制」→「已复制」）。 */
   onClick: (button: HTMLButtonElement) => void;
 }
@@ -258,25 +266,38 @@ const TOOLTIP_CSS = `
     -webkit-user-select: text;
   }
 
-  /* 划词的小气泡（待触发态）：提示语与「翻译」按钮挤成一行，内边距比译文那一屏紧。
-     只改尺寸与排版，表面/边框/阴影/caret 全部沿用上面 .jy-bubble 那一档——
-     两屏是同一个东西的两种状态，不是两种控件。
-     排在 pending / error 之前：万一两者同时命中，状态色赢（提示语不该盖掉失败文案的红）。 */
+  /* 划词的小气泡（待触发态）：一颗纯图标的圆点，屏幕上没有任何文字。
+     整个圆点就是那个 button（气泡零内边距 + 按钮撑满），所以"点小气泡"与"点那颗按钮"是
+     同一件事——委托层的 isTrusted 闸门与悬停判据一行都不用改。
+     表面/边框/阴影沿用上面 .jy-bubble 那一档：两屏是同一个东西的两种状态，不是两种控件。 */
   .jy-bubble[data-variant="chip"] {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
+    padding: 0;
+    border-radius: 999px;
   }
 
-  /* 提示语是入口的说明，不是结论：次级色 + 比译文小一号。 */
-  .jy-bubble[data-variant="chip"] .jy-text {
-    color: var(--jy-text-2);
-    font-size: 12px;
-  }
-
+  /* 按钮行本来带着 10px 上边距（译文气泡里它在文字下方）；圆点里必须归零，否则点会偏下。 */
   .jy-bubble[data-variant="chip"] .jy-actions {
     margin-top: 0;
+  }
+
+  .jy-bubble[data-variant="chip"] .jy-action {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 999px;
+  }
+
+  /* 图标是圆点上唯一的图形，放大一号才压得住 30px 的圆。 */
+  .jy-bubble[data-variant="chip"] .jy-action-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* 圆点不画 caret：圆形没有一条直边给箭头落位，而它离选区只有 8px，指向已经够了。
+     万一引擎不认 :has()（Chrome 105 以下），退化成"圆点带个小箭头"——不破版，也不动定位数学。 */
+  .jy-layer:has(> .jy-bubble[data-variant="chip"])::after {
+    content: none;
   }
 
   /* 翻译中：降饱和的次级色 + 轻微脉冲（这一屏只有一行字，呼吸比转圈合适）。 */
@@ -318,7 +339,7 @@ const TOOLTIP_CSS = `
     border: 1px solid transparent;
     border-radius: var(--jy-radius-sm);
     cursor: pointer;
-    /* 次按钮（小气泡上的「翻译」）：半透明白底 + 一道描边。 */
+    /* 次按钮（默认档）：半透明白底 + 一道描边。主按钮（复制、划词圆点）见下面的 primary。 */
     color: var(--jy-text);
     background: rgba(255, 255, 255, 0.1);
     border-color: var(--jy-border-strong);
@@ -594,11 +615,17 @@ function renderBubble(parts: BubbleParts, content: TooltipContent): void {
     // 主/次只是观感差异，语义上仍是普通按钮（不能靠颜色表达可点性）。
     button.setAttribute('data-variant', entry.variant ?? 'secondary');
     if (entry.icon !== undefined) button.append(createIcon(entry.icon));
-    const label = document.createElement('span');
-    label.className = 'jy-action-label';
-    // 按钮文案虽然出自本扩展（不是引擎返回），也不破例：一律 textContent，规则只有一条。
-    label.textContent = entry.label;
-    button.append(label);
+    if (entry.iconOnly === true) {
+      // 纯图标：名字只能活在这里。没有 aria-label 的图标按钮对读屏是一个哑按钮，
+      // 而图标本身是 aria-hidden 的装饰——两者合起来等于"这个按钮没有名字"。
+      button.setAttribute('aria-label', entry.label);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'jy-action-label';
+      // 按钮文案虽然出自本扩展（不是引擎返回），也不破例：一律 textContent，规则只有一条。
+      label.textContent = entry.label;
+      button.append(label);
+    }
     buttonHandlers.set(button, entry.onClick);
     parts.actions.append(button);
   }
@@ -617,7 +644,7 @@ function onHostClick(event: Event): void {
   /**
    * **只认真实手势**（与划词的 mouseup、悬停的 mouseover、小气泡起算用的 pointermove 同一道闸门、
    * 同一套理由）：浮层是 open shadow，页面脚本摸得到宿主，也就点得到里面的按钮。而这两个按钮
-   * 一条会把文本带着用户的 Key 送去用户自己付费的引擎（「翻译」），一条会写剪贴板（「复制」）
+   * 一条会把文本带着用户的 Key 送去用户自己付费的引擎（划词的圆点），一条会写剪贴板（「复制」）
    * ——都是"后果在用户这一侧"的路径，不设闸就等于把闸门让给了页面。
    *
    * 门开在**委托这一层**（一处一套答案），所以 `TooltipButton` 的回调契约不用带上事件对象。

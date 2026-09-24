@@ -538,12 +538,13 @@ describe('验收重点：布局不变式', () => {
     mockSelection('Hello world');
     mouseup();
     await settle();
-    // 第一段：请求还没出去，页面上是一个待触发的小气泡。
+    // 第一段：请求还没出去，页面上是一颗待触发的圆点——没有可见文字，名字只在 aria-label 里。
     expect(queued).toHaveLength(0);
     expect(bubbleState()).toBe('done');
-    expect(Array.from(bubble()?.shadowRoot?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual([
-      '翻译',
-    ]);
+    const dot = bubble()?.shadowRoot?.querySelector('button') as HTMLButtonElement | null;
+    expect(dot?.textContent).toBe('');
+    expect(dot?.getAttribute('aria-label')).toBe('翻译选中的文字');
+    expect(dot?.querySelector('svg')).not.toBeNull();
 
     hoverChip();
     await afterHoverDelay();

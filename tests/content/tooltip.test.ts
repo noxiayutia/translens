@@ -662,27 +662,87 @@ describe('chip 变体：紧凑小气泡（.jy-bubble[data-variant]）', () => {
     expect(bubbleNode()?.getAttribute('data-variant')).toBe('chip');
   });
 
-  it('chip 的尺寸：一行摆下提示语与按钮，内边距比译文气泡紧', () => {
-    showTooltip(RECT, { text: '悬停或点击翻译', variant: 'chip' });
+  it('chip 是一颗圆点：气泡零内边距 + 圆角 999px，按钮撑满成 30×30 的圆', () => {
+    showTooltip(RECT, {
+      text: '',
+      variant: 'chip',
+      buttons: [{ label: '翻译选中的文字', icon: 'translate', iconOnly: true, onClick: () => {} }],
+    });
 
     const chip = decls('.jy-bubble[data-variant="chip"] {');
-    expect(chip['display']).toBe('flex');
-    expect(chip['align-items']).toBe('center');
-    expect(chip['gap']).toBe('8px');
-    expect(chip['padding']).toBe('6px 8px');
-    // 按钮行本来带着 10px 上边距（译文气泡里它在文字下方）；同一行了就得归零。
+    expect(chip['padding']).toBe('0');
+    expect(chip['border-radius']).toBe('999px');
+
+    // 整个圆点就是那个 button："点小气泡"与"点按钮"是同一件事，委托层一行都不用改。
+    const action = decls('.jy-bubble[data-variant="chip"] .jy-action {');
+    expect(action['width']).toBe('30px');
+    expect(action['height']).toBe('30px');
+    expect(action['padding']).toBe('0');
+    expect(action['justify-content']).toBe('center');
+    expect(action['border-radius']).toBe('999px');
+    expect(decls('.jy-bubble[data-variant="chip"] .jy-action-icon {')['width']).toBe('16px');
+    // 按钮行本来带着 10px 上边距（译文气泡里它在文字下方）；圆点里必须归零，否则点会偏下。
     expect(decls('.jy-bubble[data-variant="chip"] .jy-actions {')['margin-top']).toBe('0');
-    // 译文那一档不跟着变：紧尺寸只属于 chip。
+    // 三态不丢：hover / active / focus-visible 都还在基础档上，圆点没有把它们关掉。
+    expect(decls('.jy-action:hover {')['background']).toBe('rgba(255, 255, 255, 0.16)');
+    expect(decls('.jy-action:focus-visible {')['outline']).toBe('2px solid rgba(255, 255, 255, 0.85)');
+    // 译文那一档一个字没变：圆点尺寸只属于 chip。
     expect(decls('.jy-bubble {')['padding']).toBe('12px 14px');
     expect(decls('.jy-actions {')['margin-top']).toBe('10px');
   });
 
-  it('chip 里的提示语是次级色小字：它是入口的说明，不是结论', () => {
-    showTooltip(RECT, { text: '悬停或点击翻译', variant: 'chip' });
+  it('圆点不画 caret：圆形没有直边给箭头落位（:has() 不认时退化成带箭头，不破版）', () => {
+    showTooltip(RECT, { text: '', variant: 'chip' });
+    expect(decls('.jy-layer:has(> .jy-bubble[data-variant="chip"])::after {')['content']).toBe('none');
+    // 译文那一屏的箭头照旧。
+    expect(hasRule(css(), '.jy-layer::after {')).toBe(true);
+  });
 
-    const text = decls('.jy-bubble[data-variant="chip"] .jy-text {');
-    expect(text['color']).toBe('var(--jy-text-2)');
-    expect(text['font-size']).toBe('12px');
+  it('iconOnly 按钮：不上屏任何文字，名字走 aria-label，仍是可聚焦的 <button type="button">', () => {
+    const onClick = vi.fn();
+    showTooltip(RECT, {
+      text: '',
+      variant: 'chip',
+      buttons: [{ label: '翻译选中的文字', icon: 'translate', iconOnly: true, onClick }],
+    });
+
+    const button = buttons()[0] as HTMLButtonElement;
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.type).toBe('button');
+    // 可见文字为零：屏幕上一个字都没有，只有图标。
+    expect(button.textContent).toBe('');
+    expect(button.querySelector('.jy-action-label')).toBeNull();
+    // 无障碍名必须在：读屏与键盘用户靠它，图标自己是 aria-hidden 的装饰。
+    expect(button.getAttribute('aria-label')).toBe('翻译选中的文字');
+    const svg = button.querySelector('svg') as SVGElement;
+    expect(svg).not.toBeNull();
+    expect(svg.getAttribute('aria-hidden')).toBe('true');
+    expect(button.firstElementChild).toBe(svg);
+
+    dispatchTrusted(button, new MouseEvent('click', { bubbles: true, composed: true }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onClick.mock.calls[0]?.[0]).toBe(button);
+  });
+
+  it('成对纪律：iconOnly 圆点同样吃委托层的 isTrusted 闸门（合成 click 不触发）', () => {
+    const onClick = vi.fn();
+    showTooltip(RECT, {
+      text: '',
+      variant: 'chip',
+      buttons: [{ label: '翻译选中的文字', icon: 'translate', iconOnly: true, onClick }],
+    });
+
+    dispatchSynthetic(buttons()[0] as HTMLButtonElement, new MouseEvent('click', { bubbles: true, composed: true }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('带文字的按钮照旧渲染标签、不写 aria-label（iconOnly 只是少一根 span）', () => {
+    showTooltip(RECT, { text: '译文', buttons: [{ label: '复制', icon: 'copy', onClick: () => {} }] });
+
+    const button = buttons()[0] as HTMLButtonElement;
+    expect(button.textContent).toBe('复制');
+    expect(button.querySelector('.jy-action-label')?.textContent).toBe('复制');
+    expect(button.hasAttribute('aria-label')).toBe(false);
   });
 
   it('translate 图标：createElementNS 造出来的 24 视框描边图形，纯装饰', () => {
@@ -743,7 +803,7 @@ describe('hoverIntent：指针停在气泡上满延时才触发', () => {
   }
 
   function withIntent(onTrigger = vi.fn()) {
-    showTooltip(RECT, { text: '悬停或点击翻译', variant: 'chip', hoverIntent: { delayMs: DELAY, onTrigger } });
+    showTooltip(RECT, { text: '', variant: 'chip', hoverIntent: { delayMs: DELAY, onTrigger } });
     return onTrigger;
   }
 

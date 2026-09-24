@@ -25,8 +25,20 @@ type TranslateFn = (text: string) => Promise<InlineTranslation>;
 
 const RECT = { top: 120, left: 340, width: 100, height: 16 };
 
-/** 小气泡上那行提示语（chip 态唯一的文字）。 */
-const CHIP_HINT = '悬停或点击翻译';
+/**
+ * chip 态的判据：屏幕上**一个可见文字都没有**，只有一个 icon-only 圆点按钮。
+ * 名字只存在于 aria-label 里——读屏与键盘用户靠它，视觉上什么都没有。
+ */
+function expectDot(): void {
+  expect(bubbleText()).toBe('');
+  const root = bubble()?.shadowRoot;
+  const dot = root?.querySelector('button') as HTMLButtonElement | null;
+  expect(dot?.getAttribute('aria-label')).toBe('翻译选中的文字');
+  expect(dot?.textContent).toBe('');
+  expect(dot?.querySelector('.jy-action-label')).toBeNull();
+  expect(dot?.type).toBe('button');
+  expect(dot?.querySelector('svg')).not.toBeNull();
+}
 
 const originalGetSelection = window.getSelection;
 let live: SelectionController[] = [];
@@ -99,8 +111,8 @@ function clickButton(labelPrefix: string): HTMLButtonElement | undefined {
 function findButton(labelPrefix: string): HTMLButtonElement | undefined {
   const root = bubble()?.shadowRoot;
   if (root == null) return undefined;
-  return Array.from(root.querySelectorAll('button')).find(
-    (candidate) => (candidate.textContent ?? '').startsWith(labelPrefix),
+  return Array.from(root.querySelectorAll('button')).find((candidate) =>
+    (candidate.getAttribute('aria-label') ?? candidate.textContent ?? '').startsWith(labelPrefix),
   ) as HTMLButtonElement | undefined;
 }
 
@@ -121,12 +133,7 @@ function syntheticClickButton(labelPrefix: string): HTMLButtonElement | undefine
  * 真机暴露的那个量才是判据（`.qa/probe-click3.mjs` 记的就是同一个时刻的 isConnected）。
  */
 function pressButton(labelPrefix: string): { button: HTMLButtonElement | undefined; connectedAtMouseup: boolean } {
-  const root = bubble()?.shadowRoot;
-  const button = root
-    ? (Array.from(root.querySelectorAll('button')).find((candidate) =>
-        (candidate.textContent ?? '').startsWith(labelPrefix),
-      ) as HTMLButtonElement | undefined)
-    : undefined;
+  const button = findButton(labelPrefix);
   if (!(button instanceof HTMLButtonElement)) return { button: undefined, connectedAtMouseup: false };
   let connectedAtMouseup = true;
   const probe = (): void => {
@@ -243,8 +250,7 @@ describe('第一段：划词只出小气泡，一次请求都不发', () => {
 
     expect(calls).toEqual([]);
     expect(variant()).toBe('chip');
-    expect(bubbleText()).toBe(CHIP_HINT);
-    expect(buttonLabels()).toEqual(['翻译']);
+    expectDot();
     // 定位：选区底（120+16）+ 间距 8。两档共用同一套定位数学，没有第二份。
     expect(bubble()?.style.top).toBe('144px');
     expect(bubble()?.style.left).toBe('340px');
@@ -272,7 +278,7 @@ describe('第一段：划词只出小气泡，一次请求都不发', () => {
     mouseup();
     await settle();
     expect(variant()).toBe('chip');
-    expect(bubbleText()).toBe(CHIP_HINT);
+    expectDot();
   });
 
   it('超长选区（>2000）连小气泡都不出', async () => {
@@ -345,7 +351,7 @@ describe('第二段：停在气泡上、或点「翻译」，才发那一次请�
     expect(buttonLabels()).toEqual(['复制']);
   });
 
-  it('点 chip 上的「翻译」按钮：同样一次请求（纯悬停对键盘用户是死路，这是确定入口）', async () => {
+  it('点小气泡（icon-only 圆点）：同样一次请求（纯悬停对键盘用户是死路，这是确定入口）', async () => {
     const { translate, calls } = autoTranslate();
     givenSelection(translate, 10_000); // 指针一次都没进来：只有点击这一条路
     mockSelection({ text: 'Hello world' });
@@ -542,11 +548,11 @@ describe('第二段：停在气泡上、或点「翻译」，才发那一次请�
 describe('落在浮层里的 mouseup：不许把按下的按钮换掉（真机 click 的前提）', () => {
   function chipButton(label: string): HTMLButtonElement | undefined {
     return Array.from(bubble()?.shadowRoot?.querySelectorAll('button') ?? []).find((button) =>
-      (button.textContent ?? '').startsWith(label),
+      (button.getAttribute('aria-label') ?? button.textContent ?? '').startsWith(label),
     ) as HTMLButtonElement | undefined;
   }
 
-  it('按下「翻译」：mouseup 那一刻按钮仍在文档里（Chrome 才会合成 click），且恰好一次请求', async () => {
+  it('按下小气泡圆点：mouseup 那一刻按钮仍在文档里（Chrome 才会合成 click），且恰好一次请求', async () => {
     const { translate, calls } = autoTranslate();
     givenSelection(translate, 10_000); // 悬停那条路先不触发，只测按钮
     mockSelection({ text: 'Hello world' });
@@ -700,7 +706,7 @@ describe('安全闸门：只响应真实用户手势（isTrusted）', () => {
  * 所以 `TooltipButton` 的回调契约不用改。
  */
 describe('安全闸门：浮层里的按钮只认真实 click', () => {
-  it('合成 click 点「翻译」：零请求，气泡还停在待触发那一屏', async () => {
+  it('合成 click 点圆点：零请求，气泡还停在待触发那一屏', async () => {
     const { translate, calls } = autoTranslate();
     givenSelection(translate, 10_000);
     mockSelection({ text: 'Hello world' });
@@ -711,7 +717,7 @@ describe('安全闸门：浮层里的按钮只认真实 click', () => {
     await settle();
     expect(calls).toEqual([]);
     expect(variant()).toBe('chip');
-    expect(bubbleText()).toBe(CHIP_HINT);
+    expectDot();
   });
 
   it('成对断言：同一现场把 click 换成真实手势 → 照常翻（证明上一条不是"永远拒绝"）', async () => {

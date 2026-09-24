@@ -1,4 +1,4 @@
-// 一次性量具体检：按下「翻译」按钮到抬起之间，这个按钮有没有被我们自己换掉。
+// 一次性量具体检：按下圆点（划词的 icon-only 按钮）到抬起之间，这个按钮有没有被我们自己换掉。
 // 假设：mouseup 落在浮层里 → onMouseup 仍然读到"上一次页面选区" → showChip 重渲染 →
 //       按钮节点被 replaceChildren 掉 → Blink 不再合成 click（按下与抬起的目标已断开）。
 // 若成立，同一个机制也会咬掉译文气泡里的「复制」按钮——那是既有产品行为，一起验。
@@ -89,7 +89,7 @@ async function clickAt(p) {
 try {
   await api.engineCtl({ mode: 'ok', reset: true });
 
-  // A. chip 的「翻译」按钮
+  // A. chip 的圆点按钮
   const chip = await makeChip();
   console.log('A chip:', JSON.stringify(chip));
   await pin();

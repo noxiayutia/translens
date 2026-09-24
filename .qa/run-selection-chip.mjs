@@ -52,6 +52,10 @@ const readTip = () =>
       return JSON.stringify({ variant: b?.getAttribute('data-variant'), state: b?.getAttribute('data-state'),
         text: (root.querySelector('.jy-text')?.textContent ?? '').trim(),
         buttons: [...root.querySelectorAll('button')].map((x) => x.textContent.trim()),
+        // 圆点是 icon-only：可见文字为空，名字只在 aria-label 里。两个都读出来才分得清
+        // "没有文字"与"文字没渲染出来"。
+        names: [...root.querySelectorAll('button')].map((x) => x.getAttribute('aria-label') ?? ''),
+        btnBox: br ? { x: br.x, y: br.y, w: br.width, h: br.height } : null,
         x: r.x, y: r.y, w: r.width, h: r.height,
         btn: br ? { x: br.x + br.width / 2, y: br.y + br.height / 2 } : null }); })()`,
   ).then((s) => (s === null ? null : JSON.parse(s)));
@@ -225,13 +229,17 @@ try {
   await clearCaches();
   await api.engineCtl({ mode: 'ok', reset: true, delayMs: 0 });
 
-  // ---------- ① 划词之后：小气泡可见、引擎侧零请求 ----------
+  // ---------- ① 划词之后：圆点可见、引擎侧零请求 ----------
   const s1 = await selectWords('p1', 12);
   const r1 = await requests();
+  const dot1 = s1.tip?.btnBox ?? null;
   check(
-    '① 划词后：小气泡可见（chip + 「翻译」）且引擎侧零请求',
-    s1.tip !== null && s1.tip.variant === 'chip' && JSON.stringify(s1.tip.buttons) === '["翻译"]' && r1 === 0,
-    `选区 ${s1.text.length} 字 · 请求数 ${r1} · ${brief(s1.tip)}`,
+    '① 划词后：一颗圆点可见（chip、零可见文字、有无障碍名）且引擎侧零请求',
+    s1.tip !== null && s1.tip.variant === 'chip' &&
+      JSON.stringify(s1.tip.buttons) === '[""]' &&
+      JSON.stringify(s1.tip.names) === JSON.stringify(['翻译选中的文字']) &&
+      dot1 !== null && dot1.w >= 28 && dot1.w <= 34 && dot1.h >= 28 && dot1.h <= 34 && r1 === 0,
+    `选区 ${s1.text.length} 字 · 请求数 ${r1} · ${brief(s1.tip)} · 圆点 ${dot1?.w?.toFixed(1)}×${dot1?.h?.toFixed(1)} · 浮层文字=${JSON.stringify(s1.tip?.text ?? '')}`,
   );
   const shot1 = await shot('01-chip');
 
@@ -309,8 +317,8 @@ try {
     `浮层 ${closed5 === null ? '已关' : '还在'} · 请求增量 ${r5 - before5}`,
   );
 
-  // ---------- ⑥ 真鼠标点「翻译」按钮：+1（故意不等满悬停延时） ----------
-  // 用**只双击选一个词**的现场：气泡不会盖住后面的词（p3 那种"By <a>Jane Doe</a>"里，
+  // ---------- ⑥ 真鼠标点圆点：+1（故意不等满悬停延时） ----------
+  // 用**只双击选一个词**的现场：圆点不会盖住后面的词（p3 那种"By <a>Jane Doe</a>"里，
   // Shift+点击的落点会被气泡吃掉，选区扩不动，上一轮就是这么读出 0 增量的）。
   await pressEscape();
   const before6 = await requests();
@@ -323,7 +331,7 @@ try {
   const r6 = await requests();
   const sent6 = (await readLog()).log.at(-1)?.user ?? '';
   check(
-    '⑥ 真鼠标点小气泡上的「翻译」（100ms 内）：+1 且送出的就是选区',
+    '⑥ 真鼠标点圆点（100ms 内）：+1 且送出的就是选区',
     r6 === before6 + 1 && sent6.includes(s6.text) && tip6?.state === 'done' && tip6?.text.startsWith('译·'),
     `选区 ${JSON.stringify(s6.text)} · 请求增量 ${r6 - before6} · ${brief(tip6)}`,
   );
@@ -470,7 +478,7 @@ try {
   await api.cdp.mouse(S, 'mouseReleased', geo14.x, geo14.y, { buttons: 0 });
   await sleep(200);
   const tip14 = await readTip();
-  const band14 = { top: geo14.blockBottom + 8, bottom: geo14.blockBottom + 48 }; // chip 实测高 40
+  const band14 = { top: geo14.blockBottom + 8, bottom: geo14.blockBottom + 8 + dot1.h }; // 带高 = ① 实测的圆点高（40→32 之后不能再写死）
   const inside14 = tip14 !== null && geo14.y >= band14.top && geo14.y <= band14.bottom;
   const events14 = await api.cdp.eval(S, 'JSON.stringify(globalThis.__hover ?? [])');
   await sleep(800); // 指针一动不动
