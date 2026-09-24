@@ -492,6 +492,63 @@ try {
   await shot('14-inserted-under-pointer');
   await api.cdp.eval(S, 'document.getElementById("jy-pad")?.remove()');
 
+  // ---------- ⑮ 键盘路径：Tab 到圆点 + Enter 进第二阶段（单元 F 规格 §6.2 要求的那条） ----------
+  await pressEscape();
+  await api.cdp.eval(S, 'document.getElementById("jy-pad")?.remove()');
+  const before15 = await requests();
+  const s15 = await selectWords('hidden-aria', 4); // 这一段本轮还没送过
+  await api.cdp.eval(S, 'document.body?.focus()');
+  let reached = null;
+  for (let i = 1; i <= 10; i += 1) {
+    await api.cdp.key(S, { key: 'Tab', code: 'Tab', keyCode: 9 });
+    reached = JSON.parse(
+      await api.cdp.eval(
+        S,
+        `(() => { const h = document.querySelector('#jy-tooltip');
+          return JSON.stringify({ onHost: document.activeElement === h, tabs: ${i},
+            name: h?.shadowRoot?.activeElement?.getAttribute('aria-label') ?? null }); })()`,
+      ),
+    );
+    if (reached.onHost) break;
+  }
+  // Enter 要用 keyDown + text:'\r' 才会被 Blink 当成"激活按钮"：rawKeyDown 不带 text 时
+  // 浏览器根本不会为 <button> 合成 click（这不是产品的坑，是派发的形状）。
+  const pressEnter = async () => {
+    await api.cdp.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', unmodifiedText: '\r',
+      windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+    }, S);
+    await api.cdp.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+    }, S);
+  };
+  await pressEnter();
+  await sleep(200); // 与悬停阈值无关：这一路指针根本没碰过圆点
+  const tip15 = await settleTranslated();
+  const r15 = await requests();
+  check(
+    '⑮ Tab 到圆点（无障碍名在）+ Enter：+1，且是指针没碰过的键盘路',
+    reached?.onHost === true && reached?.name === '翻译选中的文字' &&
+      r15 === before15 + 1 && tip15?.variant === 'bubble' && tip15?.text.startsWith('译·'),
+    `Tab 次数 ${reached?.tabs} · 焦点在宿主上=${reached?.onHost} · aria-label=${JSON.stringify(reached?.name)} · 请求增量 ${r15 - before15} · ${brief(tip15)}`,
+  );
+  await shot('15-keyboard-enter');
+  // 单元 F §4.5 的已知限制（README 已如实写明）：圆点被换成译文屏之后，焦点没有跟着移到「复制」上。
+  const focusAfter = await api.cdp.eval(
+    S,
+    `(() => { const h = document.querySelector('#jy-tooltip');
+      return JSON.stringify({ 活动元素: document.activeElement?.tagName ?? null,
+        在宿主上: document.activeElement === h,
+        浮层内焦点: h?.shadowRoot?.activeElement?.getAttribute('aria-label') ??
+          h?.shadowRoot?.activeElement?.textContent?.trim() ?? null }); })()`,
+  );
+  const fa = JSON.parse(focusAfter);
+  check(
+    '⑮b 进入第二阶段后焦点落回 body（已知限制，不是回归：README「功能范围」已写明）',
+    fa.活动元素 !== 'BUTTON' && fa.浮层内焦点 === null,
+    focusAfter,
+  );
+
   await pressEscape();
   await api.cdp.eval(S, 'getSelection()?.removeAllRanges()');
   await api.engineCtl({ mode: 'ok', reset: true, delayMs: 0 });

@@ -2,7 +2,7 @@
 
 > **规格 · 2026-09-24。** 实现落在 `src/content/selection.ts` + `src/content/tooltip.ts`，
 > 判据落在 `tests/content/selection.test.ts` + `tests/content/tooltip.test.ts`，
-> 真机读数落在 `.qa/run-selection-chip.mjs`（13 条，本文末尾原样抄录）。
+> 真机读数落在 `.qa/run-selection-chip.mjs`（16 条，本文末尾原样抄录）。
 > 设计文档 §4.2 的「划词气泡」条目已同步改成本文这一版。
 
 ## 1. 状态机
@@ -107,15 +107,21 @@ shadow 边界），`onMouseup` 在 `isTrusted`/主键之后立刻据此早退。
 ⑦ 译文之后指针移开再停回来：不再发第二次请求                请求数 1
 ③ 快速划过小气泡（穿越只花 13ms）：零请求，小气泡还在原地    请求增量 0
 ⑤ 停留 40ms 就按 Esc 关闭：之后到点也不补发                浮层已关 · 请求增量 0
-⑥ 真鼠标点圆点（100ms 内）：+1 且送的就是选区  请求增量 1
+⑥ 真鼠标点圆点（100ms 内）：+1 且送的就是选区              请求增量 1
 ⑩ 真鼠标点「复制」：按钮就地改写文案（click 真的到了按钮）   ["复制"] → ["已复制"] · 请求增量 0
 ⑧ 菜单消息不经过小气泡：当场 +1                            请求增量 1
 ⑨ 在 contenteditable 草稿里划词：不出气泡、停上去也不发     浮层无 · 请求增量 0
 ⑫a 指针停在 chip 之外、原地不动 800ms：零请求               请求增量 0
 ⑫b 之后把指针移进气泡（第一次 enter+move）：起算并 +1        请求增量 1
-⑭  chip 生成在静止指针的带内、指针不动 800ms：不许起算        带 308…348 内=true · 补发事件=over+enter · 请求增量 0
-合计 14/14 通过
+⑭  chip 生成在静止指针的底下（带内落点）、指针不动 800ms：不许起算   带 308…338 内=true · 补发事件=over+enter · 请求增量 0
+⑮  Tab 4 次到圆点（aria-label 读得到）+ Enter：+1            请求增量 1（指针全程没碰过圆点）
+⑮b 进入第二阶段后焦点落回 body（单元 F §4.5 的已知限制）      活动元素=BODY · 浮层内焦点=null
+合计 16/16 通过
 ```
+
+⑮ 顺带钉住一条台架事实：**`Input.dispatchKeyEvent` 的 `rawKeyDown` 不带 `text` 时，Blink 不会为
+`<button>` 合成 click**——Enter 要用 `type: 'keyDown'` + `text: '\r'` 才走键盘激活。上一版
+用 `rawKeyDown` 测出的"Enter 不生效"是量具的错，不是产品的。
 
 ⑭ 的那一行同时是 §2.2 的反证记录：同一构造在起算挂 `pointerenter` 的版本上读出 **请求增量 1**
 （用户什么也没做，150ms 后自己翻了），改挂 `pointermove` 之后才是这里的 0。
