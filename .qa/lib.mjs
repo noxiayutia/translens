@@ -5,9 +5,10 @@
 // 它的执行上下文里 `chrome` 是未定义的（worker 脚本还没跑起来），求值只能拿到
 // ReferenceError。设置页是同一个扩展的普通页面，chrome.* 全套可用，且它本身就是被测对象之一。
 //
-// 写新的场景脚本之前先读 `docs/qa/2026-09-24-measurement-traps.md`（九个会骗读数的坑：零延迟、闸放晚、旧标签页、
+// 写新的场景脚本之前先读 `docs/qa/2026-09-24-measurement-traps.md`（十个会骗读数的坑：零延迟、闸放晚、旧标签页、
 // 两级缓存、通知类消息的替身、"只看 DOM 判断一轮跑完了"、并发日志 doneAt 记错条目、
-// "注入时钟的起点把产品初值缺陷判成通过"、"刷新常驻页把自己注入的助手一起刷掉"）。
+// "注入时钟的起点把产品初值缺陷判成通过"、"刷新常驻页把自己注入的助手一起刷掉"、
+// "译文在 shadow DOM 里，读宿主的 textContent 永远是空"）。
 import { startMock, startChrome, loadUnpacked, kill, loadDir, sleep, FIXTURE_BASE, PROFILE_DIR, PORT } from './harness.mjs';
 import { Cdp } from './cdp.mjs';
 import { rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';

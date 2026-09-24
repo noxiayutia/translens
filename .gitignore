@@ -7,6 +7,7 @@ logo/
 # 真机台架：`docs/qa/` 那些报告的可执行来源。**脚本与测试夹具入库**（报告里的命令因此可复跑），
 # 产物与本机状态不入库（截图、送出文本底稿、扫描原始输出、预授权的 dist 副本、daemon 的实例 id）。
 .qa/dist-perm/
+.qa/dist-prompt/
 .qa/shots/
 .qa/sent/
 .qa/out-*

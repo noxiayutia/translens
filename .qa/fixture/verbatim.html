@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- 标识符保真度夹具：11 个段落，文本必须与 .qa/score-prompt.mjs 的 CASES 一字不差。
+     4 段整段就是标识符 + 1 段半结构 + 3 段纯散文 + 3 段"标识符夹在句子里"。
+     11 段刻意留在单批上限（maxSegmentsPerBatch=12）之内，让它走生产的同一批形状。
+     这条"一字不差"由 run-prompt-baseline.mjs 在触发翻译之前用 DOM 实际文本核一遍（输入体检），
+     所以这里手写漏个空格不会静默变成"模型没译"，会直接红在体检那一行。
+     <table> 写成实体，否则浏览器把它当标签吃掉。 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Verbatim fixture</title>
+  </head>
+  <body>
+    <main>
+      <p id="v-table">&lt;table&gt;</p>
+      <p id="v-prop">overscroll-behavior</p>
+      <p id="v-doi">https://doi.org/10.48550/arXiv.2303.08774</p>
+      <p id="v-mail">monnand@gmail.com</p>
+      <p id="s-stamp">[v1] Wed, 15 Mar 2023 17:15:04 UTC (3,853 KB)</p>
+      <p id="p-one">Engineers often underestimate how much reading time a nested callback chain consumes.</p>
+      <p id="p-two">The quick brown fox jumps over the lazy dog while the layout shifts settle.</p>
+      <p id="p-three">This section describes how the extension reuses cached results across page reloads.</p>
+      <p id="m-prop">Set overscroll-behavior to contain to stop scroll chaining.</p>
+      <p id="m-tag">The &lt;caption&gt; element labels the columns of a data table.</p>
+      <p id="m-hook">Call useEffect only when the component mounts for the first time.</p>
+    </main>
+  </body>
+</html>
