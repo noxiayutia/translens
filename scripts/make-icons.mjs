@@ -6,40 +6,36 @@
  * 反射多项式 0xEDB88320）。不引任何图形库——为四个尺寸的图标装一个依赖不划算，而且
  * 生成物**已经入库**，构建时根本不需要重新跑这个脚本（见下）。
  *
- * 图形（TransLens）：圆角方形底（主色 #2563eb）+ 两支**薄荷青的双向箭头**
- * （左右各一个实心三角箭头、上下错开两行，表示"两种语言互换"）。
- * 四周留约 12% 边距。不画任何字形——扩展里没有字体渲染器，硬画会很难看。
+ * 图形（TransLens，与品牌 logo **同一个符号**）：象牙白圆角方形底 + 碳黑圆盘（透镜），
+ * 盘内镂空一个**横笔带凸面弧的 T**——T 是 TransLens 的首字母，那道弧是透镜表面的曲率。
+ * 四周留约 12% 边距。不依赖字体：T 用距离场画（月牙弧带 ∪ 矩形竖笔），扩展里没有字体渲染器。
  *
- * 换句话说，**16px 的图标不是品牌 logo 的缩小版，而是一个独立设计的符号**：logo（两个
- * 相交的透镜圆）留给扩展详情页、官网这类大尺寸场合，由 `scripts/make-brand-logo.mjs`
- * 用本文件导出的几何常量与光栅化函数生成，见 `docs/brand/`。下面这段是为什么必须这么分：
- *
- * 试过把"两个相交的圆 + 中间一个箭头"直接塞进 16px，三种走法都不成立——
+ * 图标是 logo 的"小尺寸方言"，不是它的缩放：同一套形状，但 16px 下把竖笔加宽、弧带加厚
+ * （见 `T_STEM` / `T_BAR` 里按尺寸给的补偿值）。为什么必须修正，是早先踩过的坑——
+ * 试过把上一版 logo 概念（"两个相交的圆 + 中间一个箭头"）原样塞进 16px，三种走法都不成立：
  *
  * 1. **圆环**：环要在 16px 下看得见，笔画至少要盖满约 1.2 个像素（0.075 画布宽），而环半径
  *    只有 0.30，于是 0.30 - 0.075/2 = 0.2625 几乎等于半径本身——"空心"被笔画自己填满了，
  *    画出来就是两块实心色斑。
  * 2. **左圆白、右圆青**：白色箭头压在白色左圆上**直接消失**，16px 下整张图只剩一团白。
  * 3. **两圆同色**：两个同色的实心圆叠在一起，并集就是一个圆角矩形色块——16px 和 32px 渲染
- *    出来都只是"一块薄荷青加一个箭头"，谁还看得出是两个圆？
+ *    出来都只是"一块色斑加一个箭头"，谁还看得出是两个圆？
  *
- * 共同的结论是：**16px 只承载得下"一个形状 + 一个方向"**，三个元素必然糊成一团。
- * 所以小图标退回"双向箭头"这个已经验证过、四个尺寸下都清楚的符号。
+ * 共同的结论：**16px 只承载得下"一个形状 + 一个负空间元素"，而且笔画要按尺寸做光学修正**。
+ * T-Lens 恰好只有一个形状（圆盘）+ 一个镂空（T），修正笔画后能在 16px 活下来；发丝级的
+ * 细节（弧笔收尖的端头）在小尺寸自然磨平，不影响认读——这是 logo 设计里的常规操作。
  *
  * 抗锯齿：每个像素对形状求**精确的有符号距离**再按覆盖面积取 alpha。这比"按 4×4 超采样
  * 再平均"更准，而且不会在 16px 下留下锯齿块。
  *
  * 自检（**不通过就非零退出**，不留下一堆坏图）：写完把每个文件重新读回来，逐项核对
  * PNG 签名、每个 chunk 的 CRC、IHDR 里的尺寸/位深/颜色类型、解压后的字节数、四角透明、
- * 底色是主色、两支箭头都在（上下两个半区各有白像素），外加一条与 4× 参考渲染的平均偏差。
+ * 底是象牙白、圆盘是碳黑（顶部与底部两个采样点 + 占比下限）、T 在（竖笔、弧笔两翼左右
+ * 各至少一个像素），外加一条与 4× 参考渲染的平均偏差。
  *
  * 用法：
  *   npm run icons                     # 生成到 <仓库根>/src/icons
  *   node scripts/make-icons.mjs --out <dir>
- *
- * 本文件同时导出几何常量与光栅化函数（`LENS_CIRCLES`、`MINT`、`ACCENT`、`dilate`、
- * `encodePng` 等），供 `scripts/make-brand-logo.mjs` 复用——品牌 logo 与小图标必须用**同一套
- * 几何定义**，否则改一处、另一处会悄悄跟丢。
  */
 
 import { deflateSync, inflateSync } from 'node:zlib';
@@ -74,151 +70,52 @@ function crc32(bytes) {
  * 颜色与几何（都在 0..1 的归一化坐标里定义，与尺寸无关）
  * ------------------------------------------------------------------ */
 
-/** 主色，与两份 CSS 的 `--accent` 一致（亮色主题那一档）。 */
-const ACCENT = [0x25, 0x63, 0xeb];
+/** 象牙白：画布底与 T 的镂空色（对齐 logo 的实测色）。 */
+const IVORY = [0xf2, 0xef, 0xe6];
 
-/** 薄荷青（也在 accent 家族里）：图标的箭头与 logo 的透镜圆共用的第二色。 */
-const MINT = [0x5e, 0xea, 0xd4];
+/** 碳黑：透镜圆盘。 */
+const CARBON = [0x0d, 0x0d, 0x10];
 
 /** 圆角方形底：四周 12% 边距 → 边长 0.76，圆角半径 0.15。 */
 const TILE = { x0: 0.12, y0: 0.12, x1: 0.88, y1: 0.88, radius: 0.15 };
 
+/** 透镜圆盘：居中，半径 0.28（直径占画布 56%，与 logo 同比例）。 */
+const DISC = { cx: 0.5, cy: 0.5, radius: 0.28 };
+
 /**
- * 双向箭头：一个箭头 = 一条杆（矩形，用线段的有符号距离表示）+ 一个**实心三角**箭头。
+ * T 的横笔：一条**向上鼓的弧带**（透镜表面的曲率），左右两端收成尖。
  *
- * 箭头必须是实心三角形而不是"两笔描边"：描边在尖端会收成圆头，16px 下那两笔就只剩两个
- * 白点，看上去像"没画出来"。三角形用多边形距离场表示（内部为负、外部到最近边的距离），
- * 与杆做**并集**（取较小值），接头天然无缝。
+ * 弧带 = "上弧圆之内 ∩ 下弧圆之外"的月牙：两个圆都过左右两个尖端；上弧过
+ * (0.5, apexTopY)，下弧过 (0.5, apexTopY + thickness)。thickness 按输出尺寸
+ * 补偿——16px 下 0.055 只有 0.9 个像素，抗锯齿会把它摊成一条灰影。
  */
-const ART = {
-  /** 杆伸到画布左右各 0.42 处。 */
-  shaftHalfLength: 0.42,
-  /** 箭头的底边横坐标（三角形从 x = headBaseX 伸到尖端 0.5）。 */
-  headBaseX: 0.14,
-  /** 两条杆的中心线。比原设计（±0.21）再拉开一点：16px 下两条杆之间的缝只占 0.42 个画布宽，
-   *  再近就会被两侧的抗锯齿糊在一起，连"这是两支箭头"都看不出来。 */
-  shaftYRight: -0.24,
-  shaftYLeft: 0.24,
-  /** 三角形底边的半高（≈ 箭头张角的一半）。 */
-  headHalfHeight: 0.3,
-  /** 杆的粗细（ART 单位）。 */
-  stroke: 0.115,
+const T_BAR = {
+  /** 尖端横坐标 = 0.5 ± tipHalfSpan（在圆盘赤道附近，距盘缘约 0.07）。 */
+  tipHalfSpan: 0.21,
+  /** 两个尖端的纵坐标。 */
+  tipY: 0.44,
+  /** 上弧最高点。 */
+  apexTopY: 0.355,
+  /** 弧带中心厚度（画布宽占比），按尺寸给。 */
+  thickness: { 16: 0.075, 32: 0.062, 48: 0.058, 128: 0.055 },
+};
+
+/** T 的竖笔：矩形，从横笔里（topY）伸到 bottomY。半宽按尺寸补偿，同理。 */
+const T_STEM = {
+  topY: 0.38,
+  bottomY: 0.64,
+  halfWidth: { 16: 0.052, 32: 0.043, 48: 0.04, 128: 0.0375 },
 };
 
 /**
- * 白色箭头在**归一化画布**（0..1）里占的框：居中，四周留边。
- *
- * 箭头在 ART 坐标（以中心为原点、两个方向同一缩放）里设计，再由 `canvasToArt` 映射回来，
- * 因此恒居中、恒不越界。
+ * 过 (0.5±a, tipY) 与 (0.5, apexY) 的圆（apexY < tipY，向上鼓）：
+ * 弦半宽 a、矢高 s = tipY - apexY → 半径 R = (a² + s²) / (2s)，圆心 (0.5, apexY + R)。
  */
-const ARROW_BOX = { left: 0.2, right: 0.82, top: 0.19, bottom: 0.81 };
-
-/** ART 里的长度 → 归一化画布长度（箭头是各向同性设计的，两个方向同一个缩放）。 */
-const ART_SCALE = ARROW_BOX.right - ARROW_BOX.left;
-
-/** ART 坐标在 y 方向的跨度。箭头各向同性，所以它与 ART_SCALE 同值。 */
-const ART_SPAN_Y = ARROW_BOX.bottom - ARROW_BOX.top;
-
-/** 把归一化画布坐标映回 ART 坐标（缩放与平移，箭头因此始终居中且不越界）。 */
-function canvasToArt(px, py) {
-  return [(px - ARROW_BOX.left) / ART_SCALE - 0.5, (py - ARROW_BOX.top) / ART_SPAN_Y - 0.5];
+function arcCircle(a, tipY, apexY) {
+  const s = tipY - apexY;
+  const r = (a * a + s * s) / (2 * s);
+  return { cy: apexY + r, r };
 }
-
-/** 右向箭头的形状（ART 坐标）：杆线段 + 实心三角箭头。 */
-function rightArrowShape() {
-  const y = ART.shaftYRight;
-  return {
-    shaft: { ax: -ART.shaftHalfLength, ay: y, bx: ART.headBaseX, by: y },
-    head: [
-      [0.5, y],
-      [ART.headBaseX, y - ART.headHalfHeight],
-      [ART.headBaseX, y + ART.headHalfHeight],
-    ],
-  };
-}
-
-/** 左向箭头：镜像。 */
-function leftArrowShape() {
-  const y = ART.shaftYLeft;
-  return {
-    shaft: { ax: ART.shaftHalfLength, ay: y, bx: -ART.headBaseX, by: y },
-    head: [
-      [-0.5, y],
-      [-ART.headBaseX, y - ART.headHalfHeight],
-      [-ART.headBaseX, y + ART.headHalfHeight],
-    ],
-  };
-}
-
-/** 点到线段的距离。 */
-function distanceToSegment(px, py, seg) {
-  const dx = seg.bx - seg.ax;
-  const dy = seg.by - seg.ay;
-  const lengthSq = dx * dx + dy * dy;
-  let t = lengthSq === 0 ? 0 : ((px - seg.ax) * dx + (py - seg.ay) * dy) / lengthSq;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  return Math.hypot(px - (seg.ax + t * dx), py - (seg.ay + t * dy));
-}
-
-/**
- * 点到**凸多边形**的有符号距离（内部为负）——标准的"外部最近边距离 / 内部负距离"实现。
- * 箭头是三角形，凸性满足。
- */
-function distanceToPolygon(px, py, points) {
-  let inside = false;
-  let nearest = Infinity;
-
-  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
-    const [xi, yi] = points[i];
-    const [xj, yj] = points[j];
-    nearest = Math.min(nearest, distanceToSegment(px, py, { ax: xj, ay: yj, bx: xi, by: yi }));
-    // 射线法（PVector 的 Winding number 简化版：这里只需奇偶性）。
-    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-
-  return inside ? -nearest : nearest;
-}
-
-/**
- * 小尺寸要把笔画**加粗**：16px 下 0.115 的杆只有约 1.6 个像素，解析式抗锯齿会把杆摊成
- * 半透明的灰蓝，看起来就是"箭头没画出来"。所以按输出尺寸给一个补偿，让杆宽在任何尺寸下
- * 都**至少盖满一个像素**（最坏情况下仍留一行覆盖率 ≥0.9 的实心白）。
- *
- * 这是图标栅格化的常规补偿，不是几何本身的一部分，所以单独放在这里、只按输出尺寸决定。
- */
-const STROKE_BOOST = { 16: 1.8, 32: 1.3, 48: 1.25, 128: 1 };
-
-function strokeFor(size) {
-  const boost = STROKE_BOOST[size] ?? 1;
-  return ART.stroke * ART_SCALE * boost;
-}
-
-/**
- * 箭头在 (px,py) 处的有符号距离（<0 表示在箭头内部）。
- * 两个箭头（各含杆与三角头）取**并集**：四个形状的最近距离再减去半个杆宽。
- */
-function arrowDistance(px, py, size) {
-  const [ax, ay] = canvasToArt(px, py);
-  const half = strokeFor(size) / 2;
-
-  let best = Infinity;
-  for (const shape of [rightArrowShape(), leftArrowShape()]) {
-    best = Math.min(best, distanceToSegment(ax, ay, shape.shaft));
-    best = Math.min(best, distanceToPolygon(ax, ay, shape.head));
-  }
-  return best - half;
-}
-
-/**
- * 两个透镜圆（**只用于大尺寸的品牌 logo**，不进 16px 图标）：
- * 左＝原文语言、右＝译文语言，两圆交集是一条竖向的透镜形。圆心在 y 上错开
- * （左 0.44、右 0.56），交集因此不是一条对称的细缝，而是一块能承住图形的面。
- */
-const LENS_CIRCLES = {
-  left: { x: 0.3, y: 0.44 },
-  right: { x: 0.7, y: 0.56 },
-  radius: 0.3,
-};
 
 /** 圆角方形底在 (px,py) 处的有符号距离（<0 表示在底色内部）。 */
 function tileDistance(px, py) {
@@ -233,22 +130,36 @@ function tileDistance(px, py) {
   return outside + inside - TILE.radius;
 }
 
-/** SDF 膨胀：把形状整体长粗 `amount`（内部更负、外部更近）。 */
-function dilate(distance, amount) {
-  return distance - amount;
+/** 圆盘在 (px,py) 处的有符号距离。 */
+function discDistance(px, py) {
+  return Math.hypot(px - DISC.cx, py - DISC.cy) - DISC.radius;
 }
 
 /**
- * 颜色叠加：把 `color` 以 `alpha`（0..1）压到当前色上，返回新色。
- * 品牌 logo 的多层绘制（小图标 → 圆环 → 透镜 → 箭头 → 高光）都走这一个函数，
- * 免得每层各写一遍 lerp。
+ * T 在 (px,py) 处的有符号距离（<0 表示在 T 内部）。
+ *
+ * 横笔月牙用两个圆的距离场取 `max`（凸集交补集的近似 SDF——边界都是圆弧，误差在
+ * 亚像素级，且主渲染与参考渲染用**同一个函数**，自检的对照意义不受影响）；
+ * 竖笔是标准 box SDF。两者并集取 `min`。
  */
-function over(color, target, alpha) {
-  return [
-    color[0] + (target[0] - color[0]) * alpha,
-    color[1] + (target[1] - color[1]) * alpha,
-    color[2] + (target[2] - color[2]) * alpha,
-  ];
+function tDistance(px, py, size) {
+  const thickness = T_BAR.thickness[size] ?? 0.055;
+  const halfWidth = T_STEM.halfWidth[size] ?? 0.0375;
+
+  const top = arcCircle(T_BAR.tipHalfSpan, T_BAR.tipY, T_BAR.apexTopY);
+  const bottom = arcCircle(T_BAR.tipHalfSpan, T_BAR.tipY, T_BAR.apexTopY + thickness);
+  const dx = px - 0.5;
+  const dTop = Math.hypot(dx, py - top.cy) - top.r;
+  const dBottom = bottom.r - Math.hypot(dx, py - bottom.cy);
+  const bar = Math.max(dTop, dBottom);
+
+  const stemCy = (T_STEM.topY + T_STEM.bottomY) / 2;
+  const stemHy = (T_STEM.bottomY - T_STEM.topY) / 2;
+  const qx = Math.abs(dx) - halfWidth;
+  const qy = Math.abs(py - stemCy) - stemHy;
+  const stem = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0);
+
+  return Math.min(bar, stem);
 }
 
 /** 有符号距离 → 覆盖率（0..1）。除以像素宽度，边界恰好落在一个像素的宽度上。 */
@@ -262,29 +173,28 @@ function coverage(distance, pixelWidth) {
  * ------------------------------------------------------------------ */
 
 /**
- * 一个采样点的颜色：底色铺主色、薄荷青的双向箭头再按自己的覆盖**叠上去**（alpha 混合）。
+ * 一个采样点的颜色：象牙底 → 碳黑圆盘压上来 → T 的镂空再"挖"回象牙。
  *
- * 底色与箭头之间那**一点点色相差异**是刻意的：主色 37/99/235、薄荷青 94/234/212。
- * 16px 下箭头边缘的抗锯齿会把两者混成中间色，箭头看上去像"发光"而不是硬贴上去的白块；
- * 同时蓝与青的差别又足够小，不会让 16px 的图标显得脏。
+ * 镂空不是透明：T 的色就是底色，盘在 T 处被"还原"成象牙——和 logo 的负空间做法一致。
  *
  * `pixelWidth` 是这个采样点代表的面积边长：主渲染传目标像素的边长（1/size），覆盖率因此
  * 就是**解析式的精确面积**；参考渲染（超采样）传子样本的边长（1/(size*factor)），于是每个
  * 子样本只做"在形状内 / 不在形状内"的判定，抗锯齿完全由子样本平均给出——两层都保留
  * SDF 的软过渡会把边缘抹成两倍宽，那正是这套自检要抓的错误。
  *
- * `size` 只用来取笔画宽度（小尺寸要补偿，见 STROKE_BOOST）。
+ * `size` 只用来取 T 的笔画补偿宽度（小尺寸要加粗，见 T_BAR / T_STEM）。
  */
 function sampleColor(px, py, size, pixelWidth) {
   const tile = coverage(tileDistance(px, py), pixelWidth);
   if (tile <= 0) return [0, 0, 0, 0];
-  const arrow = coverage(arrowDistance(px, py, size), pixelWidth);
-  return [
-    ACCENT[0] + (MINT[0] - ACCENT[0]) * arrow,
-    ACCENT[1] + (MINT[1] - ACCENT[1]) * arrow,
-    ACCENT[2] + (MINT[2] - ACCENT[2]) * arrow,
-    tile * 255,
-  ];
+  const disc = coverage(discDistance(px, py), pixelWidth);
+  const t = coverage(tDistance(px, py, size), pixelWidth);
+  const color = [0, 0, 0];
+  for (let i = 0; i < 3; i += 1) {
+    const onDisc = IVORY[i] + (CARBON[i] - IVORY[i]) * disc;
+    color[i] = onDisc + (IVORY[i] - onDisc) * t;
+  }
+  return [color[0], color[1], color[2], tile * 255];
 }
 
 /**
@@ -292,16 +202,8 @@ function sampleColor(px, py, size, pixelWidth) {
  *
  * 逐像素解析式求覆盖（每像素只采一次中心点，边界由 SDF 的覆盖率还原）——这比"每像素
  * 打 N 个样本再平均"更准也更便宜，16px 下不会留下锯齿块。
- *
- * `base` 决定垫在最底下的是什么：
- * - `'arrows'`（默认）＝ 扩展图标：圆角底 + 双向箭头；
- * - `'tile'` ＝ 只要圆角底。品牌 logo 用它作底稿，再把两个透镜圆盖上去——**不能**用
- *   `'arrows'`：圆环只覆盖圆内部，环外的箭头会从环旁边漏出来，看起来像图标与 logo 叠在一起。
- *
- * `layers` 是可选的**覆盖层**回调：返回 `[r,g,b,alpha]`，alpha 表示这一层在这一点上盖住多少。
- * 覆盖层不是往底稿上"再叠一层"——它直接把底稿**换掉**，所以品牌 logo 的圆内不会再透出箭头。
  */
-function renderArtwork(size, base = 'arrows', layers) {
+function renderArtwork(size) {
   const pixels = Buffer.alloc(size * size * 4);
   const pixelWidth = 1 / size;
 
@@ -310,19 +212,8 @@ function renderArtwork(size, base = 'arrows', layers) {
       const cx = (x + 0.5) / size;
       const cy = (y + 0.5) / size;
 
-      const baseColor = base === 'tile' ? tileColor(cx, cy, pixelWidth) : sampleColor(cx, cy, size, pixelWidth);
-      if (baseColor[3] <= 0) continue;
-
-      let [red, green, blue, alpha] = baseColor;
-
-      if (layers !== undefined) {
-        const [r2, g2, b2, cover] = layers(cx, cy, size, pixelWidth);
-        if (cover > 0) {
-          red += (r2 - red) * cover;
-          green += (g2 - green) * cover;
-          blue += (b2 - blue) * cover;
-        }
-      }
+      const [red, green, blue, alpha] = sampleColor(cx, cy, size, pixelWidth);
+      if (alpha <= 0) continue;
 
       const offset = (y * size + x) * 4;
       pixels[offset] = Math.round(red);
@@ -335,16 +226,9 @@ function renderArtwork(size, base = 'arrows', layers) {
   return pixels;
 }
 
-/** 只要圆角底、不要箭头（品牌 logo 的底稿）。 */
-function tileColor(px, py, pixelWidth) {
-  const tile = coverage(tileDistance(px, py), pixelWidth);
-  if (tile <= 0) return [0, 0, 0, 0];
-  return [ACCENT[0], ACCENT[1], ACCENT[2], tile * 255];
-}
-
-/** 扩展图标：底色 + 双向箭头。 */
+/** 扩展图标：象牙底 + 碳黑透镜盘 + 镂空 T。 */
 function renderIcon(size) {
-  return renderArtwork(size, 'arrows');
+  return renderArtwork(size);
 }
 
 /**
@@ -504,10 +388,11 @@ function decodePng(bytes, label) {
  * 位置就假报错。这里验的是"该有的东西在不在"：
  *
  * - 四角透明（12% 边距 + 圆角）；
- * - 底色是纯主色（取两处落在箭头空档里的点）；
- * - 两支箭头都在：上/下两个半区各有一行横跨大半个画布的白。
+ * - 底是象牙白（盘外两个空档采样点）；
+ * - 圆盘是碳黑（盘顶与盘底两个采样点 + 全图占比下限）；
+ * - T 在：竖笔（盘下半的中轴条带）与弧笔两翼（左右对称的翼区）各有亮像素。
  *
- * 几何本身画错（少一支箭头、被裁、叠加顺序反了）由最后那条"与 4× 参考渲染的平均偏差"兜住。
+ * 几何本身画错（弧带方向反了、盘被裁、叠加顺序错了）由最后那条"与 4× 参考渲染的平均偏差"兜住。
  */
 function verifyIcon(bytes, size, label) {
   const { header, pixels } = decodePng(bytes, label);
@@ -540,69 +425,58 @@ function verifyIcon(bytes, size, label) {
     assert(a === 0, `${label}: 角 (${x},${y}) 应完全透明，实际 rgba(${r},${g},${b},${a})`);
   }
 
-  /*
-   * 底色。取两个**落在箭头空档**里的点：画布正中（两个箭头之间的缝）与上方中间
-   * （右箭头上翼之上、圆角底之内）。二者在所有四个尺寸上都是纯主色。
-   *
-   * 不钉"上边中点"：那正是右箭头上翼伸过去的地方，会取到箭头色。
-   * 缝隙很窄（16px 下不足一个像素），所以这两处必须**恰好**是主色才说明几何没错。
-   */
+  // 底色：两处**在圆角底上、在圆盘外**的空档（盘顶上方、盘左一侧），必须是实心象牙白。
   for (const [fx, fy, where] of [
-    [0.5, 0.5, '两个箭头之间的缝'],
-    [0.5, 0.14, '右箭头上翼上方的空档'],
+    [0.5, 0.15, '圆盘上方的空档'],
+    [0.15, 0.5, '圆盘左侧的空档'],
   ]) {
     const x = Math.min(size - 1, Math.round(fx * size));
     const y = Math.min(size - 1, Math.round(fy * size));
     const [r, g, b, a] = pixelAt(rgba, size, x, y);
     assert(a === 255, `${label}: ${where} (${x},${y}) 应是实心底色，实际 alpha=${a}`);
-    const distance = Math.abs(r - ACCENT[0]) + Math.abs(g - ACCENT[1]) + Math.abs(b - ACCENT[2]);
-    assert(distance <= 12, `${label}: ${where} (${x},${y}) 应是主色 #2563eb，实际 rgb(${r},${g},${b})`);
+    const distance = Math.abs(r - IVORY[0]) + Math.abs(g - IVORY[1]) + Math.abs(b - IVORY[2]);
+    assert(distance <= 12, `${label}: ${where} (${x},${y}) 应是象牙白 #f2efe6，实际 rgb(${r},${g},${b})`);
   }
 
-  /*
-   * 两支箭头。断言写成**形状相关**而不是钉死某一行：解析式抗锯齿下笔画落在哪一行、
-   * 那一行拿到多少覆盖，取决于像素格点，钉死行号等于把几何常量抄进测试。
-   *
-   * 判据：上/下两个半区各有一行横跨大半个画布的有色像素（两个箭头都在）、两行不挨着
-   * （没糊成一条）；另外再接一个与 4× 参考渲染的平均偏差检查（见下）。
-   *
-   * "有色"看**绿通道**：底色绿是 99、薄荷青箭头绿是 234，混了多少箭头色一目了然。
-   * （不能用红或蓝通道：底色红 37 也能被"白 + 半透明底色"顶上去，底色蓝 235 更是本来就高。）
-   */
-  const arrowCoverage = (x, y) => {
-    const [, g, , a] = pixelAt(rgba, size, x, y);
-    if (a < 120) return 0;
-    const value = (g - ACCENT[1]) / (MINT[1] - ACCENT[1]);
-    return value < 0 ? 0 : value > 1 ? 1 : value;
-  };
-  const isArrow = (x, y) => arrowCoverage(x, y) >= 0.35;
-  const shaftWidth = (y) => {
+  // 圆盘：盘顶（弧笔上方，盘缘 0.22 与弧顶 0.355 之间）与盘底（竖笔末端 0.64 与
+  // 盘缘 0.78 之间）两个采样点必须是碳黑。取 0.28/0.70 而不是边界值：16px 的格点
+  // 会把 0.72 舍到 0.78125——正好踩在盘缘的抗锯齿带上。
+  for (const [fx, fy, where] of [
+    [0.5, 0.28, '圆盘顶部'],
+    [0.5, 0.7, '圆盘底部'],
+  ]) {
+    const x = Math.min(size - 1, Math.round(fx * size));
+    const y = Math.min(size - 1, Math.round(fy * size));
+    const [r, g, b, a] = pixelAt(rgba, size, x, y);
+    assert(a === 255, `${label}: ${where} (${x},${y}) 应在盘内（不透明），实际 alpha=${a}`);
+    const distance = Math.abs(r - CARBON[0]) + Math.abs(g - CARBON[1]) + Math.abs(b - CARBON[2]);
+    assert(distance <= 12, `${label}: ${where} (${x},${y}) 应是碳黑 #0d0d10，实际 rgb(${r},${g},${b})`);
+  }
+
+  // T 的构成：竖笔（盘下半中轴条带）与弧笔两翼（左右对称）都要有"象牙亮"像素。
+  // 判据用红通道（碳黑 13、象牙 242，抗锯齿混合值介于两者之间）；阈值 120 取中间偏暗，
+  // 保证 16px 下只有一两个像素覆盖的弧翼也能被认出来。
+  const isIvory = (x, y) => pixelAt(rgba, size, x, y)[0] > 120;
+  const countIn = (fx0, fx1, fy0, fy1) => {
     let count = 0;
-    for (let x = 0; x < size; x += 1) if (isArrow(x, y)) count += 1;
+    for (let y = Math.floor(fy0 * size); y < Math.ceil(fy1 * size); y += 1) {
+      for (let x = Math.floor(fx0 * size); x < Math.ceil(fx1 * size); x += 1) {
+        if (x >= 0 && x < size && y >= 0 && y < size && isIvory(x, y)) count += 1;
+      }
+    }
     return count;
   };
-  const minShaft = Math.max(3, Math.round(size * 0.3));
-  const half = Math.floor(size / 2);
-  const upperRows = Array.from({ length: half }, (_unused, i) => i);
-  const lowerRows = Array.from({ length: size - half }, (_unused, i) => half + i);
-  const bestRow = (rows) => rows.reduce((best, y) => (shaftWidth(y) > shaftWidth(best) ? y : best), rows[0] ?? 0);
-  const rightRow = bestRow(upperRows);
-  const leftRow = bestRow(lowerRows);
-
-  assert(
-    shaftWidth(rightRow) >= minShaft,
-    `${label}: 上半侧没有找到右向箭头（第 ${rightRow} 行只有 ${shaftWidth(rightRow)} 个箭头像素，至少要 ${minShaft}）`,
-  );
-  assert(
-    shaftWidth(leftRow) >= minShaft,
-    `${label}: 下半侧没有找到左向箭头（第 ${leftRow} 行只有 ${shaftWidth(leftRow)} 个箭头像素，至少要 ${minShaft}）`,
-  );
-  assert(leftRow - rightRow >= 2, `${label}: 两个箭头挨得太近（第 ${rightRow} 行与第 ${leftRow} 行），可能糊成了一条`);
+  const stemPixels = countIn(0.44, 0.56, 0.55, 0.63);
+  const leftWing = countIn(0.28, 0.44, 0.3, 0.46);
+  const rightWing = countIn(0.56, 0.72, 0.3, 0.46);
+  assert(stemPixels >= 1, `${label}: 盘下半的中轴条带里没有竖笔像素，T 的竖笔可能没画上`);
+  assert(leftWing >= 1, `${label}: 左侧翼区没有亮像素，弧笔可能只画了半边或方向反了`);
+  assert(rightWing >= 1, `${label}: 右侧翼区没有亮像素，弧笔可能只画了半边或方向反了`);
 
   // 与参考渲染对比。判据用**平均偏差**而不是逐像素上限：解析式覆盖算的是精确面积，而参考
-  // 渲染是超采样近似——在箭尖那种亚像素尖角上，单个像素两者本来就能差两百个灰阶（那儿的
+  // 渲染是超采样近似——在弧笔收尖那种亚像素尖角上，单个像素两者本来就能差两百个灰阶（那儿的
   // "真实覆盖率"介于两种近似之间，谁也说不清哪个更"对"）。逐像素上限会因此长期假报错。
-  // 平均偏差对结构性错误极其敏感：少画一个箭头、几何被裁、形状叠加顺序反了，均值会从个位数
+  // 平均偏差对结构性错误极其敏感：少画一笔、几何被裁、形状叠加顺序反了，均值会从个位数
   // 直接跳到几十上百。
   const reference = renderReference(size, 4);
   let total = 0;
@@ -614,66 +488,36 @@ function verifyIcon(bytes, size, label) {
   const meanDelta = total / count;
   assert(meanDelta <= 22, `${label}: 与 4× 参考渲染的平均偏差过大（${meanDelta.toFixed(2)}），几何或抗锯齿有问题`);
 
-  // 至少 1.2% 的像素是不透明的箭头色（两支箭头本身）。看绿通道（底色绿 99、箭头绿 234）。
-  let arrowPixels = 0;
+  // 全图占比：碳黑盘（挖掉 T 后）至少 13% 的画布；盘内的 T 镂空至少 1.2%。
+  let carbonPixels = 0;
+  let tPixels = 0;
   let opaquePixels = 0;
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      const [, g, , a] = pixelAt(rgba, size, x, y);
-      if (a > 200) {
-        opaquePixels += 1;
-        if (g > 195) arrowPixels += 1;
+      const [r, , , a] = pixelAt(rgba, size, x, y);
+      if (a <= 200) continue;
+      opaquePixels += 1;
+      if (r < 70) {
+        carbonPixels += 1;
+      } else if (r > 150) {
+        const fx = (x + 0.5) / size;
+        const fy = (y + 0.5) / size;
+        if (Math.hypot(fx - DISC.cx, fy - DISC.cy) < DISC.radius - 0.02) tPixels += 1;
       }
     }
   }
   assert(opaquePixels > size * size * 0.4, `${label}: 不透明像素太少（${opaquePixels}/${size * size}），底色可能没画上`);
-  assert(
-    arrowPixels >= size * size * 0.012,
-    `${label}: 箭头色像素太少（${arrowPixels}/${size * size}），箭头可能没画上`,
-  );
+  assert(carbonPixels >= size * size * 0.13, `${label}: 碳黑像素太少（${carbonPixels}/${size * size}），圆盘可能没画上`);
+  assert(tPixels >= size * size * 0.012, `${label}: 盘内镂空像素太少（${tPixels}/${size * size}），T 可能没画上`);
 
-  // 左右两半各要有箭头色像素 → 两个方向相反的箭头都在，而不是只剩一个。
-  let arrowLeft = 0;
-  let arrowRight = 0;
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const [, g, , a] = pixelAt(rgba, size, x, y);
-      if (a > 200 && g > 195) {
-        if (x < size / 2) arrowLeft += 1;
-        else arrowRight += 1;
-      }
-    }
-  }
-  assert(arrowLeft > 0 && arrowRight > 0, `${label}: 双向箭头缺失（左半 ${arrowLeft}，右半 ${arrowRight}）`);
-
-  return { size, bytes: bytes.length, arrowPixels, opaquePixels };
+  return { bytes: bytes.length, carbonPixels, tPixels };
 }
 
 /* ------------------------------------------------------------------ *
- * main
+ * 入口
  * ------------------------------------------------------------------ */
 
 const SIZES = [16, 32, 48, 128];
-
-/**
- * 供 `scripts/make-brand-logo.mjs` 复用的几何与工具。
- *
- * 导出而不是复制：品牌 logo 与小图标**必须是同一套几何定义**，否则改了圆的位置、
- * 图标变了而 logo 没变（或者反过来），两个都"看起来对"却对不上。
- */
-export {
-  ACCENT,
-  MINT,
-  TILE,
-  LENS_CIRCLES,
-  renderArtwork,
-  renderIcon,
-  encodePng,
-  coverage,
-  tileDistance,
-  dilate,
-  over,
-};
 
 /** 解析 `--out <dir>`；缺省是仓库根的 `src/icons`。 */
 function resolveOutDir(argv) {
@@ -698,19 +542,18 @@ function main() {
     const report = verifyIcon(readFileSync(file), size, `${size}.png`);
     summary.push(report);
     console.log(
-      `  ✓ ${size}.png  ${report.bytes} 字节  不透明像素 ${report.opaquePixels}/${size * size}  箭头像素 ${report.arrowPixels}`,
+      `  ✓ ${size}.png  ${report.bytes} 字节  碳黑像素 ${report.carbonPixels}/${size * size}  镂空 T 像素 ${report.tPixels}`,
     );
   }
 
   console.log('');
-  console.log(`✓ ${summary.length} 张图标生成并自检通过（PNG 签名 / 各 chunk CRC / IHDR 尺寸 / 四角透明 / 底色 / 双向箭头）`);
+  console.log(`✓ ${summary.length} 张图标生成并自检通过（PNG 签名 / 各 chunk CRC / IHDR 尺寸 / 四角透明 / 象牙底 / 碳黑盘 / 镂空 T）`);
   console.log('  manifest.json 通过 icons 与 action.default_icon 引用 icons/<尺寸>.png（相对 dist 根）。');
-  console.log('  大尺寸的品牌 logo（两个相交透镜圆）不在这个脚本里，见 docs/brand/。');
+  console.log('  品牌 logo 是人工选定的静态资产（docs/brand/translens-logo.png），与本图标同一符号、不同尺寸方言。');
 }
 
 /*
- * 只有**直接执行**时才生成图标；被 `make-brand-logo.mjs` import 时什么都不做
- * （否则每次生成 logo 都会顺带重刷一遍 src/icons 并多打一串日志）。
+ * 只有**直接执行**时才生成图标；被 import（比如测试）时什么都不做。
  */
 const isDirectRun =
   process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
