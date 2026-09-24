@@ -514,6 +514,11 @@ tests/                   vitest 用例
   `<svg>` / `<canvas>` / `<iframe>` 等也一律跳过。**按钮上显示的文字属于界面正文，照常
   翻译**（`<button>` 不在跳过名单里）；纯图标的按钮（`×`、`☰`、`3`）由噪声闸
   （至少两个字母）挡下，不送接口。
+- **整段就是一个结构记号的不送接口**：HTML 标签名（`<caption>`）、一条 URL、一个邮箱地址、
+  `overscroll-behavior` 这类 kebab 形式的属性名。它们是页面上**真实可见**的文字（w3schools 把
+  标签名做成链接、MDN 侧栏整列是属性名），但翻出来一定是废的。判据只认"整段恰好是这个记号、
+  且不含任何空白"——句子与标题里出现同样的字符串照送不误（`Set overscroll-behavior to contain.`
+  照翻），`NASA ADS`、`State-of-the-Art` 这类带大写的专名不设规则。
 - **悬停与划词只响应真实用户手势**：页面脚本派发的事件（`isTrusted: false` 的 mouseup /
   keydown / mouseover）一律不触发翻译——否则任何页面都能自设选区再合成一个 mouseup，把扩展
   当成"带着你的 Key 烧你额度"的翻译代理。右键菜单那条路径由浏览器自己的菜单点击驱动，

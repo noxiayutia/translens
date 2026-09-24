@@ -18,6 +18,7 @@ import { cpSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync } fr
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startChrome, loadUnpacked, kill, sleep, PROFILE_DIR } from './harness.mjs';
+import { selectFirstUsableProfile } from './lib.mjs';
 import { startProxy } from './prompt-proxy.mjs';
 import { CASES, HARD_KINDS, aggregate, scoreRun } from './score-prompt.mjs';
 
@@ -175,33 +176,9 @@ try {
     return 'cleared';
   })()`);
 
-  /**
-   * 把新档案选成"使用中"。
-   *
-   * 设置页**从不**写 `engineId`（`src/options/sections/engine.ts` 的注释：选择档案是弹窗的职责），
-   * 所以只建档不选档时 `resolveEngine` 给出 NO_ENGINE_PROBLEM，页面上每一格都是
-   * "还没有可用的翻译引擎"，而请求一条都发不出去（实测就是这么红的）。
-   * 真用户是在弹窗里点的；台架这里直接改存储，因为被测对象是提示词而不是选档链路，
-   * 且"有没有真的选上"由后续请求到不到代理自证——选不上就整轮红，不会静默测到别的东西。
-   */
-  const selectProfile = async () => {
-    const result = await extEval(`(async () => {
-      const key = 'jinyi:settings';
-      const stored = await chrome.storage.local.get(key);
-      const s = stored[key];
-      if (!s?.profiles?.length) return JSON.stringify({ error: '存储里没有档案' });
-      const usable = s.profiles.find((p) => (p.activeModel ?? '').trim().length > 0);
-      if (!usable) return JSON.stringify({ error: '没有带当前模型的档案' });
-      if (s.engineId === usable.id) return JSON.stringify({ 改了: false, engineId: s.engineId });
-      await chrome.storage.local.set({ [key]: { ...s, engineId: usable.id } });
-      return JSON.stringify({ 改了: true, engineId: usable.id, baseUrl: usable.baseUrl, model: usable.activeModel });
-    })()`);
-    const parsed = JSON.parse(result);
-    if (parsed.error) throw new Error(`选档失败：${parsed.error}`);
-    console.log(`选档：engineId=${parsed.engineId ?? parsed.档案?.id}${parsed.改了 ? '（已写入）' : '（本来就对）'}`);
-    return parsed;
-  };
-  await selectProfile();
+  /** 见 lib.mjs 的 `selectFirstUsableProfile`：只建档不选档 ⇒ 整页报「没有可用引擎」且零请求。 */
+  const chosen = await selectFirstUsableProfile({ extEval });
+  console.log(`选档：engineId=${chosen.engineId} 档案 ${chosen.baseUrl} 模型 ${chosen.model}${chosen.本来就对 ? '（本来就对）' : '（已写入）'}`);
 
   /** 链路没通时把现场倒出来：toast 里带的是引擎侧真实错误码，档案与健康记录带的是配置真相。 */
   const dumpDiagnostics = async (提示 = new Set()) => {

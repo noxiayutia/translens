@@ -163,6 +163,34 @@ export async function boot() {
 }
 
 /**
+ * 把"第一个有当前模型的档案"选成使用中（直接写 `settings.engineId`）。
+ *
+ * 为什么台架必须做这一步：设置页**从不**写 `engineId`（`src/options/sections/engine.ts` 的注释
+ * 写明"选择档案是弹窗的职责"），所以只用 UI 建完档案就去看页面翻译，`resolveEngine` 给出的是
+ * `NO_ENGINE_PROBLEM`——整页每一格「还没有可用的翻译引擎」，而接口一条请求都收不到。
+ * 这个红法很容易被误读成"扩展坏了"或"权限没给"，实测在两套台架里各撞过一次。
+ *
+ * 走的是存储而不是弹窗 UI：被测对象不是选档链路，而"选上了没有"由后续请求数自证
+ * （选不上就整轮红，不会静默测到别的东西）。真用户点弹窗那条路径另有 `run-core.mjs` 覆盖。
+ */
+export async function selectFirstUsableProfile(api) {
+  const raw = await api.extEval(`(async () => {
+    const key = 'jinyi:settings';
+    const stored = await chrome.storage.local.get(key);
+    const s = stored[key];
+    if (!s?.profiles?.length) return JSON.stringify({ error: '存储里没有档案' });
+    const usable = s.profiles.find((p) => (p.activeModel ?? '').trim().length > 0);
+    if (!usable) return JSON.stringify({ error: '没有带当前模型的档案' });
+    const 本来就对 = s.engineId === usable.id;
+    if (!本来就对) await chrome.storage.local.set({ [key]: { ...s, engineId: usable.id } });
+    return JSON.stringify({ 本来就对, engineId: usable.id, baseUrl: usable.baseUrl, model: usable.activeModel });
+  })()`);
+  const parsed = JSON.parse(raw);
+  if (parsed.error) throw new Error(`选档失败：${parsed.error}`);
+  return parsed;
+}
+
+/**
  * 走**真实设置页 UI**建一个指向本地假引擎的档案（不复用任何内部函数）。
  * 填值用 JS（vanilla 代码在保存时读 .value），但「保存」这一下用真鼠标点击——
  * 可选宿主权限必须在用户手势里申请，JS 合成点击不会被 Chrome 认。

@@ -1,4 +1,4 @@
-import { containsKana, isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
+import { containsKana, isStructureToken, isTranslatableText, normalizeText, shouldSkip } from '../core/lang';
 
 /** 译文宿主的落点。整元素段落交给渲染器按布局规则决定；松散文本段落必须显式给出位置。 */
 export type SegmentAnchor =
@@ -559,6 +559,10 @@ function collectFrom(roots: Element[], options: ExtractorOptions): ExtractedSegm
   /** 返回是否真的产出了一段：调用方靠它决定要不要把元素标记成「已处理」。 */
   const push = (element: Element, text: string, anchor: SegmentAnchor, textRun: boolean): boolean => {
     if (!isTranslatableText(text)) return false;
+    // 整段就是一个 `<caption>` / URL / 邮箱 / CSS 属性名 ⇒ 它不是散文，翻出来是废的。
+    // 放在 shouldSkip **之前**：那条判据管的是"像不像目标语言"，而记号在任何目标语言下
+    // 都不该送出去（且它在日文页面上会被整轮关闭，不能指望它挡这个）。
+    if (isStructureToken(text)) return false;
     if (options.shouldSkipText?.(text)) return false;
     // 页面级判定为"本页含假名"时，本轮关闭"看起来已是目标语言"的跳过（见 ExtractorOptions）。
     if (shouldSkip(text, options.targetLang, { allowSameScriptSkip: !options.pageHasKana })) return false;

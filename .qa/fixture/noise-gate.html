@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- 形状闸（`core/lang.ts` 的 isStructureToken）的验收夹具。
+     n* 是"整段就是一个结构记号"——加闸之后**一个字节都不该送出去**；
+     c* 是把同样的形状放进散文里——必须照送。两边都放，是因为只测 n* 的话，
+     "把整页所有段都挡掉"这种退化实现也能通过。
+     n1/n2 刻意做成链接文字：w3schools 上那 12 条标签名就是这个形状（不是 <code> 漏跳过）。 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Noise gate fixture</title>
+  </head>
+  <body>
+    <main>
+      <p id="n1"><a href="#x">&lt;table&gt;</a></p>
+      <p id="n2"><a href="#y">&lt;caption&gt;</a></p>
+      <ul id="n3"><li>overscroll-behavior</li><li>scroll-margin-top</li></ul>
+      <p id="n4">https://doi.org/10.48550/arXiv.2303.08774</p>
+      <p id="n5">monnand@gmail.com</p>
+      <p id="c1">The &lt;caption&gt; element labels the columns of a data table.</p>
+      <p id="c2">Set overscroll-behavior to contain to stop scroll chaining.</p>
+      <p id="c3">Read the notes at https://example.com/before-you-start before you edit anything.</p>
+      <p id="c4">Contact us via monnand at gmail dot com if the build breaks again.</p>
+    </main>
+  </body>
+</html>

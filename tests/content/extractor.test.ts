@@ -699,3 +699,58 @@ describe('抽出文本的不变量', () => {
     });
   });
 });
+
+/**
+ * 形状闸：整段就是一个结构记号时不采集（判据本体在 `core/lang.ts` 的 `isStructureToken`）。
+ * 这一组是**采集端**的用例——单测判据本身证明不了"段落确实没进批次"，
+ * 而 2026-09-23 那轮实测的噪声正是整段记号（w3schools 12 条标签名做成链接、MDN 侧栏一整列属性名）。
+ */
+describe('整段是结构记号时不采集', () => {
+  const collect = (html: string) => collectSegments(mount(html), { targetLang: 'zh-Hans' }).map((s) => s.text);
+
+  it('标签名、属性名、URL、邮箱各自成段时整段不采', () => {
+    const got = collect(
+      '<p>&lt;caption&gt;</p><p>overscroll-behavior</p><p>https://doi.org/10.48550/arXiv.2303.08774</p>' +
+        '<p>monnand@gmail.com</p>',
+    );
+    expect(got).toEqual([]);
+  });
+
+  it('w3schools 那种「链接文字就是标签名」的表格行也不采', () => {
+    const got = collect(
+      '<table><tbody><tr><td><a href="#">&lt;table&gt;</a></td>' +
+        '<td><a href="#">&lt;tr&gt;</a></td><td><a href="#">&lt;td&gt;</a></td></tr></tbody></table>',
+    );
+    expect(got).toEqual([]);
+  });
+
+  it('同样的形状出现在句子里时必须照采（闸门只认整段）', () => {
+    expect(
+      collect(
+        '<p>The &lt;caption&gt; element labels the columns.</p>' +
+          '<p>Set overscroll-behavior to contain.</p>' +
+          '<p>详细见 https://example.com 的说明</p>',
+      ),
+    ).toEqual([
+      'The <caption> element labels the columns.',
+      'Set overscroll-behavior to contain.',
+      '详细见 https://example.com 的说明',
+    ]);
+  });
+
+  it('带空白的短语与含大写的标题不受影响', () => {
+    expect(collect('<p>Grid area naming</p><p>State-of-the-Art</p><p>NASA ADS</p>')).toEqual([
+      'Grid area naming',
+      'State-of-the-Art',
+      'NASA ADS',
+    ]);
+  });
+
+  it('已知的代价：单独成段的 CSS 属性名标题会被跳过（换整段记号不送接口）', () => {
+    // 正文那段用英文：中文目标语言下的中文段落会被 `shouldSkip`（"看起来已是目标语言"）挡掉，
+    // 那样这条用例就在测另一件事，证明不了"被挡的只有标题"。
+    expect(collect('<h2>grid-area</h2><p>Names a grid area inside the template.</p>')).toEqual([
+      'Names a grid area inside the template.',
+    ]);
+  });
+});

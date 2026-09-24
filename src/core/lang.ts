@@ -130,6 +130,33 @@ export function isTranslatableText(text: string): boolean {
   return (trimmed.match(LETTER)?.length ?? 0) >= 2;
 }
 
+/**
+ * 整段就是一个**结构记号**时，它不是自然语言，翻出来一定是废的。
+ *
+ * 与 {@link isTranslatableText} 的分工：那条挡"太短、没有字母"（页码、纯标点），
+ * 这一条挡"形状完整但不是散文"——`<caption>`、`https://doi.org/…`、`monnand@gmail.com`、
+ * `overscroll-behavior`。它们的来源查过了：这些都是**页面上真实可见的文字**
+ * （w3schools 把标签名做成 `<a><table></a>` 链接、MDN 侧栏整列是 CSS 属性名），
+ * 不是 `<code>` 漏了跳过——`inlineText` 对 `<code>` 后代本来就不取文字。
+ *
+ * **判据收成"整段恰好一个 token 且不含空白"**：句子与标题里出现标识符是常态，那种段必须照翻
+ * （实测模型对句内标识符 8/8 原样保留，见 `docs/qa/2026-09-24-prompt-verbatim-baseline.md` 的 `m-*`）。
+ * "宁可多翻、不可漏翻"这条偏置体现在三处：含空白的段一律放行；kebab 只认小写起头
+ * （`State-of-the-Art` 是标题不是属性名）；`NASA ADS` 一类全大写专名不设规则。
+ */
+const TAG_TOKEN = /^<\/?[a-z][a-z0-9]*(-[a-z0-9]+)*>$/i;
+const URL_TOKEN = /^(https?|ftp):\/\/\S+$/i;
+const EMAIL_TOKEN = /^[\w.+-]+@[\w-]+(\.[\w-]+)+$/;
+const KEBAB_TOKEN = /^(-[a-z0-9]+)?[a-z][a-z0-9]*(-[a-z0-9*]+)+$/;
+
+export function isStructureToken(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  // 含任何空白 ⇒ 是一个短语或句子，不是单个记号。放最前面，四条规则共用这条前提。
+  if (/\s/.test(trimmed)) return false;
+  return TAG_TOKEN.test(trimmed) || URL_TOKEN.test(trimmed) || EMAIL_TOKEN.test(trimmed) || KEBAB_TOKEN.test(trimmed);
+}
+
 function baseLang(code: string): string {
   return code.split('-')[0].toLowerCase();
 }

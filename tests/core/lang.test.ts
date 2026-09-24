@@ -3,6 +3,7 @@ import {
   containsKana,
   detectHanVariant,
   detectScript,
+  isStructureToken,
   isTranslatableText,
   normalizeText,
   shouldSkip,
@@ -121,6 +122,71 @@ describe('isTranslatableText', () => {
 
   it('少于两个字母不可翻译', () => {
     expect(isTranslatableText('3 个')).toBe(false);
+  });
+});
+
+/**
+ * 形状闸：整段**就是一个**结构记号（标签名 / URL / 邮箱 / kebab 属性名）时不采集。
+ *
+ * 判据必须是"整段恰好是这个 token"，不能是"文本里含有"——`docs/qa/2026-09-23-multi-site-report.md:62-78`
+ * 那批噪声段（w3schools 的 12 条 HTML 标签名、MDN 侧栏的 `overscroll-*`）都是整段就是记号，
+ * 而真散文里的标识符要留在译文里（实测 `m-*` 三类 8/8 保留，见
+ * `docs/qa/2026-09-24-prompt-verbatim-baseline.md`）。下面「不许挡」那一组就是这条边界的钉子。
+ */
+describe('isStructureToken', () => {
+  it('整段是 HTML/XML 标签名', () => {
+    for (const text of ['<table>', '</tr>', '<th>', '<caption>', '<colgroup>', '<p>', '<my-widget-2>', '<TABLE>']) {
+      expect(isStructureToken(text)).toBe(true);
+    }
+  });
+
+  it('整段是一个 URL（无空格）', () => {
+    expect(isStructureToken('https://doi.org/10.48550/arXiv.2303.08774')).toBe(true);
+    expect(isStructureToken('http://example.com/a?b=c#d')).toBe(true);
+  });
+
+  it('整段是一个邮箱地址', () => {
+    expect(isStructureToken('monnand@gmail.com')).toBe(true);
+  });
+
+  it('整段是 kebab 形式的属性名（含厂商前缀与通配）', () => {
+    for (const text of ['overscroll-behavior', 'background-*', '-webkit-box-flex', 'scroll-margin-top', 'grid-area']) {
+      expect(isStructureToken(text)).toBe(true);
+    }
+  });
+
+  it('首尾空白不影响判定', () => {
+    expect(isStructureToken('  <table>  ')).toBe(true);
+  });
+
+  it('句子（或标题）里有这些形状时**不许**挡', () => {
+    for (const text of [
+      'Set overscroll-behavior to contain to stop scroll chaining.',
+      'The <caption> element labels the columns of a data table.',
+      'See https://example.com for details.',
+      'Email me at a@b.com please.',
+      'Scroll behavior options',
+      'overscroll-behavior: contain',
+    ]) {
+      expect(isStructureToken(text)).toBe(false);
+    }
+  });
+
+  it('品牌名、专名与带大写的连字符词不许挡（宁可多翻，不可漏翻）', () => {
+    for (const text of ['iPhone 15 Pro', 'NASA ADS', 'State-of-the-Art', 'A/B test', 'T Cell', 'e-commerce is growing']) {
+      expect(isStructureToken(text)).toBe(false);
+    }
+  });
+
+  it('自然语言与中文正文一律放行', () => {
+    expect(isStructureToken('This section describes the cache.')).toBe(false);
+    expect(isStructureToken('这是一段正文')).toBe(false);
+  });
+
+  it('空串与纯符号交给上游噪声闸，本函数不越权', () => {
+    expect(isStructureToken('')).toBe(false);
+    expect(isStructureToken('…')).toBe(false);
+    expect(isStructureToken('<3')).toBe(false);
   });
 });
 
