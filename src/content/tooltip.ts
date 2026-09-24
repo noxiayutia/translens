@@ -615,7 +615,7 @@ export function setActionLabel(button: HTMLButtonElement, label: string): void {
 
 function onHostClick(event: Event): void {
   /**
-   * **只认真实手势**（与划词的 mouseup、悬停的 mouseover、小气泡的 pointerenter 同一道闸门、
+   * **只认真实手势**（与划词的 mouseup、悬停的 mouseover、小气泡起算用的 pointermove 同一道闸门、
    * 同一套理由）：浮层是 open shadow，页面脚本摸得到宿主，也就点得到里面的按钮。而这两个按钮
    * 一条会把文本带着用户的 Key 送去用户自己付费的引擎（「翻译」），一条会写剪贴板（「复制」）
    * ——都是"后果在用户这一侧"的路径，不设闸就等于把闸门让给了页面。

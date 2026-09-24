@@ -88,7 +88,7 @@ shadow 边界），`onMouseup` 在 `isTrusted`/主键之后立刻据此早退。
 
 浮层是 **open** shadow DOM，页面脚本摸得到宿主，也就点得到里面的按钮——一条会把文本带着用户
 自己的 Key 送去付费引擎（「翻译」），一条会写剪贴板（「复制」）。与 `mouseup`、`mouseover`、
-`pointerenter` 同一类路径就同一类答案：委托层 `onHostClick` 首位 `if (!event.isTrusted) return;`。
+`pointermove` 同一类路径就同一类答案：委托层 `onHostClick` 首位 `if (!event.isTrusted) return;`。
 门开在委托这一层，所以 `TooltipButton` 的回调契约不用带上事件对象。
 
 ## 3. 读数（`.qa/run-selection-chip.mjs`，2026-09-24，Chrome 153 + 本地假引擎）

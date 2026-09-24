@@ -1,7 +1,8 @@
 // 划词两段式（小气泡 + 悬停意图）的真机读数。
 //
 // 为什么必须真机：浮层是 shadow DOM，悬停意图挂在**宿主**上，靠的是浏览器把 shadow 内部
-// 元素的 pointerenter 重定向到宿主。jsdom 里"派发一个 pointerenter"证明不了这件事。
+// 元素的指针事件重定向到宿主；而"节点插到静止指针底下时到底补发哪些事件"只有浏览器知道
+// （⑭ 量出来是 over+enter、不补发 move ⇒ 起算挂在 pointermove 上）。jsdom 证明不了这两件事。
 //
 // 手势的两条硬事实（都是这一轮实测出来的，写下来免得下次重新踩）：
 // 1. **CDP 的 mousePressed + mouseMoved(buttons:1) + mouseReleased 拖不出选区**——
@@ -115,7 +116,7 @@ async function moveTo(x, y) {
   await api.cdp.mouse(S, 'mouseMoved', x, y);
 }
 
-/** 把指针停到浮层正中（真实 pointerenter 落到宿主上）。 */
+/** 把指针移进浮层正中并停住（真实的 over+enter+move 落到宿主上，起算读的是 move）。 */
 async function dwell(tip) {
   await moveTo(tip.x + tip.w / 2, tip.y + tip.h / 2);
 }
@@ -377,12 +378,10 @@ try {
     `草稿选区 ${JSON.stringify(s9.text)} · 浮层 ${s9.tip === null ? '无' : brief(s9.tip)} · 请求增量 ${r9 - before9}`,
   );
 
-  // ---------- ⑫ 静止的指针不起算：计时器只认 pointerenter ----------
-  // 想复现的是"chip 恰好出现在指针底下、指针原地不动"。第一次尝试（P 取 chip 底边之下 12px，
-  // 再 Shift+点击把选区扩下去）读数证明**这个几何在单次划词下不可达**：chip 的顶边 =
-  // 选区块底 + GAP(8)，而任何仍然命中该行文本的落点都在块底之上 ⇒ chip 永远压在指针下面，
-  // 盖不到指针。真正会压上的只有"拖选越过最后一行的行底"那一种，而 CDP 拖不出选区
-  // （本文件开头第 1 条）。所以这里量的是可达的那半条：**指针没有 enter 进 chip，就不起算**。
+  // ---------- ⑫ 指针没移进气泡就不起算（带外那一半；带内由 ⑭ 量） ----------
+  // 这里 P 取 chip 底边之下 12px，明确落在**带外**（能压住指针的带 = 选区块底 +8 … +48，
+  // 实测盒高 40）。带内的情形不是量不了——见 ⑭ 的 user-select:none 垫片构造。
+  // 本条曾经配过一句"这个几何不可达"的结论，那是错的、已被 ⑭ 推翻，规格 §2.2 留了反证表。
   await pressEscape();
   const before12 = await requests();
   const w12 = (await wordPoints('p2'))[1]; // "single"：多字母词，双击可靠
@@ -417,7 +416,7 @@ try {
   const tip12b = await settleTranslated();
   const r12b = await requests();
   check(
-    '⑫b 之后把指针移进气泡（第一次 enter）：起算并 +1',
+    '⑫b 之后把指针移进气泡（第一次 enter+move）：起算并 +1',
     r12b === before12 + 1 && tip12b?.variant === 'bubble' && tip12b?.text.startsWith('译·'),
     `请求增量 ${r12b - before12} · ${brief(tip12b)}`,
   );
