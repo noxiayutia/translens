@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>QA fixture — sr-only</title></head>
+<body>
+  <a id="skip-classic" href="#main" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0, 0, 0, 0)">Skip to main content</a>
+  <span id="skip-modern" style="position:absolute;width:1px;height:1px;clip-path:inset(50%)">Screen reader only label</span>
+  <p id="legacy-indent" style="text-indent:-9999px">Legacy image replacement text</p>
+  <p id="zero-font" style="font-size:0">Zero font size hidden text</p>
+
+  <div id="visible-badge" style="position:absolute;top:20px;left:20px;width:220px;height:44px;background:#222;color:#fff">Visible absolutely positioned badge</div>
+  <div id="half-clipped" style="clip-path:inset(0 0 50% 0);width:300px;height:60px;overflow:hidden">Half clipped decorative heading</div>
+  <p id="control">Ordinary visible sentence that must be translated.</p>
+</body>
+</html>

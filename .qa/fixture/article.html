@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>QA fixture — article</title>
+<style>
+  body { font: 16px/1.6 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  .card { border: 1px solid #ddd; padding: 8px; margin: 8px 0; }
+  #menu { display: none; }
+  #menu.open { display: block; }
+  .dropdown:hover .panel { display: block; }
+  .panel { display: none; border: 1px solid #999; padding: 6px; }
+  [contenteditable] { border: 1px dashed #aaa; padding: 6px; }
+</style>
+</head>
+<body>
+<header id="site-header">
+  <nav class="dropdown">
+    <span id="nav-trigger">Explore content</span>
+    <span class="panel" id="css-panel">A panel revealed only by CSS hover</span>
+  </nav>
+</header>
+
+<article id="article">
+  <h1>The Silent Cost of Nested Callbacks</h1>
+  <p id="p1">Engineers often underestimate how much reading time a deeply nested callback chain consumes during a production incident.</p>
+  <p id="p2">A single helper function can hide three separate failure modes, and each one needs its own error code before the on-call engineer can act.</p>
+  <p id="p3">By <a id="author-link" href="#author">Jane Doe</a></p>
+  <p id="p4">Read more</p>
+  <p id="p5">Read more</p>
+  <p id="mixed">The API returned 一个看不懂的错误 because the model name was wrong.</p>
+  <p id="hidden-style" style="display:none">This paragraph is display none and must never be sent anywhere.</p>
+  <p id="hidden-aria" aria-hidden="true">This paragraph is aria hidden and must never be sent anywhere.</p>
+  <pre id="code-block"><code>const x = fetch(url); // code inside pre must stay untouched</code></pre>
+  <div id="draft" contenteditable="true">A half-written email draft that belongs to the user, not the page.</div>
+  <button id="submit-btn">Submit report</button>
+  <button id="icon-btn">×</button>
+  <table id="table">
+    <thead><tr><th>Region</th><th>Latency</th></tr></thead>
+    <tbody><tr><td>Europe west</td><td>42 ms</td></tr></tbody>
+  </table>
+  <div class="card"><span class="label">Carrier</span> text sitting inline right after a label span</div>
+  <div id="menu"><p id="menu-p1">Menu item that exists in the DOM but starts hidden.</p></div>
+</article>
+
+<script>
+  window.__openMenu = () => document.getElementById('menu').classList.add('open') || document.getElementById('menu').removeAttribute('hidden');
+  window.__appendCard = (n) => {
+    for (let i = 0; i < n; i += 1) {
+      const div = document.createElement('div');
+      div.className = 'card injected';
+      div.textContent = `Dynamically injected paragraph number ${document.querySelectorAll('.injected').length + 1} for the infinite scroll test.`;
+      document.getElementById('article').appendChild(div);
+    }
+    return document.querySelectorAll('.injected').length;
+  };
+  window.__revealHidden = () => {
+    const el = document.getElementById('menu');
+    el.style.display = 'block';
+    return getComputedStyle(el).display;
+  };
+</script>
+</body>
+</html>
