@@ -10,6 +10,8 @@ logo/
 .qa/dist-prompt/
 .qa/shots/
 .qa/sent/
+# 加闸之前的底稿快照，`.qa/analyze-sent.mjs --dir=sent-baseline` 读它做前后对比（同样不入库）。
+.qa/sent-baseline/
 .qa/out-*
 .qa/state.json
 # ⚠ 这个文件里是**真实服务商 API Key**（measure-latency.mjs 直连真接口用），永不入库。
