@@ -339,7 +339,11 @@ const TOOLTIP_CSS = `
     border: 1px solid transparent;
     border-radius: var(--jy-radius-sm);
     cursor: pointer;
-    /* 次按钮（默认档）：半透明白底 + 一道描边。主按钮（复制、划词圆点）见下面的 primary。 */
+    /* 次按钮（默认档）：半透明白底 + 一道描边。
+       如实写明：**产品侧当前两个按钮（译文屏的「复制」与划词的圆点）都走 primary 档**，
+       这一档暂时没有按钮穿着它。保留它不是死代码——它是 entry.variant 缺省时的默认档，
+       用途是"下一个按钮零成本继承"，并且正被 tooltip 用例覆盖着。
+       要删就连同 variant 轴与这档上的 :focus-visible 那组 a11y 断言一起删，属独立重构。 */
     color: var(--jy-text);
     background: rgba(255, 255, 255, 0.1);
     border-color: var(--jy-border-strong);
@@ -359,8 +363,8 @@ const TOOLTIP_CSS = `
     outline-offset: 2px;
   }
 
-  /* 主按钮（复制）：这一屏唯一的实心强调色，与弹窗的 .primary 同一支象牙（浮层是深底，
-     所以按钮取品牌反相档：象牙底 + 碳黑字）。 */
+  /* 主按钮（译文屏的「复制」、划词的圆点）：这一屏唯一的实心强调色，与弹窗的 .primary
+     同一支象牙（浮层是深底，所以按钮取品牌反相档：象牙底 + 碳黑字）。 */
   .jy-action[data-variant="primary"] {
     color: #0d0d10;
     background: var(--jy-accent);
