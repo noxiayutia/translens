@@ -162,8 +162,10 @@ export const SETTINGS_KEY = 'jinyi:settings';
  * v4：`EngineProfile.model` → `models` + `activeModel`。
  * v5：删掉 Google 免费接口——`engineId: 'google'` 迁到第一个有 `activeModel` 的档案
  *     （一个都没有就置 `''`，见 {@link dropFreeEngineSelection}）。
- * v6：档案加 `kind`（用哪个适配器）——老数据的每个档案盖上 `'openai-compat'`，
- *     见 {@link stampProfileKinds}。判据本身（缺失 = openai-compat）与迁移共用 {@link pickKind}。
+ * v6：档案加 `kind`（用哪个适配器）。**这一步没有迁移代码**：`kind` 由读入口 {@link pickKind}
+ *     补齐（缺失 = `'openai-compat'`，v5 及更早只存在一个适配器），而 `migrate` 的产物从不回写
+ *     磁盘——在迁移里再盖一次章在任何路径上都不可观测。版本号本身仍要抬：它是"这份数据由哪一版
+ *     语义产生"的标记，也是将来 v7 的闸门。理由与证据见规格 §8 的更正标注。
  */
 export const CURRENT_VERSION = 6;
 
@@ -334,8 +336,9 @@ function pickModels(value: unknown): string[] {
  * 按 OpenAI 协议发一次请求——猜错的方向是把用户的密钥发给另一家服务商。
  * 认不出来的下场由 `resolveEngine` 给：`UNKNOWN_KIND_PROBLEM` + 零请求。
  *
- * 三处共用这一份（`pickProfile`、v5 → v6 迁移、v4 → v5 迁移里问 `firstUsableProfileId` 之前的
- * 生数据投影）——判据各写一份必然漂移，先例见 `isAllowedBaseUrl`。
+ * 两处共用这一份（`pickProfile` 与 v4 → v5 迁移里问 `firstUsableProfileId` 之前的生数据投影）
+ * ——判据各写一份必然漂移，先例见 `isAllowedBaseUrl`。**v5 → v6 没有第三个使用方**：
+ * 迁移盖章被删了，理由见 {@link CURRENT_VERSION} 的注释与规格 §8 的更正标注。
  */
 function pickKind(value: unknown): string {
   if (typeof value !== 'string') return OPENAI_COMPAT_ENGINE_ID;
@@ -607,40 +610,11 @@ function migrate(raw: unknown, storedVersion: number): unknown {
   if (storedVersion < 5) {
     record = dropFreeEngineSelection(record);
   }
-  // 排在最后：v1–v5 的每一步都在造档案或改档案字段，`kind` 由它统一盖一次（v5 及更早
-  // 只存在一个适配器，见 §3.2 第一行）。`dropFreeEngineSelection` 不依赖这一步——它问
-  // `firstUsableProfileId` 前用自己的投影，缺失的 kind 走同一个 `pickKind`。
-  if (storedVersion < 6) {
-    record = stampProfileKinds(record);
-  }
+  // **v6 没有迁移步骤**（Batch 1.5 的裁决，原文与理由见规格 §8 的更正标注）：档案的 `kind`
+  // 由读入口 `pickKind` 补齐，而 `migrate` 的产物只经过 `mergeSettings`、从不回写磁盘，
+  // 所以"在迁移里盖一次章"在任何路径上都不可观测——它唯一能做的事是把同一个判据再抄一遍。
+  // `CURRENT_VERSION = 6` 仍然保留：它是"这份数据由哪一版语义产生"的标记，也是将来 v7 的闸门。
   return record;
-}
-
-/**
- * v5 → v6 的迁移：**只做一件事**——给每个档案盖上 `kind`（缺失时 `'openai-compat'`）。
- *
- * 三条刻意的口径：
- * 1. **只盖缺失的，已有的一律原样保留**：一份已经写着别的类型的档案被无条件盖成
- *    openai-compat，后果就是"拿 Azure 的密钥按 OpenAI 协议发一次请求"（§3.2 第二行）。
- * 2. **判据与读取层同一份**（{@link pickKind}）：迁移和 `pickProfile` 对"缺失"必须给出
- *    同一个答案，否则同一份数据在两条路径上会变成不同的档案。
- * 3. **生数据形状**沿用 v5 那一步的写法：`profiles` 可能是 `undefined` / 非数组 / 装着非对象，
- *    先投影形状再动手，不许 `as EngineProfile[]` 直接 map（会在脏数据上抛 TypeError，
- *    整个 `loadSettings` 跟着挂）。非对象的条目**原样放回**——它会被 `pickProfiles` 丢掉，
- *    迁移没有资格替用户决定"这条不要了"。
- *
- * 幂等靠 `migrate` 开头那道版本闸门（`storedVersion >= CURRENT_VERSION` 原样返回）。
- */
-function stampProfileKinds(record: Record<string, unknown>): Record<string, unknown> {
-  if (!Array.isArray(record.profiles)) return record;
-  return {
-    ...record,
-    profiles: record.profiles.map((raw) => {
-      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
-      const entry = raw as Record<string, unknown>;
-      return { ...entry, kind: pickKind(entry.kind) };
-    }),
-  };
 }
 
 /**

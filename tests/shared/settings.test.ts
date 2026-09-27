@@ -1123,8 +1123,20 @@ describe('单元 F 第 2 步：firstUsableProfileId 类型感知（§4.4）', ()
   });
 });
 
-describe('单元 F 第 2 步：迁移 v5 → v6（§8）', () => {
-  it('老数据的每个档案都盖上 kind，且版本号抬到 6', async () => {
+/**
+ * v5 → v6 **没有迁移步骤**（Batch 1.5 裁决，理由见规格 §8 的更正标注）：`kind` 由读入口
+ * `pickKind` 补齐，而 `migrate` 的产物只经过 `mergeSettings`、从不回写磁盘。
+ *
+ * 下面五条各自钉住一个仍然存在的判据，**没有一条是在为"盖章步骤"补位**——那一步已经连同
+ * 它对应用例的旧名字一起删掉了（用例名如果留着会谎称它在测迁移）。
+ */
+describe('单元 F 第 2 步：v5 → v6 只抬版本号，kind 由读入口补齐（§8 更正后）', () => {
+  /**
+   * 牙：`CURRENT_VERSION` 改回 5 → 第一条红；把 `pickKind` 的"缺失 → openai-compat"删掉
+   * → 第二条红（读出来会是 `undefined`，而 `resolveEngine` 会把它判成"类型不认识"，
+   * 全体 v5 老用户一夜之间翻不动页）。
+   */
+  it('读一份 v5 数据：版本号抬到 6，缺失的 kind 由读入口补成 openai-compat', async () => {
     const area = new MemoryStorage();
     await area.set({
       [SETTINGS_KEY]: {
@@ -1140,10 +1152,11 @@ describe('单元 F 第 2 步：迁移 v5 → v6（§8）', () => {
   });
 
   /**
-   * 迁移**只盖缺失的**。无条件盖章会把一份已经写成别的类型的档案改回 openai-compat——
-   * 那正是 §3.2 第二条明令禁止的方向（拿 Azure 的密钥按 OpenAI 协议发出去）。
+   * 与上面 `mergeSettings` 层那条「认不出的字符串原样保留」是**同一个判据**，差别只在入口：
+   * 这条走的是 `loadSettings`（版本闸门 + migrate + merge 全链），证明"原样保留"不会因为
+   * 经过迁移路径而被抹掉。留着的理由就这一条，不假装它在测迁移。
    */
-  it('迁移不覆盖已有的 kind：v5 数据里写着别的类型就原样留着', async () => {
+  it('已经写着别的类型的 v5 档案，走存储路径读回来仍是那个类型（读入口不覆盖）', async () => {
     const area = new MemoryStorage();
     await area.set({
       [SETTINGS_KEY]: {
@@ -1156,7 +1169,24 @@ describe('单元 F 第 2 步：迁移 v5 → v6（§8）', () => {
     expect(settings.profiles[0].kind).toBe('azure-translator');
   });
 
-  it('幂等：迁移产物整份写回再读一次，形状一字不差', async () => {
+  /**
+   * 这条是"为什么盖章步骤不可观测"的**正面证据**：读一次**不改磁盘**。
+   * 牙：任何"迁移顺手回写存储"的改动（把盖章结果 `saveSettings` 回去、或在 load 里补写
+   * 归一化后的形状）都会让这里红——存储里既没有 kind，版本也还是 5。
+   */
+  it('读迁移不回写：磁盘上那份还是原样（没有 kind、版本仍是 5）', async () => {
+    const area = new MemoryStorage();
+    const stored = {
+      version: 5,
+      engineId: 'p1',
+      profiles: [{ id: 'p1', label: 'a', baseUrl: 'https://api.deepseek.com/v1', models: ['m'], activeModel: 'm', apiKey: 'k' }],
+    };
+    await area.set({ [SETTINGS_KEY]: stored });
+    await loadSettings(area);
+    expect((await area.get([SETTINGS_KEY]))[SETTINGS_KEY]).toEqual(stored);
+  });
+
+  it('幂等：读出来整份写回再读一次，形状一字不差', async () => {
     const area = new MemoryStorage();
     await area.set({
       [SETTINGS_KEY]: {
@@ -1171,8 +1201,11 @@ describe('单元 F 第 2 步：迁移 v5 → v6（§8）', () => {
     expect(second).toEqual(first);
   });
 
-  /** 先例是 v5 那一步的注释第 3 条：迁移读的是**生数据**，脏形状不许抛。 */
-  it('profiles 缺失 / 非数组 / 装着非对象时迁移不抛', async () => {
+  /**
+   * 脏形状的容忍现在只住在读入口（`pickProfiles` / `pickKind`）。
+   * 牙：`pickKind` 改成对非字符串抛错，或 `pickProfiles` 不再挡非数组，这里红。
+   */
+  it('profiles 缺失 / 非数组 / 装着非对象时读入口不抛，版本仍抬到 6', async () => {
     for (const raw of [undefined, 'nope', [null, 3, 'x'], [{ id: 'p1' }]]) {
       const area = new MemoryStorage();
       await area.set({
@@ -1182,4 +1215,5 @@ describe('单元 F 第 2 步：迁移 v5 → v6（§8）', () => {
     }
   });
 });
+
 
