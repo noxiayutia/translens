@@ -501,4 +501,79 @@ curl.exe -s -X POST "https://api.cognitive.microsofttranslator.com/translate?api
 5. **Azure 是否对"浏览器扩展直连"有隐含限制**：文档里**没有** DeepL 那种明示禁止条款，且官方为客户端场景提供 token 端点；但"没有明示禁止"不等于"官方背书这种用法"。**如实记为推断**，不是核实过的事实。
 6. **腾讯云文本翻译是否有替代产品**（例如迁到"大模型翻译"名下）**未查**——若以后想再评估中国厂商，这是第一个要查的问题；查法按 §1.3 的规矩：**先存活核验，再看价格表**。
 7. **本规格一个字都还没执行**：`CURRENT_VERSION` 仍是 5，`ENGINES` 仍是一个成员，`EngineProfile` 仍没有 `kind`。落地时的第一份读数是 `npx vitest run` 的真实输出，不是本文里的任何数字。
+
+---
+
+## 12. 执行记账（Batch 1：第 1–3 步）
+
+### a) 授权来源与为什么可以插队
+
+指挥官授权**第 1–3 步先于 §10 第 0 步（两道闸）执行**，第 4 步及以后仍然卡在凭据闸之后。
+理由不是"先写点算一点"，而是本规格自己的修订记录：v1→v2→v3 换了两次供应商，
+**§3（数据模型）、§4（注册表与解析）、§8（迁移）一字未改**——机制与供应商无关，
+所以这三步的产物不会因为第 0 步的结论而作废。具体到本批：如果第 0 步最后落在 LibreTranslate
+（§10 的 0-A 第 2 条），需要改的只有 `ENGINES` 里多注册谁、以及 §5 那个适配器，
+**本批的 12 条新用例与全部机制代码一字不动**。
+
+### b) 本轮真实读数（照抄命令输出，不是概括）
+
+| 命令 | 输出 |
+| --- | --- |
+| `npx vitest run` | `Test Files  57 passed (57)` / `Tests  1186 passed (1186)` / `Duration  25.48s` |
+| 基线对比 | 开工前 `57 files / 1171 tests`（51.03s）→ 本批 **+15 条用例**（B1 +3、B2 +12），全绿 |
+| `npm run typecheck` | 两个 tsconfig 均 0 错误（`grep -c "error TS"` → `0`） |
+| `npm run build` | `✓ 产物校验全部通过（14 项）` |
+| `npm run zip` | `✓ D:\翻译-插件\translens-0.1.0.zip：16 个文件，69565 字节——已解回临时目录逐字节比对通过` |
+| `git diff --stat -- tests/engines/openai-compat.test.ts` | **空**（第 3 步"提取未改变行为"的证据） |
+| `npx vitest run tests/core/layering.test.ts` | 全绿（新模块顶层不碰宿主全局） |
+
+提交：`33ded22` 第 1 步 / `c9e0d5c` 第 2 步 / `86f3bf4` 第 3 步（另 `d98d6f0` `1b9b9e0` `1add3e6` 为 A0 三份产物入库）。
+
+### c) 欠账清单（只有第 4 步适配器注册进来之后才成立，本批**故意没写**）
+
+1. `ENGINES` 变成两个成员，`tests/engines/registry.test.ts` 的名单断言改成
+   `toEqual(['openai-compat', 'azure-translator'])`（**保持确切名单，不许退成 `toContain`**）。
+2. `kindNeedsModel('azure-translator') === false` —— 现在写只能靠 `?? true` 蒙对或硬编码，没有牙。
+3. `resolveEngine`：azure 档案 `activeModel: ''` **不带** `NO_MODEL_PROBLEM`，与 openai-compat
+   同数据**带**它，成对两条。
+4. `UNKNOWN_KIND_PROBLEM` 零请求的**成对正例**换成 azure（本批用 openai-compat 顶的位置）。
+5. `firstUsableProfileId` 的"不需要模型的档案算可用"那一半（本批只钉住了保守方向：
+   认不出的类型缺模型**不算**可用，它已有牙——把兜底写成 `?? false` 会当场红）。
+6. `config.model === undefined` 那一支（`needsModel` 为假）在本批**无任何用例覆盖**——
+   注册表里今天没有 `needsModel: false` 的成员，写了就是恒真。
+7. `host-access.ts` 的第二个使用方（azure 侧）与它"两处共用一份文案"的守卫。
+8. §9.2 里 `tests/engines/azure-translator.test.ts` 那 8 条、`tests/options/*` 那 5 条、
+   `tests/background/service-worker.test.ts` 那条成对，全部依赖第 4/5 步。
+
+### d) 本批没做的事（越界清单，逐条对应 §10 的步骤号）
+
+- **第 4 步**：没有新建 `src/engines/azure-translator.ts`，`ENGINES` 仍是一个成员。
+- **第 5 步**：`src/options/sections/engine.ts` 只做了**类型必填打破的机械补全**——没有加
+  「类型」下拉、没有做字段按类型显隐、没有加 Azure 模板、没有改行副标题。
+  新建档案恒为 `openai-compat`，编辑与「测试连接」都**原样带上存储里的 kind**（不重置）。
+- **第 6 步**：README 一字未改（§9.1 那六处仍待第 4/5 步之后一起改）。
+- **§4.5**：`src/core/hash.ts` 的缓存 key 形状未动。
+
+### e) 执行中发现的、与规格或常识不符之处（只记录，未改正文）
+
+1. **§11.7 已经过期**：那句"本规格一个字都还没执行"在本批之后不再成立（`CURRENT_VERSION`
+   已是 6、`EngineProfile` 已有 `kind`）。按纪律不就地改正文，此处记账为准。
+2. **§9.2 有几条用例在本批结构上写不出来**（不是遗漏，是缺依赖）：凡断言
+   `needsModel === false` 那一支的，都要等注册表里真有一个不需要模型的成员——已逐条列入 (c)。
+   本批没有用"造一个假引擎塞进 ENGINES"之类的办法绕过，那会让名单断言与真实注册表脱钩。
+3. **`npm run typecheck` 是 `tsc -p tsconfig.json && tsc -p tsconfig.node.json`**：第一个失败会
+   **短路**，测试侧的错误根本不会被报出。本批第 2 步就是这样——第一轮只看到 src 的 4 个错误，
+   误以为测试侧干净，修完 src 才暴露出测试助手与期望值的 12 处。任何"typecheck 干净"的结论
+   都必须建立在两个 config 都真的跑过之上。
+4. **分层守卫按源码字面量匹配、含注释**（`tests/core/layering.test.ts` 自己写着"注释里也就别写
+   这些标识符了"）。新模块的注释因此不能出现那个扩展 API 的名字——第一次提交就被这条判红，
+   是守卫正常工作，不是守卫太严。
+5. **机械补全的清单**（`kind` 变必填所打破的全部位置，全部是类型/形状补全，无一条行为断言被改）：
+   `src/options/sections/engine.ts` 三处档案字面量 + 一处 import；
+   `tests/shared/settings.test.ts` 的 `profile()` 助手 + 10 处整份形状期望 + 1 处键集合断言；
+   `tests/background/models.test.ts` 的 `profile()` 助手；`tests/options/options.test.ts` 一处
+   "落盘字段一字不差"的期望；`tests/background/scheduler.test.ts` 四处 fake `Translator`
+   （那是第 1 步 `needsModel` 造成的，同为纯类型补全）。
+   其中键集合那条（`Object.keys(...).sort()`）的牙是"旧字段 `model` 不许残留"，加 `kind` 不削弱它。
+
 8. **DeepL 在中国大陆的可用性我仍未核实**（§1.2 第 3 行）：**用户的判断是"不可访问"，我没有找到官方"不服务中国"的条文，也没有推翻它的读数**——本机那三针只覆盖了接口层（域名可解析、跳转可落地、API 按语义拒绝假 Key），**没有覆盖注册与付款**。这一条如实留在"未核实"里，不写成"已确认不可用"：**订正结论的方向要朝着证据，不能朝着方便。**
