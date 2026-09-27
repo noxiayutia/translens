@@ -1,6 +1,6 @@
 // src/shared/settings.ts
 import type { StorageArea } from '../core/cache';
-import { getEngine, OPENAI_COMPAT_ENGINE_ID } from '../engines/registry';
+import { getEngine, kindNeedsModel, OPENAI_COMPAT_ENGINE_ID } from '../engines/registry';
 import type { EngineConfig, Term, Translator } from '../engines/types';
 import { chromeArea } from './chrome-area';
 
@@ -28,6 +28,14 @@ export interface SiteRule {
 export interface EngineProfile {
   id: string;
   label: string;
+  /**
+   * 这个档案用哪个适配器（值域是 `engines/registry.ts` 的 `ENGINES` id）。
+   *
+   * 类型是 `string` 而不是联合类型，与 `engineId` 同一个理由：**存储边界装得下任何东西**，
+   * "认不出来怎么办"必须是一条显式规则（见 {@link pickKind} 与 §3.2 的两行口径），而不是靠
+   * 类型系统假装它不会发生。唯一权威取值来源是注册表，界面只允许写入注册表里有的 id。
+   */
+  kind: string;
   baseUrl: string;
   models: string[];
   activeModel: string;
@@ -154,8 +162,10 @@ export const SETTINGS_KEY = 'jinyi:settings';
  * v4：`EngineProfile.model` → `models` + `activeModel`。
  * v5：删掉 Google 免费接口——`engineId: 'google'` 迁到第一个有 `activeModel` 的档案
  *     （一个都没有就置 `''`，见 {@link dropFreeEngineSelection}）。
+ * v6：档案加 `kind`（用哪个适配器）——老数据的每个档案盖上 `'openai-compat'`，
+ *     见 {@link stampProfileKinds}。判据本身（缺失 = openai-compat）与迁移共用 {@link pickKind}。
  */
-export const CURRENT_VERSION = 5;
+export const CURRENT_VERSION = 6;
 
 /**
  * v2 → v3 迁移产物固定用这个 id（老 `engineId === 'openai-compat'` 也迁到它）。
@@ -315,6 +325,24 @@ function pickModels(value: unknown): string[] {
  *   `activeModel === '' || models.includes(activeModel)`）因此在任何数据形状下都成立。
  * - 旧字段 `model` **不再读**：真相只留一份（先例是 `engineConfig` / `providerPreset`）。
  */
+/**
+ * `kind` 的读取口径（§3.2 第一行）：**缺失 / 非字符串 / 只有空白 → `'openai-compat'`**。
+ *
+ * 这不是"替用户猜一个"，而是"这份数据的来源只有一种可能"：v5 及更早的版本里只存在一个
+ * 适配器，所以老档案不可能是别的类型。**第二行不在这里**：认得出的字符串一律**原样保留**
+ * （包括本版本注册表里没有的"未来类型"），把它强判成 openai-compat 等于拿一份 Azure 的密钥
+ * 按 OpenAI 协议发一次请求——猜错的方向是把用户的密钥发给另一家服务商。
+ * 认不出来的下场由 `resolveEngine` 给：`UNKNOWN_KIND_PROBLEM` + 零请求。
+ *
+ * 三处共用这一份（`pickProfile`、v5 → v6 迁移、v4 → v5 迁移里问 `firstUsableProfileId` 之前的
+ * 生数据投影）——判据各写一份必然漂移，先例见 `isAllowedBaseUrl`。
+ */
+function pickKind(value: unknown): string {
+  if (typeof value !== 'string') return OPENAI_COMPAT_ENGINE_ID;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : OPENAI_COMPAT_ENGINE_ID;
+}
+
 function pickProfile(value: unknown): EngineProfile | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Partial<EngineProfile>;
@@ -330,6 +358,7 @@ function pickProfile(value: unknown): EngineProfile | null {
   return {
     id: raw.id,
     label: label.trim().length > 0 ? label : FALLBACK_PROFILE_LABEL,
+    kind: pickKind(raw.kind),
     baseUrl,
     models,
     activeModel: models.includes(wanted) ? wanted : '',
@@ -418,22 +447,40 @@ export const NO_MODEL_PROBLEM = '这个档案还没有模型，点「添加模�
 export const NO_ENGINE_PROBLEM = '还没有可用的翻译引擎，去设置页添加一个服务商档案';
 
 /**
- * 第一个「有当前模型」的档案的 id；一个都没有时返回 `''`（= 没有可用引擎）。
+ * 「档案类型本版本不认识」那句话的**唯一来源**（与 {@link NO_MODEL_PROBLEM} /
+ * {@link NO_ENGINE_PROBLEM} 同级）。
+ *
+ * 三句必须各是各的：`NO_ENGINE_PROBLEM` 让用户"去添加一个服务商档案"，而这里的问题是
+ * **档案已经存在、只是这个版本读不懂它**——复用那句会把一个明明配过档案的用户推去再配一遍。
+ * 错误码沿用 `AUTH`（与"没有可用引擎"同一条路：内容脚本对 `AUTH` 原样透传 message，
+ * 且 `AUTH` 不在 `RETRYABLE_CODES` 里，不会挂一排点了必然失败的重试按钮）。
+ */
+export const UNKNOWN_KIND_PROBLEM =
+  '这个档案的类型当前版本不认识（可能是更高版本的插件创建的），请更新扩展或改用其它档案';
+
+/**
+ * 第一个「可用」的档案的 id；一个都没有时返回 `''`（= 没有可用引擎）。
+ *
+ * **可用性是类型感知的**（§4.4）：要模型的类型才需要当前模型，不需要模型的类型（传统翻译
+ * API）没有模型清单，`activeModel` 恒为空——沿用 v5 那条"必须有 activeModel"会把一个配好的
+ * 档案判成不可用，于是"删掉当前档案后的回落"与两处迁移都会跳过它。
+ * 认不出的类型由 `kindNeedsModel` 保守地算成"要模型"，因此它没有模型时不会被选中。
  *
  * **两个调用方共用这一份判据**：v4 → v5 迁移（`dropFreeEngineSelection`）与设置页删除当前档案时
  * 的回落。两处各写一份必然漂移，先例就是 `resolveEngine` 里那条专门解释为什么用 `trim()` 的注释。
  *
- * 参数类型是 `Pick<EngineProfile, 'id' | 'activeModel'>` 而不是整个 `EngineProfile`：迁移那一侧
- * 拿到的是**存储里的生数据**（`mergeSettings` 还没跑，`profiles` 是 `unknown`），它只需要先证明
- * "`id` 是字符串、`activeModel` 是字符串"就能问这条判据——**判据本身仍然只有这一份**。
+ * 参数类型是 `Pick<EngineProfile, 'id' | 'activeModel' | 'kind'>` 而不是整个 `EngineProfile`：
+ * 迁移那一侧拿到的是**存储里的生数据**（`mergeSettings` 还没跑，`profiles` 是 `unknown`），它
+ * 只需要先证明"`id` 是字符串、`activeModel` 是字符串"（`kind` 走 `pickKind`，缺失即
+ * openai-compat）就能问这条判据——**判据本身仍然只有这一份**。
  *
  * `trim()` 口径与 {@link resolveEngine} 完全一致：只填了空格的 `activeModel` 算"没有当前模型"。
  * 顺序 = 数组顺序（`pickProfiles` 保证它是存储顺序），也就是用户在设置页看到的第一行。
  */
 export function firstUsableProfileId(
-  profiles: readonly Pick<EngineProfile, 'id' | 'activeModel'>[],
+  profiles: readonly Pick<EngineProfile, 'id' | 'activeModel' | 'kind'>[],
 ): string {
-  return profiles.find((profile) => profile.activeModel.trim().length > 0)?.id ?? '';
+  return profiles.find((profile) => !kindNeedsModel(profile.kind) || profile.activeModel.trim().length > 0)?.id ?? '';
 }
 
 /**
@@ -442,30 +489,46 @@ export function firstUsableProfileId(
  * service worker、弹窗、设置页全走它。**不许**在别处再写一个 `if (settings.engineId === '')`
  * ——那就是第二个解析点，下次加引擎一定有一处漏掉。
  *
- * 解析规则只有三条：
- * 1. `engineId` 命中某个档案 → OpenAI 兼容引擎 + **那份**档案的 `{apiKey, baseUrl, model}`；
- *    `activeModel` 是空串（或只有空白）时**额外**给出 `problem`（{@link NO_MODEL_PROBLEM}）。
+ * 解析规则只有四条（§4.2）：
+ * 1. `engineId` 命中某个档案 → **按那份档案的 `kind` 取适配器** + 那份档案的
+ *    `{apiKey, baseUrl, model}`；`model` 只在需要模型的类型上取 `activeModel`。
+ * 2. 命中档案、类型也认识，但 `activeModel` 是空串（或只有空白）→ **额外**给出
+ *    `problem`（{@link NO_MODEL_PROBLEM}）。**这只对 `needsModel` 为真的类型成立**——
+ *    v5 里"有档案 ⟹ 必须有当前模型"是无条件的，因为当时唯一的适配器恒要模型。
  *    空模型这件事只有这里能说清：引擎是通用适配器，它不知道"档案""模型清单"这些词，
  *    只会说一句用户照着找不到去哪儿的「尚未填写模型名」。
- * 2. `engineId` **不命中任何档案** → `{ engine: null, config: {}, problem: NO_ENGINE_PROBLEM }`。
+ * 3. `engineId` **不命中任何档案** → `{ engine: null, config: {}, problem: NO_ENGINE_PROBLEM }`。
  *    **这是「没有可用引擎」的唯一产出点。** `''`、残留的 `'google'`、`'openai-compat'` 这类
  *    裸引擎 id、被别处删掉的档案 id，走的都是这一条——**没有"兜底到某个别的引擎"这回事**，
  *    也不写「若 engineId === 'google' 则…」的补丁（它只是"一个不存在的 id"）。
- * 3. 其余（命中档案且模型齐全）→ 无 `problem`。
+ * 4. 命中档案但**类型本版本不认识** → `{ engine: null, config: {}, problem: UNKNOWN_KIND_PROBLEM }`。
+ *    与第 2 条同为"不发请求 + 一句可行动的话"，但**文案不共用**：这里的问题不是"没配档案"。
  *
- * 命中档案那一支交出来的 `engine` **类型上仍可能是 `null`**（`getEngine` 的返回类型如此）：
+ * 命中档案那两支交出来的 `engine` **类型上仍可能是 `null`**（`getEngine` 的返回类型如此）：
  * 三个调用点因此都要显式收口。这不是噪音，它是"没有可用引擎成为一等状态"之后必须付的账
  * ——`service-worker.ts` 用 `engine === null || problem !== undefined` 一次收住两件事。
  */
 export function resolveEngine(settings: Pick<Settings, 'engineId' | 'profiles'>): ResolvedEngine {
   const profile = settings.profiles.find((item) => item.id === settings.engineId);
   if (profile === undefined) return { engine: null, config: {}, problem: NO_ENGINE_PROBLEM };
-  const engine = getEngine(OPENAI_COMPAT_ENGINE_ID);
-  const config: EngineConfig = { apiKey: profile.apiKey, baseUrl: profile.baseUrl, model: profile.activeModel };
+  const engine = getEngine(profile.kind);
+  // 认不出的类型：档案原样留着、一个请求都不发、给一句说得清"是版本不认识它"的话。
+  // 不猜成 openai-compat 的理由见 §3.2 第二行：那等于拿这份档案的 Key 打一次错的协议。
+  if (engine === null) return { engine: null, config: {}, problem: UNKNOWN_KIND_PROBLEM };
+  const config: EngineConfig = {
+    apiKey: profile.apiKey,
+    baseUrl: profile.baseUrl,
+    // 不需要模型的类型交出去的是 `undefined` 而不是 `''`：空串会一路流进缓存 key（§4.5），
+    // 而"没有模型这个概念"与"模型名是空串"是两件事。
+    model: engine.needsModel ? profile.activeModel : undefined,
+  };
   // 判空口径与引擎实现**一致**：只有空白字符也算"没填"（`openai-compat` 取 `config.model` 时
   // 先 `.trim()`）。写成 `activeModel.length === 0` 会漏过"只填了空格"这一格——档案被判成能用，
   // 用户却在发请求时拿到引擎那句通用的「尚未填写模型名」，白跑一趟。
-  if (profile.activeModel.trim().length === 0) return { engine, config, problem: NO_MODEL_PROBLEM };
+  // `engine.needsModel &&` 是本单元对 v5 语义的**唯一**放宽：见 §4.2 第 1 条。
+  if (engine.needsModel && profile.activeModel.trim().length === 0) {
+    return { engine, config, problem: NO_MODEL_PROBLEM };
+  }
   return { engine, config };
 }
 
@@ -544,7 +607,40 @@ function migrate(raw: unknown, storedVersion: number): unknown {
   if (storedVersion < 5) {
     record = dropFreeEngineSelection(record);
   }
+  // 排在最后：v1–v5 的每一步都在造档案或改档案字段，`kind` 由它统一盖一次（v5 及更早
+  // 只存在一个适配器，见 §3.2 第一行）。`dropFreeEngineSelection` 不依赖这一步——它问
+  // `firstUsableProfileId` 前用自己的投影，缺失的 kind 走同一个 `pickKind`。
+  if (storedVersion < 6) {
+    record = stampProfileKinds(record);
+  }
   return record;
+}
+
+/**
+ * v5 → v6 的迁移：**只做一件事**——给每个档案盖上 `kind`（缺失时 `'openai-compat'`）。
+ *
+ * 三条刻意的口径：
+ * 1. **只盖缺失的，已有的一律原样保留**：一份已经写着别的类型的档案被无条件盖成
+ *    openai-compat，后果就是"拿 Azure 的密钥按 OpenAI 协议发一次请求"（§3.2 第二行）。
+ * 2. **判据与读取层同一份**（{@link pickKind}）：迁移和 `pickProfile` 对"缺失"必须给出
+ *    同一个答案，否则同一份数据在两条路径上会变成不同的档案。
+ * 3. **生数据形状**沿用 v5 那一步的写法：`profiles` 可能是 `undefined` / 非数组 / 装着非对象，
+ *    先投影形状再动手，不许 `as EngineProfile[]` 直接 map（会在脏数据上抛 TypeError，
+ *    整个 `loadSettings` 跟着挂）。非对象的条目**原样放回**——它会被 `pickProfiles` 丢掉，
+ *    迁移没有资格替用户决定"这条不要了"。
+ *
+ * 幂等靠 `migrate` 开头那道版本闸门（`storedVersion >= CURRENT_VERSION` 原样返回）。
+ */
+function stampProfileKinds(record: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(record.profiles)) return record;
+  return {
+    ...record,
+    profiles: record.profiles.map((raw) => {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+      const entry = raw as Record<string, unknown>;
+      return { ...entry, kind: pickKind(entry.kind) };
+    }),
+  };
 }
 
 /**
@@ -597,12 +693,13 @@ function liftProfileModels(record: Record<string, unknown>): Record<string, unkn
 function dropFreeEngineSelection(record: Record<string, unknown>): Record<string, unknown> {
   if (record.engineId !== 'google') return record;
   const raw = Array.isArray(record.profiles) ? record.profiles : [];
-  const candidates: Array<Pick<EngineProfile, 'id' | 'activeModel'>> = [];
+  const candidates: Array<Pick<EngineProfile, 'id' | 'activeModel' | 'kind'>> = [];
   for (const item of raw) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
-    const entry = item as { id?: unknown; activeModel?: unknown };
+    const entry = item as { id?: unknown; activeModel?: unknown; kind?: unknown };
     if (typeof entry.id === 'string' && typeof entry.activeModel === 'string') {
-      candidates.push({ id: entry.id, activeModel: entry.activeModel });
+      // `kind` 走 `pickKind`：这一步跑在 v6 之前，v1–v4 的数据此刻还没有这个字段。
+      candidates.push({ id: entry.id, activeModel: entry.activeModel, kind: pickKind(entry.kind) });
     }
   }
   return { ...record, engineId: firstUsableProfileId(candidates) };

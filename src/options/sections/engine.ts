@@ -35,6 +35,7 @@
 // 不变量（`activeModel === '' || models.includes(activeModel)`）因此**按构造**成立。
 // 有一处对参考图的**有意偏离**要记着：折叠行保留了次级 meta（地址 · 当前模型）——
 // 5 个档案时"哪个档案打哪个地址、用哪个模型"是一眼就该看见的信息（规格 §6.1）。
+import { OPENAI_COMPAT_ENGINE_ID } from '../../engines/registry';
 import { toEngineError, type EngineConfig, type Translator } from '../../engines/types';
 import {
   hasHostPermission,
@@ -662,6 +663,10 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
       {
         id: savedId,
         label: values.label,
+        // 界面上还没有"类型"这一栏（§10 第 5 步），所以新建的档案只能是本版本唯一那个
+        // 适配器；**编辑已有档案时必须把它的 kind 原样带过去**——重置成 openai-compat
+        // 等于把一份 Azure 的密钥按 OpenAI 协议发出去（§3.2 第二行同一条理由）。
+        kind: OPENAI_COMPAT_ENGINE_ID,
         baseUrl: values.baseUrl,
         models: values.models,
         activeModel: values.activeModel,
@@ -676,6 +681,7 @@ async function handleSaveProfile(ctx: SectionContext, id: string): Promise<void>
     const nextProfile: EngineProfile = {
       id: savedId,
       label: values.label,
+      kind: existing?.kind ?? OPENAI_COMPAT_ENGINE_ID,
       baseUrl: values.baseUrl,
       models: values.models,
       activeModel: values.activeModel,
@@ -843,6 +849,9 @@ async function handleTestProfile(ctx: SectionContext, id: string): Promise<void>
       {
         id,
         label: values.label,
+        // 「测试连接」测的是正在编辑的那一份，类型跟着存储里那一份走（同一条"不替用户改偏好"
+        // 的规矩：编辑面板没有类型栏，就不该顺手把它改掉）。
+        kind: storedProfile?.kind ?? OPENAI_COMPAT_ENGINE_ID,
         baseUrl: values.baseUrl,
         models: values.models,
         activeModel: values.activeModel,

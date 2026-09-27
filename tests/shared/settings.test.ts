@@ -7,7 +7,9 @@ import {
   NO_MODEL_PROBLEM,
   PROVIDER_PRESETS,
   SETTINGS_KEY,
+  UNKNOWN_KIND_PROBLEM,
   createProfileId,
+  firstUsableProfileId,
   isAllowedBaseUrl,
   loadSettings,
   loadUiSettings,
@@ -24,6 +26,7 @@ function profile(over: Partial<EngineProfile> = {}): EngineProfile {
   return {
     id: 'p1',
     label: '我的 DeepSeek',
+    kind: 'openai-compat',
     baseUrl: 'https://api.deepseek.com/v1',
     models: ['deepseek-chat'],
     activeModel: 'deepseek-chat',
@@ -39,7 +42,7 @@ describe('mergeSettings', () => {
     expect(DEFAULT_SETTINGS.profiles).toEqual([]);
     // `CURRENT_VERSION` 是**字面**钉住的：迁移的版本闸门、`saveSettings` 的防降级、README 的
     // 升级说明都靠这个数字，改它必须是有意识的动作（不是"跟着某个常量一起漂"）。
-    expect(CURRENT_VERSION).toBe(5);
+    expect(CURRENT_VERSION).toBe(6);
   });
 
   /**
@@ -132,7 +135,7 @@ describe('mergeSettings', () => {
       const merged = mergeSettings({
         profiles: [{ id: 'p', apiKey: null, model: 7 }] as unknown as EngineProfile[],
       });
-      expect(merged.profiles[0]).toEqual({ id: 'p', label: '我的接口', baseUrl: '', models: [], activeModel: '', apiKey: '' });
+      expect(merged.profiles[0]).toEqual({ id: 'p', label: '我的接口', kind: 'openai-compat', baseUrl: '', models: [], activeModel: '', apiKey: '' });
     });
   });
 
@@ -152,6 +155,7 @@ describe('mergeSettings', () => {
     expect(merged.profiles[0]).toEqual({
       id: 'p',
       label: '我的接口',
+      kind: 'openai-compat',
       baseUrl: '',
       models: ['real'],
       activeModel: 'real',
@@ -541,6 +545,7 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
       {
         id: LEGACY_PROFILE_ID,
         label: 'DeepSeek',
+        kind: 'openai-compat',
         baseUrl: 'https://api.deepseek.com/v1',
         models: ['deepseek-chat'],
         activeModel: 'deepseek-chat',
@@ -589,7 +594,7 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
     await area.set({ [SETTINGS_KEY]: { version: 2, engineId: 'openai-compat', engineConfig: null } });
     const settings = await loadSettings(area);
     expect(settings.profiles).toEqual([
-      { id: LEGACY_PROFILE_ID, label: '我的接口', baseUrl: '', models: [], activeModel: '', apiKey: '' },
+      { id: LEGACY_PROFILE_ID, label: '我的接口', kind: 'openai-compat', baseUrl: '', models: [], activeModel: '', apiKey: '' },
     ]);
     expect(settings.engineId).toBe(LEGACY_PROFILE_ID);
   });
@@ -611,6 +616,7 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
       {
         id: LEGACY_PROFILE_ID,
         label: 'OpenAI',
+        kind: 'openai-compat',
         baseUrl: 'https://api.openai.com/v1',
         models: ['gpt-4o-mini'],
         activeModel: 'gpt-4o-mini',
@@ -661,6 +667,7 @@ describe('迁移 v2 → v3：单份 engineConfig 折成一个档案', () => {
       {
         id: 'p-a',
         label: '手工档案',
+        kind: 'openai-compat',
         baseUrl: 'https://api.deepseek.com/v1',
         models: ['deepseek-chat'],
         activeModel: 'deepseek-chat',
@@ -727,6 +734,7 @@ describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
     expect(loaded.profiles[0]).toEqual({
       id: 'p1',
       label: '我的 DeepSeek',
+      kind: 'openai-compat',
       baseUrl: 'https://api.deepseek.com/v1',
       models: ['deepseek-chat'],
       activeModel: 'deepseek-chat',
@@ -768,6 +776,7 @@ describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
       {
         id: LEGACY_PROFILE_ID,
         label: 'DeepSeek',
+        kind: 'openai-compat',
         baseUrl: 'https://api.deepseek.com/v1',
         models: ['deepseek-chat'],
         activeModel: 'deepseek-chat',
@@ -791,7 +800,8 @@ describe('迁移 v3 → v4：单 model 抬起成 models + activeModel', () => {
 
     await saveSettings(loaded, area);
     const raw = (await area.get([SETTINGS_KEY]))[SETTINGS_KEY] as { profiles: Array<Record<string, unknown>> };
-    expect(Object.keys(raw.profiles[0]).sort()).toEqual(['activeModel', 'apiKey', 'baseUrl', 'id', 'label', 'models']);
+    // 键集合里**没有 `model`** 才是这条用例的牙（旧字段不许残留）；`kind` 是 v6 起档案的正式字段。
+    expect(Object.keys(raw.profiles[0]).sort()).toEqual(['activeModel', 'apiKey', 'baseUrl', 'id', 'kind', 'label', 'models']);
   });
 });
 
@@ -970,7 +980,7 @@ describe('loadUiSettings（内容脚本的投影）', () => {
       expect(item).not.toHaveProperty('apiKey');
     }
     // 其余字段照常带出（弹窗/内容脚本要看 label、id、地址、模型）。
-    expect(ui.profiles[1]).toEqual({ id: 'p2', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat'], activeModel: 'deepseek-chat' });
+    expect(ui.profiles[1]).toEqual({ id: 'p2', label: '我的 DeepSeek', kind: 'openai-compat', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat'], activeModel: 'deepseek-chat' });
     expect(ui.engineId).toBe('p2');
     expect(ui.targetLang).toBe(DEFAULT_SETTINGS.targetLang);
     const json = JSON.stringify(ui);
@@ -1025,3 +1035,151 @@ describe('服务商预设（PROVIDER_PRESETS，只作为档案模板）', () => 
     }
   });
 });
+
+/**
+ * 单元 F 第 2 步：档案类型 `kind` 的读取口径、按类型解析、类型感知的第一可用档案判据，
+ * 以及 v5 → v6 迁移。
+ *
+ * ⚠ 两条**本步不写**的成对用例（`azure-translator` 不需要模型所以不报 NO_MODEL_PROBLEM、
+ * 同一条数据把 kind 换成 azure 就能发出去）等第 4 步那个适配器真注册进来才有牙——
+ * 现在写只能靠硬编码或 `?? true` 蒙对。已记在规格 §12 的欠账清单里。
+ */
+describe('单元 F 第 2 步：kind 的读取口径（§3.2）', () => {
+  /** 牙：把 `pickProfile` 里那行改成"任何情况都填 openai-compat"，第二条红。 */
+  it('缺失 / 非字符串 → openai-compat：v5 及更早只存在一个适配器，这是来源唯一，不是替用户猜', () => {
+    const { apiKey, baseUrl, id, label, models, activeModel } = profile();
+    const bare = { apiKey, baseUrl, id, label, models, activeModel };
+    expect(mergeSettings({ profiles: [bare] }).profiles[0].kind).toBe('openai-compat');
+    expect(mergeSettings({ profiles: [{ ...bare, kind: 7 }] }).profiles[0].kind).toBe('openai-compat');
+  });
+
+  /**
+   * 反向那一半：注册表里没有的字符串**原样保留**。
+   *
+   * 强判成 openai-compat 的后果是拿一份 Azure 的密钥按 OpenAI 协议发一次请求——猜错的
+   * 方向恰好是"把用户的密钥发给另一家"。正确下场是 `UNKNOWN_KIND_PROBLEM` + 零请求。
+   */
+  it('认不出的字符串原样保留，交给解析层判成"用不了 + 一句可行动的话 + 零请求"', () => {
+    expect(mergeSettings({ profiles: [profile({ kind: 'azure-translator' })] }).profiles[0].kind).toBe(
+      'azure-translator',
+    );
+    expect(mergeSettings({ profiles: [profile({ kind: '未来版本的类型' })] }).profiles[0].kind).toBe(
+      '未来版本的类型',
+    );
+  });
+});
+
+describe('单元 F 第 2 步：resolveEngine 按类型解析（§4.2、§4.3）', () => {
+  it('认不出的 kind → engine null + UNKNOWN_KIND_PROBLEM', () => {
+    const resolved = resolveEngine({ engineId: 'p1', profiles: [profile({ kind: '未来版本的类型' })] });
+    expect(resolved.engine).toBeNull();
+    expect(resolved.problem).toBe(UNKNOWN_KIND_PROBLEM);
+  });
+
+  /** 成对正例：同一条数据换个本版本认识的 kind 就能用——证明上一条不是"档案本身不可用"。 */
+  it('成对：把 kind 换成 openai-compat，同一份档案立刻可用', () => {
+    const resolved = resolveEngine({ engineId: 'p1', profiles: [profile({ kind: 'openai-compat' })] });
+    expect(resolved.engine?.id).toBe('openai-compat');
+    expect(resolved.problem).toBeUndefined();
+  });
+
+  /**
+   * 三句话必须互不相同。牙在第一条：如果实现图省事让 `UNKNOWN_KIND_PROBLEM = NO_ENGINE_PROBLEM`，
+   * 上面那条 `toBe(UNKNOWN_KIND_PROBLEM)` 照样绿（同一个字符串），只有这里会红。
+   * 而文案差别是有消费者的：一句"去添加一个服务商档案"会让一个明明配过档案的用户再配一遍。
+   */
+  it('三句问题文案是三句不同的话（不许复用同一个常量顶替）', () => {
+    expect(UNKNOWN_KIND_PROBLEM).not.toBe(NO_ENGINE_PROBLEM);
+    expect(UNKNOWN_KIND_PROBLEM).not.toBe(NO_MODEL_PROBLEM);
+    expect(NO_ENGINE_PROBLEM).not.toBe(NO_MODEL_PROBLEM);
+  });
+
+  it('没有当前模型的 openai-compat 档案仍然报 NO_MODEL_PROBLEM（needsModel 为真那一支一字未改）', () => {
+    const resolved = resolveEngine({
+      engineId: 'p1',
+      profiles: [profile({ kind: 'openai-compat', activeModel: '', models: [] })],
+    });
+    expect(resolved.engine?.id).toBe('openai-compat');
+    expect(resolved.problem).toBe(NO_MODEL_PROBLEM);
+  });
+});
+
+describe('单元 F 第 2 步：firstUsableProfileId 类型感知（§4.4）', () => {
+  /**
+   * 保守兜底的**承重处**：认不出的类型按"要模型"处理，所以它没有当前模型时不会被选中。
+   *
+   * 牙：把 `kindNeedsModel` 的兜底改成 `?? false`，第一条立刻红（那条档案会被当成可用）。
+   * 第二条是它的成对：同一个未知 kind 只要有模型就被选中——证明"不可用"是"不认识 **且**
+   * 没有模型"两件事合起来的结论，不是"未知一律排除"。
+   */
+  it('认不出的类型：没有模型不算可用，有模型照样算可用', () => {
+    expect(firstUsableProfileId([{ id: 'p1', kind: '未来版本的类型', activeModel: '' }])).toBe('');
+    expect(firstUsableProfileId([{ id: 'p1', kind: '未来版本的类型', activeModel: 'm' }])).toBe('p1');
+  });
+
+  it('认识的类型维持 v5 语义：openai-compat 无模型不算可用', () => {
+    expect(firstUsableProfileId([{ id: 'p1', kind: 'openai-compat', activeModel: '   ' }])).toBe('');
+    expect(firstUsableProfileId([{ id: 'p1', kind: 'openai-compat', activeModel: 'm' }])).toBe('p1');
+  });
+});
+
+describe('单元 F 第 2 步：迁移 v5 → v6（§8）', () => {
+  it('老数据的每个档案都盖上 kind，且版本号抬到 6', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 5,
+        engineId: 'p1',
+        profiles: [{ id: 'p1', label: '我的 DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat'], activeModel: 'deepseek-chat', apiKey: 'sk-ds' }],
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.version).toBe(6);
+    expect(settings.profiles[0].kind).toBe('openai-compat');
+    expect(settings.engineId).toBe('p1');
+  });
+
+  /**
+   * 迁移**只盖缺失的**。无条件盖章会把一份已经写成别的类型的档案改回 openai-compat——
+   * 那正是 §3.2 第二条明令禁止的方向（拿 Azure 的密钥按 OpenAI 协议发出去）。
+   */
+  it('迁移不覆盖已有的 kind：v5 数据里写着别的类型就原样留着', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 5,
+        engineId: 'p1',
+        profiles: [{ id: 'p1', kind: 'azure-translator', label: 'Azure', baseUrl: 'https://api.cognitive.microsofttranslator.com', models: [], activeModel: '', apiKey: 'az' }],
+      },
+    });
+    const settings = await loadSettings(area);
+    expect(settings.profiles[0].kind).toBe('azure-translator');
+  });
+
+  it('幂等：迁移产物整份写回再读一次，形状一字不差', async () => {
+    const area = new MemoryStorage();
+    await area.set({
+      [SETTINGS_KEY]: {
+        version: 5,
+        engineId: 'p1',
+        profiles: [{ id: 'p1', label: 'a', baseUrl: 'https://api.deepseek.com/v1', models: ['m'], activeModel: 'm', apiKey: 'k' }],
+      },
+    });
+    const first = await loadSettings(area);
+    await saveSettings(first, area);
+    const second = await loadSettings(area);
+    expect(second).toEqual(first);
+  });
+
+  /** 先例是 v5 那一步的注释第 3 条：迁移读的是**生数据**，脏形状不许抛。 */
+  it('profiles 缺失 / 非数组 / 装着非对象时迁移不抛', async () => {
+    for (const raw of [undefined, 'nope', [null, 3, 'x'], [{ id: 'p1' }]]) {
+      const area = new MemoryStorage();
+      await area.set({
+        [SETTINGS_KEY]: raw === undefined ? { version: 5, engineId: 'p1' } : { version: 5, engineId: 'p1', profiles: raw },
+      });
+      await expect(loadSettings(area)).resolves.toMatchObject({ version: 6 });
+    }
+  });
+});
+

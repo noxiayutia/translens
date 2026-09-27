@@ -18,6 +18,7 @@ function profile(over: Partial<EngineProfile> = {}): EngineProfile {
   return {
     id: 'p-a',
     label: 'A 家',
+    kind: 'openai-compat',
     baseUrl: 'https://api.example.com/v1',
     models: [],
     activeModel: '',

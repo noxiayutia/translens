@@ -283,6 +283,9 @@ describe('设置页：档案增删改（全部直读存储验证）', () => {
     expect(saved).toEqual({
       id: expect.any(String),
       label: '我的接口',
+      // 落盘字段"一字不差"这条正是形状闸：v6 起档案必须带 kind，而界面上还没有类型栏
+      // （§10 第 5 步），所以新建的档案恒为本版本唯一那个适配器。
+      kind: 'openai-compat',
       baseUrl: CUSTOM_BASE_URL,
       models: ['gpt-4o'],
       activeModel: 'gpt-4o',
