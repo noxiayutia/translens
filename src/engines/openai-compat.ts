@@ -1,5 +1,5 @@
 import { LANGUAGES } from '../core/lang';
-import { hasHostPermission, originPattern } from '../shared/host-permission';
+import { assertHostAccess } from './host-access';
 import { describeHttpError, statusToErrorCode } from './api-error';
 import { EngineError, toEngineError, type EngineConfig, type Term, type TranslateRequest, type Translator } from './types';
 
@@ -116,23 +116,10 @@ export const openAiCompatEngine: Translator = {
     };
 
     /**
-     * 发请求**之前**确认这个 origin 已经被用户授权。
-     *
-     * manifest 只声明了 `optional_host_permissions`，而 Chrome 要求可选权限在用户手势里
-     * 申请（设置页的「保存」按钮做这件事）。没申请就发请求时浏览器会把它拦下，而我们拿到的
-     * 只是一个失败的 fetch——错误会伪装成 `NETWORK`（"断网"），用户查不出真正的原因，
-     * 也找不到该去哪儿点。
-     *
-     * 没有权限 API 的环境（纯 Node 单测）里 `hasHostPermission` 恒为 true：
-     * 引擎必须保持可独立单测。
+     * 发请求**之前**确认这个 origin 已经被用户授权（为什么必须有这道闸、两句文案的原文与
+     * "为什么它是共用件"都写在 `host-access.ts` 里，这里不重复一份）。
      */
-    const pattern = originPattern(baseUrl);
-    if (pattern === undefined) {
-      throw new EngineError('AUTH', `接口地址不是合法的 URL：${baseUrl}，请在设置中修正`);
-    }
-    if (!(await hasHostPermission(pattern))) {
-      throw new EngineError('AUTH', '未授权访问该接口地址，请到设置页保存一次以授权');
-    }
+    await assertHostAccess(baseUrl);
 
     let response: Response;
     try {
