@@ -575,5 +575,21 @@ curl.exe -s -X POST "https://api.cognitive.microsofttranslator.com/translate?api
    "落盘字段一字不差"的期望；`tests/background/scheduler.test.ts` 四处 fake `Translator`
    （那是第 1 步 `needsModel` 造成的，同为纯类型补全）。
    其中键集合那条（`Object.keys(...).sort()`）的牙是"旧字段 `model` 不许残留"，加 `kind` 不削弱它。
+6. **§8 要求的 v6 盖章步骤，在本批的可观测面里没有独立的牙——这条要如实报，别让它被"15 条用例"
+   这个数字盖过去。** 实现照 §8 做了（`stampProfileKinds`），但它与 §3.2 第一行的读取口径
+   （`pickKind`：缺失 → openai-compat）**是同一个判据的两次应用**：`loadSettings` 永远走
+   `mergeSettings`，所以无论迁移盖不盖章，交出来的档案都带 `kind`。
+   **这条已经实测过，不是推理**：把 `migrate` 里 `if (storedVersion < 6) …` 整块删掉、并把
+   `stampProfileKinds` 改名成没人调用的样子，`npx vitest run tests/shared/settings.test.ts` 仍然
+   `Tests 85 passed (85)` —— 本批 12 条新用例**一条都不会红**。
+   两种处置，请指挥官定：
+   - **保留（本批的做法）**：它是"存储形状自己收敛"的保险——任何一次 `saveSettings` 之后，
+     磁盘上的档案就真的带 `kind` 了，不依赖每个读方都记得走 `mergeSettings`；
+     代价是这一步目前没有独立证据。
+   - **要让它有牙**：得改成断言**存储里**的形状（`loadSettings` 之后 `area.get(SETTINGS_KEY)`
+     的原始 JSON 里每个档案都有 `kind`）——但那测的是"迁移写过 + 有人保存过"这条链，
+     而 `saveSettings` 只在用户改动时发生，读一次并不会回写。
+   本批没有为它编一条恒真的断言（§9.3），只把这个空档记在这里。
+
 
 8. **DeepL 在中国大陆的可用性我仍未核实**（§1.2 第 3 行）：**用户的判断是"不可访问"，我没有找到官方"不服务中国"的条文，也没有推翻它的读数**——本机那三针只覆盖了接口层（域名可解析、跳转可落地、API 按语义拒绝假 Key），**没有覆盖注册与付款**。这一条如实留在"未核实"里，不写成"已确认不可用"：**订正结论的方向要朝着证据，不能朝着方便。**
