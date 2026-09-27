@@ -16,6 +16,8 @@ logo/
 .qa/state.json
 # ⚠ 这个文件里是**真实服务商 API Key**（measure-latency.mjs 直连真接口用），永不入库。
 .qa/endpoint.json
+# ⚠ 同上：第 0 步 0-B 用的**真实 Azure 订阅密钥**（azure-probe.mjs 读它），永不入库。
+.qa/azure.json
 # ⚠ 同上：第 0 步存活核验用的**真实 DeepL Key**，永不入库。
 .qa/deepl.json
 # 多智能体团队的运行时状态目录（team.json / 各成员 inbox）：本机过程产物，不是项目源码。
