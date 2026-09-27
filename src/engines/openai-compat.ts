@@ -97,6 +97,8 @@ export const openAiCompatEngine: Translator = {
   name: 'OpenAI 兼容 API',
   needsKey: true,
   supportsGlossary: true,
+  // 这条协议的请求体里 `model` 是必填字段（缺它服务商直接 400），所以"没有模型"必须算错误。
+  needsModel: true,
 
   async translate(request: TranslateRequest, config: EngineConfig): Promise<string[]> {
     const apiKey = (config.apiKey ?? '').trim();

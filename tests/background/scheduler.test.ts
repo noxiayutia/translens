@@ -13,6 +13,7 @@ function fakeEngine(script: Array<string[] | Error>): { engine: Translator; call
     name: 'Fake',
     needsKey: false,
     supportsGlossary: false,
+    needsModel: true,
     async translate(request: TranslateRequest): Promise<string[]> {
       calls.push([...request.texts]);
       const step = script[Math.min(cursor, script.length - 1)];
@@ -293,6 +294,7 @@ describe('translateBatch', () => {
       name: 'Fake',
       needsKey: false,
       supportsGlossary: false,
+      needsModel: true,
       async translate(request: TranslateRequest): Promise<string[]> {
         calls.push([...request.texts]);
         cursor += 1;
@@ -490,6 +492,7 @@ describe('translateBatch', () => {
       name: 'Fake',
       needsKey: false,
       supportsGlossary: false,
+      needsModel: true,
       async translate(request: TranslateRequest): Promise<string[]> {
         calls += 1;
         seen.push(request.signal.aborted);
@@ -513,6 +516,7 @@ describe('translateBatch', () => {
       name: 'Fake',
       needsKey: false,
       supportsGlossary: false,
+      needsModel: true,
       async translate(request: TranslateRequest): Promise<string[]> {
         return await new Promise<string[]>((_resolve, reject) => {
           if (request.signal.aborted) {

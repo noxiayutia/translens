@@ -31,3 +31,18 @@ export const OPENAI_COMPAT_ENGINE_ID = openAiCompatEngine.id;
 export function getEngine(id: string): Translator | null {
   return ENGINES.find((engine) => engine.id === id) ?? null;
 }
+
+/**
+ * 某个档案类型（`EngineProfile.kind`）要不要"模型"这个概念。
+ *
+ * **认不出的类型按"要模型"处理，这是刻意的保守方向**：一条本版本不认识的 kind（更高版本
+ * 写的、或手工改过的存储）不该因为"大概不需要模型吧"就被 `firstUsableProfileId` 选中、
+ * 被 `resolveEngine` 放行——它最终会走到 `UNKNOWN_KIND_PROBLEM`，那才是正确答案。
+ * 兜底写成 `?? false` 会让这份数据在解析之前就先被误判成"可用但缺模型"。
+ *
+ * 放在 `engines/` 是因为它查的就是 `ENGINES`；`shared/settings.ts` 已经 import 本模块，
+ * 不引入新的分层依赖（`tests/core/layering.test.ts` 守着方向）。
+ */
+export function kindNeedsModel(kind: string): boolean {
+  return getEngine(kind)?.needsModel ?? true;
+}

@@ -74,5 +74,14 @@ export interface Translator {
   needsKey: boolean;
   /** 是否支持 system prompt；为 false 时术语表与自定义提示词不生效 */
   supportsGlossary: boolean;
+  /**
+   * 这个适配器是否需要"模型"这个概念。
+   *
+   * 它是契约的一部分（与 `needsKey` / `supportsGlossary` 同一类），承重处在两处：
+   * `resolveEngine` 据此决定"档案没有当前模型"算不算错误（§4.2），`firstUsableProfileId`
+   * 据此决定一个档案可不可用（§4.4）。为 `false` 的类型（传统翻译 API）档案不需要模型清单，
+   * `config.model` 交出去的是 `undefined` 而不是空串。
+   */
+  needsModel: boolean;
   translate(request: TranslateRequest, config: EngineConfig): Promise<string[]>;
 }
