@@ -1,5 +1,5 @@
-# 台架纪律：会骗读数的坑（十个，全是这一轮实测与用例逼出来的）
-> **实测记录 · 2026-09-23/24 · 台架纪律（十坑三总则）。** 提升进版本库：这个目录里的记录正是代码里那些常数的依据
+# 台架纪律：会骗读数的坑（十一个，全是这一轮实测与用例逼出来的）
+> **实测记录 · 2026-09-23/24 · 台架纪律（十一坑三总则）。** 提升进版本库：这个目录里的记录正是代码里那些常数的依据
 > （看门狗阈值 120 秒、默认并发 6、429 退避表长度、进度文案的口径…）。
 > **台架脚本已入库**（`.qa/*.mjs` + `.qa/fixture/*.html`，dev-only、不在 CI 覆盖内）：文中的
 > 「node .qa/xxx.mjs」可以直接复跑。跑之前先看 docs/qa/2026-09-24-measurement-traps.md 末尾
@@ -31,6 +31,8 @@
 | 9 | 刷新常驻页，把它自己注入的助手也刷掉了 | `ReferenceError: qaFindTab is not defined`，整轮扫描在第 1 行就炸 | `boot()` 在常驻的那个设置页上装了 `qaFindTab`（所有 `openFixture` 靠它找标签页）。为了"读一眼界面默认值"而 `navigate` 这同一页，助手就随页面一起没了 | 只读界面就在**临时标签页**里读，读完关掉（`run-429-scan.mjs` 的 `readUiConcurrency`）；常驻页只 eval、不 reload |
 
 | 10 | **译文文字在 shadow DOM 里，却去读宿主的 `textContent`** | 译文永远读成空串（`{"态":"jy-error","文":""}`），而"没有任何提示文字"看着像产品没报错 | 渲染器把输出插进 `jy-translation` 的 shadow root（`renderer.ts:543` 写的是 `.jy-body` 的 `textContent`），shadow 里的文字**不在**宿主的 `textContent` 里。于是同一轮里两处一起错：真实报错被读成"空"，DOM/代理两路对账做成"永远不一致" | 一律走 `el.shadowRoot.querySelector('.jy-body')?.textContent`（`.qa/run-prompt-baseline.mjs` 的 `readDom` 与 `dumpDiagnostics`）；新脚本第一次跑就把它当断言用 |
+
+| 11 | **`npm run typecheck` / `npm run build` 把两个 tsc 用 `&&` 串联** | "src 报错了，测试侧一条没报" ⇒ 判定测试是干净的 | 第一个 config 失败就短路，**第二个 tsc 根本没运行**。脚本语义没错（任一失败即非零退出），错在**读了一半当成全部**——它给的是一份"缺角"的清单，而不是"其余都干净"的证明 | **两个 config 分别跑并各记 exit code**：`npx tsc --noEmit -p tsconfig.json; echo $?`、`npx tsc --noEmit -p tsconfig.node.json; echo $?`。真实读数（单元 F 第 2 步）：`npm run typecheck` 只印出 4 条 src 错误，而测试侧当时实际有 2 处待修（两个 `profile()` 助手缺 `kind`）——把 src 修完再跑才浮出来 |
 
 ## 跑并发/限流扫描之前，先把量具校一遍
 
