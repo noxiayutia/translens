@@ -1,9 +1,25 @@
 {
   "name": "translens",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "TransLens — 沉浸式网页翻译扩展",
+  "description": "TransLens — 沉浸式网页翻译扩展（Manifest V3，默认只显示译文）",
+  "license": "MIT",
+  "author": "noxiayutia",
+  "homepage": "https://github.com/noxiayutia/translens#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noxiayutia/translens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/noxiayutia/translens/issues"
+  },
+  "keywords": [
+    "chrome-extension",
+    "manifest-v3",
+    "translation",
+    "immersive-translate",
+    "typescript"
+  ],
   "engines": {
     "node": ">=20.11"
   },

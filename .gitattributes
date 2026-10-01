@@ -1,0 +1,16 @@
+# 一律以 LF 入库、并在工作区保持 LF。
+#
+# 这个仓在 Windows 上开发，历史上被 `core.autocrlf` 反复折腾过（`git checkout` 会把文件
+# 写成 CRLF，而 QA 台架里有一处**逐字节比对**产物的工作流）——换行符漂移会变成一条会骗人的红。
+# 显式钉住，比依赖每个人本机的 git config 可靠。
+* text=auto eol=lf
+
+# 二进制：不做任何行尾转换，也不要在 diff 里按文本处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.woff binary
+*.woff2 binary
