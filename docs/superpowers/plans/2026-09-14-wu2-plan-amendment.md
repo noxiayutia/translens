@@ -160,11 +160,11 @@ node scripts/split-plan.mjs docs/superpowers/plans/2026-09-14-immersive-translat
 
   ```
   npx tsc --noEmit -p tsconfig.node.json --listFiles | Select-String 'tests[\\/].*\.test\.ts'
-  D:/翻译-插件/tests/core/hash.test.ts
-  D:/翻译-插件/tests/core/lang.test.ts
-  D:/翻译-插件/tests/core/pool.test.ts
-  D:/翻译-插件/tests/core/segmenter.test.ts
-  D:/翻译-插件/tests/engines/types.test.ts
+  <仓库>/tests/core/hash.test.ts
+  <仓库>/tests/core/lang.test.ts
+  <仓库>/tests/core/pool.test.ts
+  <仓库>/tests/core/segmenter.test.ts
+  <仓库>/tests/engines/types.test.ts
 
   # 在 tests/ 下故意写入 const boom: number = "not a number";
   npx tsc --noEmit -p tsconfig.node.json

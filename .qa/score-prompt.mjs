@@ -14,7 +14,7 @@ export const CASES = [
   { id: 'v-table', kind: 'verbatim', text: '<table>' },
   { id: 'v-prop', kind: 'verbatim', text: 'overscroll-behavior' },
   { id: 'v-doi', kind: 'verbatim', text: 'https://doi.org/10.48550/arXiv.2303.08774' },
-  { id: 'v-mail', kind: 'verbatim', text: 'monnand@gmail.com' },
+  { id: 'v-mail', kind: 'verbatim', text: 'someone@example.com' },
   { id: 's-stamp', kind: 'semi', text: '[v1] Wed, 15 Mar 2023 17:15:04 UTC (3,853 KB)' },
   { id: 'p-one', kind: 'prose', text: 'Engineers often underestimate how much reading time a nested callback chain consumes.' },
   { id: 'p-two', kind: 'prose', text: 'The quick brown fox jumps over the lazy dog while the layout shifts settle.' },

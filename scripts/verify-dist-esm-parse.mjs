@@ -4,7 +4,7 @@
  *
  * 为什么必须是独立文件、而非 `node -e` 内联：ESM 的解析器 `vm.SourceTextModule` 需要
  * `--experimental-vm-modules`。带 `-e` 的进程若其源码里出现 `import`，Node 会把它整个当成
- * 模块入口去**加载并解析依赖**，于是 `D:\翻译-插件\chunks\settings.js` 这种按 dist 根写的
+ * 模块入口去**加载并解析依赖**，于是 `<仓库>\chunks\settings.js` 这种按 dist 根写的
  * 扩展路径会被当成 Node 包路径去找，报 ERR_MODULE_NOT_FOUND——文件明明是对的，却解析失败。
  * 独立文件用 `NODE_OPTIONS` 带上标志、把待解析源码通过 argv 传进来，就没有这个问题。
  *

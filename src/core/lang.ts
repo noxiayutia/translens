@@ -134,7 +134,7 @@ export function isTranslatableText(text: string): boolean {
  * 整段就是一个**结构记号**时，它不是自然语言，翻出来一定是废的。
  *
  * 与 {@link isTranslatableText} 的分工：那条挡"太短、没有字母"（页码、纯标点），
- * 这一条挡"形状完整但不是散文"——`<caption>`、`https://doi.org/…`、`monnand@gmail.com`、
+ * 这一条挡"形状完整但不是散文"——`<caption>`、`https://doi.org/…`、`someone@example.com`、
  * `overscroll-behavior`。它们的来源查过了：这些都是**页面上真实可见的文字**
  * （w3schools 把标签名做成 `<a><table></a>` 链接、MDN 侧栏整列是 CSS 属性名），
  * 不是 `<code>` 漏了跳过——`inlineText` 对 `<code>` 后代本来就不取文字。

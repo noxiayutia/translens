@@ -146,7 +146,7 @@ describe('isStructureToken', () => {
   });
 
   it('整段是一个邮箱地址', () => {
-    expect(isStructureToken('monnand@gmail.com')).toBe(true);
+    expect(isStructureToken('someone@example.com')).toBe(true);
   });
 
   it('整段是 kebab 形式的属性名（含厂商前缀与通配）', () => {

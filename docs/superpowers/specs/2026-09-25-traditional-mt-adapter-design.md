@@ -533,7 +533,7 @@ curl.exe -s -X POST "https://api.cognitive.microsofttranslator.com/translate?api
 | 基线对比 | 开工前 `57 files / 1171 tests`（51.03s）→ 本批 **+15 条用例**（B1 +3、B2 +12），全绿 |
 | `npm run typecheck` | 两个 tsconfig 均 0 错误（`grep -c "error TS"` → `0`） |
 | `npm run build` | `✓ 产物校验全部通过（14 项）` |
-| `npm run zip` | `✓ D:\翻译-插件\translens-0.1.0.zip：16 个文件，69565 字节——已解回临时目录逐字节比对通过` |
+| `npm run zip` | `✓ <仓库>\translens-0.1.0.zip：16 个文件，69565 字节——已解回临时目录逐字节比对通过` |
 | `git diff --stat -- tests/engines/openai-compat.test.ts` | **空**（第 3 步"提取未改变行为"的证据） |
 | `npx vitest run tests/core/layering.test.ts` | 全绿（新模块顶层不碰宿主全局） |
 

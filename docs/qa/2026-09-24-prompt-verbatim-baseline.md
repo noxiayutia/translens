@@ -64,7 +64,7 @@
 | `v-table` `<table>` | 标识符整段 | **8/8** | `<table>` |
 | `v-prop` `overscroll-behavior` | 标识符整段 | **8/8** | `overscroll-behavior` |
 | `v-doi` | 标识符整段 | **8/8** | `https://doi.org/10.48550/arXiv.2303.08774` |
-| `v-mail` | 标识符整段 | **8/8** | `monnand@gmail.com` |
+| `v-mail` | 标识符整段 | **8/8** | `someone@example.com` |
 | `m-prop` | 标识符在句内 | **8/8** | 将 **overscroll-behavior** 设置为 contain 以阻止滚动链式传递。 |
 | `m-tag` | 标识符在句内 | **8/8** | **`<caption>`** 元素用于标注数据表的各列。 |
 | `m-hook` | 标识符在句内 | **8/8** | 仅在组件首次挂载时调用 **useEffect**。 |

@@ -711,7 +711,7 @@ describe('整段是结构记号时不采集', () => {
   it('标签名、属性名、URL、邮箱各自成段时整段不采', () => {
     const got = collect(
       '<p>&lt;caption&gt;</p><p>overscroll-behavior</p><p>https://doi.org/10.48550/arXiv.2303.08774</p>' +
-        '<p>monnand@gmail.com</p>',
+        '<p>someone@example.com</p>',
     );
     expect(got).toEqual([]);
   });
