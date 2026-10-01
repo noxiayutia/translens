@@ -14,7 +14,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: ['20']
+        # Node 20 起不来：vitest 5 要 ^22.12，jsdom 30 要 ^22.22.2，它带的 undici 8 要 >=22.19。
+        # 这条不是推测——本仓第一次推送时 CI 用 Node 20 跑，29 个测试文件在起 worker 阶段就崩了
+        # （`webidl.util.markAsUncloneable is not a function`）。22 与 24 是实际支持的线。
+        node: ['22', '24']
     steps:
       - uses: actions/checkout@v4
 

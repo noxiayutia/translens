@@ -21,7 +21,7 @@
     "typescript"
   ],
   "engines": {
-    "node": ">=20.11"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build && vite build --config vite.content.config.ts && npm run verify:dist",

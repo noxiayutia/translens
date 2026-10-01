@@ -6,6 +6,9 @@
 
 ## 跑通这三条
 
+需要 **Node.js 22.22.2+ / 24.15+**（`vitest` 5 与 `jsdom` 30 的硬要求；Node 20 会在测试起跑前
+就崩在 `undici` 的 `markAsUncloneable` 上）。
+
 ```bash
 npm install
 npm test          # 全量单元测试（当前 57 个文件 / 1187 条用例，约 25 秒）
