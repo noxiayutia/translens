@@ -10,8 +10,8 @@
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-brightgreen.svg)
 ![Chrome / Edge](https://img.shields.io/badge/Chrome%20%2F%20Edge-%E5%8F%AF%E7%94%A8-blue.svg)
 
-> 未上架 Chrome 应用商店（当前 `0.1.0`），自己构建一次即可用。扩展**不预置任何翻译引擎**，
-> 译文来自你自己的接口——配一个就能跑，见下面的「配置引擎」。
+> 未上架 Chrome 应用商店（当前 `0.1.0`）：可以直接下载 [Releases](https://github.com/noxiayutia/translens/releases/latest)
+> 里的 zip，也可以自己构建。扩展**不预置任何翻译引擎**，译文来自你自己的接口——配一个就能跑，见下面的「配置引擎」。
 
 ## 能做什么
 
@@ -28,14 +28,18 @@
 
 ## 安装
 
-需要 **Node.js 22.22.2+ / 24.15+**（`vitest` 与 `jsdom` 的硬要求，Node 20 跑不起来）。
+**方式一：用现成的包**（不需要 Node）——到 [Releases](https://github.com/noxiayutia/translens/releases/latest)
+下载 `translens-0.1.0.zip` 解压，按下面的步骤选中**解压出来的那个文件夹**。
+
+**方式二：自己构建**——需要 **Node.js 22.22.2+ / 24.15+**（`vitest` 与 `jsdom` 的硬要求，Node 20 跑不起来）。
 
 ```bash
 npm install
 npm run build     # 类型检查 → 打包 → 校验产物
 ```
 
-然后 `chrome://extensions` → 打开**开发者模式** → **加载已解压的扩展程序** → 选本仓库的 **`dist`** 目录。
+**加载**：`chrome://extensions` → 打开**开发者模式** → **加载已解压的扩展程序** →
+方式一选解压出来的文件夹，方式二选本仓库的 **`dist`** 目录（注意不是仓库根目录）。
 
 ## 配置引擎（装完必做）
 
