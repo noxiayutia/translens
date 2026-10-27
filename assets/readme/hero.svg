@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="heroTitle heroDesc">
+  <title id="heroTitle">TransLens — 沉浸式网页翻译扩展</title>
+  <desc id="heroDesc">TransLens 的标题横幅：把网页换成你的语言，原文一个字符都没动。整页 / 悬停 / 划词翻译，没有内置服务，译文只发往你自己配置的接口。右侧是品牌标记：碳黑透镜圆盘里镂空一个横笔带弧的 T。</desc>
+
+  <rect width="1200" height="440" fill="#f7f5f0"/>
+
+  <!-- 徽标：与扩展图标同形（象牙画布 → 碳黑透镜盘 → 镂空弧笔 T） -->
+  <g transform="translate(930 210)">
+    <circle r="176" fill="none" stroke="#0d0d10" stroke-opacity="0.08" stroke-width="1.5"/>
+    <circle r="148" fill="#0d0d10"/>
+    <g transform="scale(16.444) translate(-16 -16)" fill="#f2efe6">
+      <path d="M 9.28 14.08 Q 16 8.64 22.72 14.08 Q 16 12.16 9.28 14.08 Z"/>
+      <rect x="14.8" y="12.16" width="2.4" height="8.32"/>
+    </g>
+    <!-- 透镜曲率的一道弧：只取右上，避免变成靶心 -->
+    <path d="M 74.4 -159.5 A 176 176 0 0 1 175.3 -15.3" fill="none" stroke="#b3541e" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif">
+    <!-- 类别 -->
+    <text x="88" y="82" font-size="15" font-weight="600" letter-spacing="2.4" fill="#86868b">CHROME / EDGE EXTENSION · MANIFEST V3</text>
+
+    <!-- 仓库名 -->
+    <text x="85" y="194" font-size="94" font-weight="600" letter-spacing="-4" fill="#0d0d10">TransLens</text>
+
+    <line x1="88" y1="230" x2="664" y2="230" stroke="#1d1d1f" stroke-opacity="0.12"/>
+
+    <!-- 一句话价值 -->
+    <text x="88" y="298" font-size="34" font-weight="500" fill="#1d1d1f">把网页换成你的语言，</text>
+    <text x="88" y="344" font-size="34" font-weight="500" fill="#1d1d1f">原文一个字符都没动。</text>
+
+    <text x="88" y="396" font-size="19" fill="#6e6e73">整页 / 悬停 / 划词翻译 · 没有内置服务，译文只发往你自己配置的接口</text>
+  </g>
+</svg>
